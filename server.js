@@ -38,6 +38,17 @@ app.use(helmet({
   contentSecurityPolicy: false // иначе WebApp скрипт Telegram может конфликтовать
 }));
 app.use(express.json({ limit: '100kb' }));
+// --- Telegram Mini App (WebApp): разрешаем открытие внутри Telegram WebView/iframe ---
+app.use((req, res, next) => {
+  // X-Frame-Options лучше не ставить (или отключать), т.к. Telegram использует iframe/WebView
+  // Ключевое — frame-ancestors в CSP
+  res.setHeader(
+    'Content-Security-Policy',
+    "frame-ancestors https://web.telegram.org https://*.telegram.org https://t.me"
+  );
+  next();
+});
+
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const publicDir = path.join(__dirname, 'public');
@@ -300,12 +311,35 @@ bot.command('sales', async (ctx) => {
   );
 });
 
-bot.launch().then(() => console.log('✅ Telegram bot started'));
+
+// --- Запуск бота ---
+// В продакшене (Railway) лучше использовать WEBHOOK, чтобы не ловить 409 Conflict (два getUpdates).
+// Для webhook нужно указать BASE_URL (например: https://botmarmelandia-production.up.railway.app)
+const BASE_URL = (process.env.BASE_URL || '').replace(/\/$/, '');
+const WEBHOOK_PATH = process.env.TG_WEBHOOK_PATH || '/telegram-webhook';
+
+async function startTelegramBot() {
+  if (BASE_URL && BASE_URL.startsWith('http')) {
+    // Переключаемся на webhook (это автоматически отключит long polling на стороне Telegram)
+    await bot.telegram.setWebhook(`${BASE_URL}${WEBHOOK_PATH}`);
+    app.use(bot.webhookCallback(WEBHOOK_PATH));
+    console.log(`✅ Telegram webhook установлен: ${BASE_URL}${WEBHOOK_PATH}`);
+  } else {
+    // Локальная разработка: long polling
+    await bot.launch({ dropPendingUpdates: true });
+    console.log('✅ Telegram bot запущен (long polling)');
+  }
+}
 
 // graceful shutdown
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
-app.listen(Number(PORT), () => {
+app.listen(Number(PORT), async () => {
   console.log(`✅ Server started on :${PORT}`);
+  try {
+    await startTelegramBot();
+  } catch (e) {
+    console.error('❌ Ошибка запуска Telegram бота:', e);
+  }
 });
