@@ -19,7 +19,14 @@ const {
 
 
 // Normalize BASE_URL once (avoid duplicate declarations)
-const BASE_URL_CLEAN = (BASE_URL || '').replace(/\/+$/, '');
+// Нормализуем BASE_URL: допускаем ввод без схемы, приводим к https:// и убираем / в конце
+function normalizeBaseUrl(v) {
+  if (!v) return '';
+  let url = String(v).trim();
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+  return url.replace(/\/+$/, '');
+}
+const BASE_URL_CLEAN = normalizeBaseUrl(BASE_URL);
 if (!BOT_TOKEN) {
   console.error('❌ Не задан BOT_TOKEN в .env');
   process.exit(1);
@@ -41,6 +48,9 @@ app.use(helmet({
   contentSecurityPolicy: false // иначе WebApp скрипт Telegram может конфликтовать
 }));
 app.use(express.json({ limit: '100kb' }));
+
+// Healthcheck для Railway / диагностики
+app.get('/health', (_req, res) => res.status(200).send('OK'));
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const publicDir = path.join(__dirname, 'public');
