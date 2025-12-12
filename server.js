@@ -7,6 +7,7 @@ import axios from 'axios';
 import Database from 'better-sqlite3';
 import { DateTime } from 'luxon';
 import { Telegraf, Markup } from 'telegraf';
+import { fileURLToPath } from 'url';
 
 const {
   PORT = '3000',
@@ -19,14 +20,7 @@ const {
 
 
 // Normalize BASE_URL once (avoid duplicate declarations)
-// Нормализуем BASE_URL: допускаем ввод без схемы, приводим к https:// и убираем / в конце
-function normalizeBaseUrl(v) {
-  if (!v) return '';
-  let url = String(v).trim();
-  if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
-  return url.replace(/\/+$/, '');
-}
-const BASE_URL_CLEAN = normalizeBaseUrl(BASE_URL);
+const BASE_URL_CLEAN = (BASE_URL || '').replace(/\/+$/, '');
 if (!BOT_TOKEN) {
   console.error('❌ Не задан BOT_TOKEN в .env');
   process.exit(1);
@@ -49,10 +43,8 @@ app.use(helmet({
 }));
 app.use(express.json({ limit: '100kb' }));
 
-// Healthcheck для Railway / диагностики
-app.get('/health', (_req, res) => res.status(200).send('OK'));
-
-const __dirname = path.dirname(new URL(import.meta.url).pathname);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const publicDir = path.join(__dirname, 'public');
 app.use('/', express.static(publicDir, { extensions: ['html'] }));
 
@@ -344,6 +336,12 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
 startBot().catch((err) => {
   console.error('❌ Failed to start Telegram bot:', err);
   process.exit(1);
+});
+
+// Global error handler (prevents silent crashes on requests)
+app.use((err, _req, res, _next) => {
+  console.error('❌ Unhandled error:', err);
+  res.status(500).send('Internal Server Error');
 });
 
 app.listen(Number(PORT), () => {
