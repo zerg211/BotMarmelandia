@@ -339,4 +339,3 @@ startBot().catch((err) => {
 app.listen(Number(PORT), () => {
   console.log(`✅ Server started on :${PORT}`);
 });
-});
