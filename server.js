@@ -7,7 +7,6 @@ import axios from 'axios';
 import Database from 'better-sqlite3';
 import { DateTime } from 'luxon';
 import { Telegraf, Markup } from 'telegraf';
-import { fileURLToPath } from 'url';
 
 const {
   PORT = '3000',
@@ -43,8 +42,7 @@ app.use(helmet({
 }));
 app.use(express.json({ limit: '100kb' }));
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const publicDir = path.join(__dirname, 'public');
 app.use('/', express.static(publicDir, { extensions: ['html'] }));
 
@@ -338,12 +336,6 @@ startBot().catch((err) => {
   process.exit(1);
 });
 
-// Global error handler (prevents silent crashes on requests)
-app.use((err, _req, res, _next) => {
-  console.error('❌ Unhandled error:', err);
-  res.status(500).send('Internal Server Error');
-});
-
-app.listen(Number(PORT), () => {
+app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`✅ Server started on :${PORT}`);
 });
