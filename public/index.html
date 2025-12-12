@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ozon — Продажи за сегодня</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root { --bg:#0b0f17; --card:#121a27; --muted:#93a4bd; --ok:#44d07b; --danger:#ff5c5c; --border:#1d2a40;}
+    body{margin:0;background:var(--bg);color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
+    .wrap{max-width:720px;margin:0 auto;padding:16px 16px 40px;}
+    h1{font-size:18px;margin:0 0 14px 0;font-weight:700;}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);margin-bottom:14px;}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+    label{display:block;font-size:12px;color:var(--muted);margin:0 0 6px 0}
+    input{width:100%;padding:12px 12px;border-radius:12px;border:1px solid var(--border);background:#0d1420;color:#fff;outline:none;}
+    .grid{display:grid;grid-template-columns:1fr;gap:12px;}
+    @media(min-width:640px){.grid{grid-template-columns:1fr 1fr;}}
+    button{padding:12px 14px;border-radius:12px;border:1px solid var(--border);background:#18243a;color:#fff;font-weight:700;cursor:pointer}
+    button.primary{background:#2a3d66;border-color:#2a3d66}
+    button.danger{background:#3a1820;border-color:#3a1820}
+    .muted{color:var(--muted);font-size:12px;line-height:1.4}
+    .pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:999px;padding:8px 12px;background:#0d1420}
+    .dot{width:8px;height:8px;border-radius:50%;background:var(--danger)}
+    .dot.ok{background:var(--ok)}
+    .widget{display:flex;align-items:flex-end;justify-content:space-between;gap:14px}
+    .big{font-size:44px;line-height:1;font-weight:900;letter-spacing:-.02em}
+    .sub{font-size:14px;color:var(--muted);margin-top:6px}
+    .money{font-size:26px;font-weight:900}
+    .small{font-size:12px;color:var(--muted)}
+    .right{text-align:right}
+    .err{color:var(--danger);font-size:12px;white-space:pre-wrap}
+    .ok{color:var(--ok);font-size:12px}
+    .topbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+    a{color:#b9d1ff}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <h1>Ozon — продажи за сегодня (FBO)</h1>
+      <span class="pill"><span id="statusDot" class="dot"></span><span id="statusText" class="small">не подключено</span></span>
+    </div>
+
+    <div id="connectCard" class="card">
+      <div class="grid">
+        <div>
+          <label>Client-Id</label>
+          <input id="clientId" placeholder="Например: 123456" />
+        </div>
+        <div>
+          <label>Api-Key</label>
+          <input id="apiKey" placeholder="Скопируйте ключ из Ozon Seller" />
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="btnConnect">Подключить</button>
+        <div class="muted">Вводится один раз. Логин/пароль от кабинета не нужны.</div>
+      </div>
+      <div id="connectMsg" class="muted" style="margin-top:10px"></div>
+      <div id="connectErr" class="err" style="margin-top:10px"></div>
+    </div>
+
+    <div id="widgetCard" class="card" style="display:none">
+      <div class="widget">
+        <div>
+          <div class="small">Продажи за день</div>
+          <div class="big"><span id="units">—</span> <span class="small">шт</span></div>
+          <div class="sub" id="subtitle">—</div>
+        </div>
+        <div class="right">
+          <div class="small">Сумма (как сумма товаров)</div>
+          <div class="money"><span id="sum">—</span> <span class="small">₽</span></div>
+          <div class="small" id="updated">—</div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button id="btnRefresh">Обновить</button>
+        <button class="danger" id="btnDisconnect">Отключить Ozon</button>
+      </div>
+      <div class="muted" style="margin-top:10px">
+        Счётчик берёт все заказы, которые <b>созданы сегодня</b> (created_at), независимо от статуса. Отменённые считаются отдельно.
+      </div>
+      <div id="widgetErr" class="err" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="muted">
+        <b>Как найти ключи:</b> в кабинете Ozon Seller → Настройки → API / API‑ключи (создайте ключ и скопируйте Client‑Id и Api‑Key).<br/>
+        <b>Примечание:</b> если “сумма заказа” в вашем ЛК включает дополнительные компоненты, мы добавим второй режим расчёта после быстрой сверки по 1–2 заказам.
+      </div>
+    </div>
+  </div>
+
+<script>
+  const tg = window.Telegram?.WebApp;
+  if (tg) { tg.expand(); }
+
+  function initData() {
+    return tg?.initData || '';
+  }
+
+  async function api(path, opts={}) {
+    const headers = Object.assign({}, opts.headers || {}, {
+      'x-telegram-init-data': initData()
+    });
+    const res = await fetch(path, Object.assign({}, opts, { headers }));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((data && (data.details || data.error)) ? JSON.stringify(data, null, 2) : `HTTP ${res.status}`);
+    return data;
+  }
+
+  function setConnectedUI(connected, text) {
+    document.getElementById('connectCard').style.display = connected ? 'none' : 'block';
+    document.getElementById('widgetCard').style.display = connected ? 'block' : 'none';
+    document.getElementById('statusDot').className = 'dot' + (connected ? ' ok' : '');
+    document.getElementById('statusText').textContent = connected ? (text || 'подключено') : 'не подключено';
+  }
+
+  function rub(n) {
+    const x = Math.round(Number(n || 0));
+    return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  }
+
+  async function loadMe() {
+    try {
+      const me = await api('/api/me');
+      setConnectedUI(me.connected, me.connected ? ('Client-Id: ' + me.ozon_client_id) : '');
+      if (me.connected) await refresh();
+    } catch (e) {
+      // если открыли не из Telegram — покажем подсказку
+      document.getElementById('connectErr').textContent =
+        'Откройте это приложение из Telegram (кнопка в боте).\n\nОшибка: ' + String(e.message || e);
+    }
+  }
+
+  async function refresh() {
+    document.getElementById('widgetErr').textContent = '';
+    const data = await api('/api/today');
+    document.getElementById('units').textContent = data.units ?? '0';
+    document.getElementById('sum').textContent = rub(data.sum ?? 0);
+
+    const cancelled = `Отменено сегодня: ${data.cancelledUnits ?? 0} шт / ${rub(data.cancelledSum ?? 0)} ₽`;
+    document.getElementById('subtitle').textContent = cancelled;
+
+    const upd = new Date(data.updated_at);
+    document.getElementById('updated').textContent = 'Обновлено: ' + upd.toLocaleString();
+  }
+
+  document.getElementById('btnConnect').addEventListener('click', async () => {
+    document.getElementById('connectErr').textContent = '';
+    document.getElementById('connectMsg').textContent = '';
+    const clientId = document.getElementById('clientId').value.trim();
+    const apiKey = document.getElementById('apiKey').value.trim();
+    if (!clientId || !apiKey) {
+      document.getElementById('connectErr').textContent = 'Заполните Client-Id и Api-Key.';
+      return;
+    }
+    try {
+      await api('/api/connect', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ clientId, apiKey })
+      });
+      document.getElementById('connectMsg').textContent = '✅ Подключено. Загружаю данные...';
+      setConnectedUI(true, 'Client-Id: ' + clientId);
+      await refresh();
+    } catch (e) {
+      document.getElementById('connectErr').textContent = 'Ошибка подключения:\n' + String(e.message || e);
+    }
+  });
+
+  document.getElementById('btnRefresh').addEventListener('click', async () => {
+    try { await refresh(); }
+    catch(e){ document.getElementById('widgetErr').textContent = 'Ошибка обновления:\n' + String(e.message || e); }
+  });
+
+  document.getElementById('btnDisconnect').addEventListener('click', async () => {
+    document.getElementById('widgetErr').textContent = '';
+    try {
+      await api('/api/disconnect', { method: 'POST' });
+      setConnectedUI(false);
+    } catch (e) {
+      document.getElementById('widgetErr').textContent = 'Ошибка отключения:\n' + String(e.message || e);
+    }
+  });
+
+  // автообновление раз в 60 секунд
+  setInterval(async () => {
+    const widgetVisible = document.getElementById('widgetCard').style.display !== 'none';
+    if (!widgetVisible) return;
+    try { await refresh(); } catch(e) {}
+  }, 60000);
+
+  loadMe();
+</script>
+</body>
+</html>

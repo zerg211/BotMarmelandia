@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - BASE_URL=${BASE_URL}
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ENCRYPTION_KEY_B64=${ENCRYPTION_KEY_B64}
+      - OZON_API_BASE=${OZON_API_BASE}
+      - SALES_TIMEZONE=${SALES_TIMEZONE}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
