@@ -17,6 +17,9 @@ const {
   SALES_TIMEZONE = 'Europe/Moscow'
 } = process.env;
 
+
+// Normalize BASE_URL once (avoid duplicate declarations)
+const BASE_URL_CLEAN = (BASE_URL || '').replace(/\/+$/, '');
 if (!BOT_TOKEN) {
   console.error('❌ Не задан BOT_TOKEN в .env');
   process.exit(1);
@@ -38,17 +41,6 @@ app.use(helmet({
   contentSecurityPolicy: false // иначе WebApp скрипт Telegram может конфликтовать
 }));
 app.use(express.json({ limit: '100kb' }));
-// --- Telegram Mini App (WebApp): разрешаем открытие внутри Telegram WebView/iframe ---
-app.use((req, res, next) => {
-  // X-Frame-Options лучше не ставить (или отключать), т.к. Telegram использует iframe/WebView
-  // Ключевое — frame-ancestors в CSP
-  res.setHeader(
-    'Content-Security-Policy',
-    "frame-ancestors https://web.telegram.org https://*.telegram.org https://t.me"
-  );
-  next();
-});
-
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const publicDir = path.join(__dirname, 'public');
@@ -294,7 +286,7 @@ app.get('/api/today', requireTelegram, async (req, res) => {
 const bot = new Telegraf(BOT_TOKEN);
 
 bot.start(async (ctx) => {
-  const webAppUrl = (BASE_URL || '').replace(/\/$/, '') || 'https://YOUR-DOMAIN.TLD';
+  const webAppUrl = BASE_URL_CLEAN || 'https://YOUR-DOMAIN.TLD';
   await ctx.reply(
     'Открой мини‑приложение и подключи Ozon (Client-Id + Api-Key) один раз.\n\nДальше будет показывать “Продажи за сегодня” и сумму.',
     Markup.inlineKeyboard([
@@ -304,7 +296,7 @@ bot.start(async (ctx) => {
 });
 
 bot.command('sales', async (ctx) => {
-  const webAppUrl = (BASE_URL || '').replace(/\/$/, '') || 'https://YOUR-DOMAIN.TLD';
+  const webAppUrl = BASE_URL_CLEAN || 'https://YOUR-DOMAIN.TLD';
   await ctx.reply(
     'Открывай:',
     Markup.inlineKeyboard([Markup.button.webApp('📊 Продажи за сегодня', `${webAppUrl}/`)])
@@ -312,22 +304,26 @@ bot.command('sales', async (ctx) => {
 });
 
 
-// --- Запуск бота ---
-// В продакшене (Railway) лучше использовать WEBHOOK, чтобы не ловить 409 Conflict (два getUpdates).
-// Для webhook нужно указать BASE_URL (например: https://botmarmelandia-production.up.railway.app)
-const BASE_URL = (process.env.BASE_URL || '').replace(/\/$/, '');
-const WEBHOOK_PATH = process.env.TG_WEBHOOK_PATH || '/telegram-webhook';
+// --- Telegram bot start ---
+// On hosting (Railway, etc.) we use Webhook to avoid Telegram 409 conflicts.
+// Locally (without BASE_URL) we fallback to long polling.
+const WEBHOOK_PATH = '/telegram-webhook';
 
-async function startTelegramBot() {
-  if (BASE_URL && BASE_URL.startsWith('http')) {
-    // Переключаемся на webhook (это автоматически отключит long polling на стороне Telegram)
-    await bot.telegram.setWebhook(`${BASE_URL}${WEBHOOK_PATH}`);
-    app.use(bot.webhookCallback(WEBHOOK_PATH));
-    console.log(`✅ Telegram webhook установлен: ${BASE_URL}${WEBHOOK_PATH}`);
+async function startBot() {
+  if (BASE_URL_CLEAN) {
+    // Register webhook and mount handler in Express
+    try {
+      await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+    } catch (e) {
+      // ignore if not set
+    }
+    await bot.telegram.setWebhook(`${BASE_URL_CLEAN}${WEBHOOK_PATH}`);
+    app.use(WEBHOOK_PATH, bot.webhookCallback(WEBHOOK_PATH));
+    console.log(`✅ Telegram webhook set: ${BASE_URL_CLEAN}${WEBHOOK_PATH}`);
   } else {
-    // Локальная разработка: long polling
-    await bot.launch({ dropPendingUpdates: true });
-    console.log('✅ Telegram bot запущен (long polling)');
+    // Local dev: polling
+    await bot.launch();
+    console.log('✅ Telegram bot started (polling)');
   }
 }
 
@@ -335,11 +331,12 @@ async function startTelegramBot() {
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
-app.listen(Number(PORT), async () => {
+startBot().catch((err) => {
+  console.error('❌ Failed to start Telegram bot:', err);
+  process.exit(1);
+});
+
+app.listen(Number(PORT), () => {
   console.log(`✅ Server started on :${PORT}`);
-  try {
-    await startTelegramBot();
-  } catch (e) {
-    console.error('❌ Ошибка запуска Telegram бота:', e);
-  }
+});
 });
