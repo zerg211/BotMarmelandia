@@ -5,25 +5,27 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Моя аналитика</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
   <style>
     :root{
       --bg:#0B0F14; --card:#121923; --text:#EAF0FF; --muted:#93A4C7;
       --accent:#4DA3FF; --danger:#FF5A6A; --line: rgba(255,255,255,.08);
     }
     *{box-sizing:border-box;}
+    html, body { height: 100%; margin:0; padding:0; overflow:hidden; background:var(--bg); color:var(--text); }
 
-    html, body { height: 100%; overflow: hidden; }
-    body{
-      margin:0;background:var(--bg);color:var(--text);
+    /* ВАЖНО: Telegram WebApp даёт свои переменные высоты */
+    .app{
+      height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100vh));
+      min-height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100vh));
+      padding: calc(16px + env(safe-area-inset-top))
+               calc(16px + env(safe-area-inset-right))
+               calc(16px + env(safe-area-inset-bottom))
+               calc(16px + env(safe-area-inset-left));
+      display:flex; flex-direction:column; gap:14px;
       font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
     }
 
-    .app{
-      min-height:100vh;
-      padding:calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
-               calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
-      display:flex;flex-direction:column;gap:14px;
-    }
     .top{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;}
     .title{font-size:20px;font-weight:900;letter-spacing:.2px;}
     .sub{font-size:12px;color:var(--muted);}
@@ -57,10 +59,43 @@
       border-radius:14px;padding:10px 12px;display:none;
     }
     @media (max-width:380px){.value{font-size:24px}.card{min-height:96px}}
+
+    /* Модалка */
+    .modal {
+      position: fixed; inset: 0;
+      display:flex; align-items:center; justify-content:center;
+      background: rgba(0,0,0,.55);
+      padding: 16px;
+    }
+    .modal[hidden] { display:none; }
+    .modalCard{
+      width:min(520px, 100%);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 14px;
+      box-shadow:0 12px 40px rgba(0,0,0,.4);
+      display:flex; flex-direction:column; gap:10px;
+    }
+    .modalTop{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+    .modalTitle{font-size:16px;font-weight:900;}
+    .xbtn{border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--text);border-radius:12px;padding:8px 10px;cursor:pointer;font-weight:900;}
+    .inp{
+      width:100%; padding:10px 12px; border-radius:14px;
+      border:1px solid var(--line);
+      background: rgba(255,255,255,.04);
+      color: var(--text);
+      outline: none;
+      font-weight:700;
+    }
+    .row{display:flex;gap:10px;flex-wrap:wrap;}
+    .row .btn{flex:1; justify-content:center;}
+    .keysStatus{font-size:12px;color:var(--muted);}
   </style>
 </head>
+
 <body>
-  <div class="app" id="appRoot">
+  <div class="app">
     <div class="top">
       <div>
         <div class="title">Моя аналитика</div>
@@ -93,7 +128,7 @@
     <div class="footer">
       <div id="updatedAt">Последнее обновление: —</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;">
-        <button class="btn secondary" id="helpBtn">🔑 Ключи</button>
+        <button class="btn secondary" id="keysBtn">🔑 Ключи</button>
         <button class="btn" id="refreshBtn">
           <svg id="refreshIcon" width="18" height="18" viewBox="0 0 24 24" fill="none">
             <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -105,120 +140,30 @@
     </div>
   </div>
 
-  <script>
-    // Показать реальную ошибку вместо "белого экрана"
-    window.addEventListener("error", (e) => {
-      const msg = (e && e.message) ? e.message : "JS error";
-      document.body.innerHTML = '<pre style="white-space:pre-wrap;padding:16px;color:#fff;background:#000;">' + msg + '</pre>';
-    });
-    window.addEventListener("unhandledrejection", (e) => {
-      const msg = (e && e.reason) ? String(e.reason) : "Unhandled promise rejection";
-      document.body.innerHTML = '<pre style="white-space:pre-wrap;padding:16px;color:#fff;background:#000;">' + msg + '</pre>';
-    });
+  <!-- Модалка ключей (ввод в кабинете, НЕ в боте) -->
+  <div class="modal" id="modal" hidden>
+    <div class="modalCard" role="dialog" aria-modal="true">
+      <div class="modalTop">
+        <div class="modalTitle">Ключи Ozon Seller</div>
+        <button class="xbtn" id="closeModal">✕</button>
+      </div>
 
-    const tg = window.Telegram?.WebApp;
-    if (tg) {
-      tg.ready();
-      tg.expand();
-      tg.disableVerticalSwipes?.();
-    }
+      <div class="keysStatus" id="keysStatus"></div>
 
-    const $ = (id) => document.getElementById(id);
-    const statusEl = $("status");
-    const updatedAtEl = $("updatedAt");
-    const refreshBtn = $("refreshBtn");
-    const refreshIcon = $("refreshIcon");
-    const hintEl = $("hint");
+      <input class="inp" id="clientId" placeholder="Client ID" autocomplete="off" />
+      <input class="inp" id="apiKey" placeholder="API Key" autocomplete="off" />
 
-    function setStatus(text, danger=false){
-      statusEl.textContent = text;
-      statusEl.className = "badge" + (danger ? " danger" : "");
-    }
-    function setLastUpdated(iso){
-      const d = iso ? new Date(iso) : new Date();
-      updatedAtEl.textContent = "Последнее обновление: " + d.toLocaleString("ru-RU");
-    }
-    function fmtMoneyFromCents(cents){
-      if (cents === null || cents === undefined) return "—";
-      const rub = (Number(cents) / 100);
-      return new Intl.NumberFormat("ru-RU", {minimumFractionDigits:2, maximumFractionDigits:2}).format(rub);
-    }
-    function showHint(text){
-      hintEl.textContent = text;
-      hintEl.style.display = "block";
-    }
-    function hideHint(){
-      hintEl.style.display = "none";
-    }
+      <div class="row">
+        <button class="btn" id="saveKeys">Сохранить</button>
+        <button class="btn secondary" id="deleteKeys">Удалить</button>
+      </div>
 
-    $("helpBtn").addEventListener("click", () => {
-      showHint("Ключи вводятся в боте: напиши /start и отправь Client ID и Api-Key. Потом вернись сюда и нажми «Обновить».");
-    });
+      <div class="keysStatus">
+        Если после «Открыть» не грузит — вернись назад и открой через кнопку у бота, либо нажми «Обновить» несколько раз.
+      </div>
+    </div>
+  </div>
 
-    async function load(){
-      hideHint();
-
-      // ВАЖНО: при открытии по кнопке «Открыть» initData иногда пустой.
-      // НЕ блокируем загрузку — просто показываем подсказку и даём «Обновить».
-      const initData = tg?.initData || "";
-      if (!initData) {
-        setStatus("ожидание Telegram…", true);
-        showHint("Если данные не загрузились — нажми «Обновить». Telegram иногда передаёт данные с задержкой.");
-        // НЕ return
-      }
-
-      try{
-        refreshBtn.disabled = true;
-        refreshIcon.classList.add("spin");
-        setStatus("обновление…");
-
-        const r = await fetch("/api/dashboard/today", {
-          headers: initData ? { "X-Tg-Init-Data": initData } : {}
-        });
-        const data = await r.json().catch(() => ({}));
-
-        if (!r.ok || data.error) {
-          if (r.status === 401 || data.error === "unauthorized") {
-            setStatus("открой в Telegram", true);
-            showHint("Открой это окно внутри Telegram (через кнопку «Моя аналитика» у бота) и нажми «Обновить».");
-            return;
-          }
-          if (data.error === "no_creds") {
-            setStatus("нужны ключи", true);
-            showHint("Ключи вводятся в боте: /start → Client ID → Api-Key. Потом вернись и нажми «Обновить».");
-            return;
-          }
-          throw new Error(data.error || ("HTTP " + r.status));
-        }
-
-        if (data.title) $("subtitle").textContent = data.title;
-
-        $("orders").textContent = data.orders ?? data.ordersCount ?? "—";
-        $("ordersSum").textContent = fmtMoneyFromCents(data.orders_sum ?? data.ordersAmount);
-        $("cancels").textContent = data.cancels ?? data.cancelsCount ?? "—";
-        $("cancelsSum").textContent = fmtMoneyFromCents(data.cancels_sum ?? data.cancelsAmount);
-
-        setLastUpdated(data.updated_at);
-        setStatus("актуально");
-      } catch(e){
-        setStatus("ошибка", true);
-        showHint("Ошибка получения данных. Нажми «Обновить» ещё раз или проверь ключи в боте.");
-      } finally{
-        refreshIcon.classList.remove("spin");
-        refreshBtn.disabled = false;
-      }
-    }
-
-    // авто-повтор 1 раз (на случай задержки initData при “Открыть”)
-    async function boot(){
-      await load();
-      if (tg && !(tg.initData || "")) {
-        setTimeout(() => load(), 350);
-      }
-    }
-
-    refreshBtn.addEventListener("click", load);
-    boot();
-  </script>
+  <script src="./app.js?v=6"></script>
 </body>
 </html>
