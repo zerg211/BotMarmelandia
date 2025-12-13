@@ -18,7 +18,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
-// store
+// store (simple file)
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 
@@ -180,6 +180,10 @@ function rangeForDate(dateStr) {
   const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
   return {
     dateStr,
+    from,
+    to,
+    sinceISO: from.toUTC().toISO(),
+    toISO: to.toUTC().toISO(),
     fromUtcIso: from.toUTC().toISO(),
     toUtcIso: to.toUTC().toISO(),
   };
@@ -259,112 +263,185 @@ async function mapLimit(items, limit, fn) {
   return res;
 }
 
-// классификация по operation_type / operation_type_name
-function classifyOperation(opType, opName) {
-  const s = `${opType || ""} ${opName || ""}`.toLowerCase();
-  if (s.includes("sale") || s.includes("продаж")) return "sale";
-  if (s.includes("return") || s.includes("refund") || s.includes("cancel") || s.includes("возврат") || s.includes("отмен"))
-    return "return";
-  return "other";
+// --- ORDERS: postings created in day (FBS + FBO) ---
+async function listFbsOrdersCreated({ clientId, apiKey, sinceISO, toISO }) {
+  let offset = 0;
+  const limit = 50;
+  const numbers = [];
+
+  while (true) {
+    const data = await ozonPost("/v3/posting/fbs/list", {
+      clientId,
+      apiKey,
+      body: {
+        filter: { since: sinceISO, to: toISO },
+        limit,
+        offset,
+        with: { financial_data: false },
+      },
+    });
+
+    const result = data?.result || {};
+    const postings = result?.postings || [];
+    for (const p of postings) if (p?.posting_number) numbers.push(p.posting_number);
+
+    if (!result?.has_next) break;
+    offset += limit;
+    if (offset > 5000) break;
+  }
+
+  return [...new Set(numbers)];
 }
 
-async function listFinanceTransactionsForDate({ clientId, apiKey, dateStr }) {
+async function listFboOrdersCreated({ clientId, apiKey, sinceISO, toISO }) {
+  let offset = 0;
+  const limit = 50;
+  const numbers = [];
+
+  while (true) {
+    const data = await ozonPost("/v2/posting/fbo/list", {
+      clientId,
+      apiKey,
+      body: {
+        filter: { since: sinceISO, to: toISO },
+        limit,
+        offset,
+        with: { financial_data: false },
+      },
+    });
+
+    const result = data?.result || {};
+    const postings = result?.postings || [];
+    for (const p of postings) if (p?.posting_number) numbers.push(p.posting_number);
+
+    if (!result?.has_next) break;
+    offset += limit;
+    if (offset > 5000) break;
+  }
+
+  return [...new Set(numbers)];
+}
+
+// --- CANCELS/RETURNS: finance operations in day -> posting numbers ---
+function classifyCancelOrReturn(opType, opName) {
+  const s = `${opType || ""} ${opName || ""}`.toLowerCase();
+  // оставляем широкое распознавание (у тебя отмены уже считаются верно)
+  if (s.includes("return") || s.includes("refund") || s.includes("cancel") || s.includes("возврат") || s.includes("отмен"))
+    return true;
+  return false;
+}
+
+async function listCancelPostingNumbersFromFinance({ clientId, apiKey, dateStr }) {
   const { fromUtcIso, toUtcIso } = rangeForDate(dateStr);
 
   let page = 1;
   const page_size = 1000;
-  const ops = [];
+  const nums = new Set();
 
   while (true) {
-    const body = {
-      filter: {
-        date: { from: fromUtcIso, to: toUtcIso },
-        operation_type: [],
-        posting_number: "",
-        transaction_type: "", // <-- ВАЖНО: не фильтруем тип, чтобы не получить пусто
+    const data = await ozonPost("/v3/finance/transaction/list", {
+      clientId,
+      apiKey,
+      body: {
+        filter: {
+          date: { from: fromUtcIso, to: toUtcIso },
+          operation_type: [],
+          posting_number: "",
+          transaction_type: "",
+        },
+        page,
+        page_size,
       },
-      page,
-      page_size,
-    };
-
-    const data = await ozonPost("/v3/finance/transaction/list", { clientId, apiKey, body });
+    });
 
     const result = data?.result || {};
-    const chunk = result?.operations || [];
-    ops.push(...chunk);
+    const ops = result?.operations || [];
+
+    for (const o of ops) {
+      if (!classifyCancelOrReturn(o.operation_type, o.operation_type_name)) continue;
+      const num = o?.posting?.posting_number;
+      if (num) nums.add(num);
+    }
 
     const pageCount = Number(result?.page_count || 0);
     if (pageCount && page >= pageCount) break;
-    if (!chunk || chunk.length < page_size) break;
+    if (!ops || ops.length < page_size) break;
 
     page += 1;
     if (page > 50) break;
   }
 
-  // DEBUG: чтобы ты видел, что реально приходит
-  if (ops.length) {
-    const sample = ops.slice(0, 5).map(o => ({
-      operation_type: o.operation_type,
-      operation_type_name: o.operation_type_name,
-      posting_number: o?.posting?.posting_number,
-      delivery_schema: o?.posting?.delivery_schema
-    }));
-    console.log("Finance sample:", JSON.stringify(sample));
-  } else {
-    console.log("Finance: 0 operations for date", dateStr);
-  }
-
-  return ops;
+  return [...nums];
 }
 
-async function getDailySalesAndReturns({ clientId, apiKey, dateStr }) {
-  const ops = await listFinanceTransactionsForDate({ clientId, apiKey, dateStr });
+// --- Main daily calc (orders + cancels) ---
+async function getDailyOrdersAndCancels({ clientId, apiKey, dateStr }) {
+  const { sinceISO, toISO } = rangeForDate(dateStr);
 
-  const salesNumbers = new Set();
-  const returnNumbers = new Set();
+  // 1) Orders created today (FBS+FBO)
+  const [orderFbsNums, orderFboNums] = await Promise.all([
+    listFbsOrdersCreated({ clientId, apiKey, sinceISO, toISO }),
+    listFboOrdersCreated({ clientId, apiKey, sinceISO, toISO }),
+  ]);
 
-  for (const o of ops) {
-    // ✅ FIX: posting number inside o.posting.posting_number (как в ответе документации)
-    const num = o?.posting?.posting_number;
-    if (!num) continue;
+  // суммы заказов — по каждому posting get -> customer_price
+  const orderFbsInfo = await mapLimit(orderFbsNums, 8, (num) =>
+    getPostingAmountAndType({ clientId, apiKey, postingNumber: num })
+  );
+  const orderFboInfo = await mapLimit(orderFboNums, 8, (num) =>
+    getPostingAmountAndType({ clientId, apiKey, postingNumber: num })
+  );
 
-    const cls = classifyOperation(o.operation_type, o.operation_type_name);
-    if (cls === "sale") salesNumbers.add(num);
-    else if (cls === "return") returnNumbers.add(num);
-  }
+  let ordersSumFbs = 0;
+  for (const r of orderFbsInfo) if (r && typeof r.amount === "number") ordersSumFbs += r.amount;
 
-  const salesArr = [...salesNumbers];
-  const returnsArr = [...returnNumbers];
+  let ordersSumFbo = 0;
+  for (const r of orderFboInfo) if (r && typeof r.amount === "number") ordersSumFbo += r.amount;
 
-  const salesInfo = await mapLimit(salesArr, 8, (num) => getPostingAmountAndType({ clientId, apiKey, postingNumber: num }));
-  const retInfo = await mapLimit(returnsArr, 8, (num) => getPostingAmountAndType({ clientId, apiKey, postingNumber: num }));
+  // 2) Cancels/returns today (from finance)
+  const cancelNums = await listCancelPostingNumbersFromFinance({ clientId, apiKey, dateStr });
+  const cancelInfo = await mapLimit(cancelNums, 8, (num) =>
+    getPostingAmountAndType({ clientId, apiKey, postingNumber: num })
+  );
 
-  let salesFbs = 0, salesFbo = 0, salesSum = 0;
-  for (const r of salesInfo) {
+  let cancelsFbs = 0, cancelsFbo = 0, cancelsSumFbs = 0, cancelsSumFbo = 0;
+  for (const r of cancelInfo) {
     if (!r || typeof r.amount !== "number") continue;
-    salesSum += r.amount;
-    if (r.type === "fbs") salesFbs += 1;
-    else if (r.type === "fbo") salesFbo += 1;
+    if (r.type === "fbs") { cancelsFbs += 1; cancelsSumFbs += r.amount; }
+    else if (r.type === "fbo") { cancelsFbo += 1; cancelsSumFbo += r.amount; }
   }
 
-  let retFbs = 0, retFbo = 0, retSum = 0;
-  for (const r of retInfo) {
-    if (!r || typeof r.amount !== "number") continue;
-    retSum += r.amount;
-    if (r.type === "fbs") retFbs += 1;
-    else if (r.type === "fbo") retFbo += 1;
-  }
+  const ordersFbs = orderFbsNums.length;
+  const ordersFbo = orderFboNums.length;
+
+  const ordersTotal = ordersFbs + ordersFbo;
+  const ordersSumTotal = ordersSumFbs + ordersSumFbo;
+
+  const cancelsTotal = cancelsFbs + cancelsFbo;
+  const cancelsSumTotal = cancelsSumFbs + cancelsSumFbo;
+
+  const netOrders = ordersTotal - cancelsTotal;
+  const netSum = ordersSumTotal - cancelsSumTotal;
 
   return {
     dateStr,
-    salesFbs,
-    salesFbo,
-    salesTotal: salesFbs + salesFbo,
-    salesSum,
-    retFbs,
-    retFbo,
-    retTotal: retFbs + retFbo,
-    retSum,
+
+    ordersFbs,
+    ordersFbo,
+    ordersTotal,
+    ordersSumFbs,
+    ordersSumFbo,
+    ordersSumTotal,
+
+    cancelsFbs,
+    cancelsFbo,
+    cancelsTotal,
+    cancelsSumFbs,
+    cancelsSumFbo,
+    cancelsSumTotal,
+
+    netOrders,
+    netSum,
   };
 }
 
@@ -375,21 +452,21 @@ function moneyRub(x) {
 }
 
 function widgetText(s) {
-  const net = s.salesSum - s.retSum;
   return [
-    `📊 <b>События за дату</b>: <b>${s.dateStr}</b> (${SALES_TZ})`,
+    `📅 <b>Заказы за дату</b>: <b>${s.dateStr}</b> (${SALES_TZ})`,
     ``,
-    `🟢 Продаж (FBS): <b>${s.salesFbs}</b>`,
-    `🟢 Продаж (FBO): <b>${s.salesFbo}</b>`,
-    `🟢 Продаж всего: <b>${s.salesTotal}</b>`,
+    `📥 Заказы поступили (FBS): <b>${s.ordersFbs}</b>`,
+    `📥 Заказы поступили (FBO): <b>${s.ordersFbo}</b>`,
+    `📥 Заказы поступили всего: <b>${s.ordersTotal}</b>`,
+    `💰 Сумма заказов: <b>${moneyRub(s.ordersSumTotal)}</b> ₽`,
     ``,
-    `🔴 Отмен/возвратов (FBS): <b>${s.retFbs}</b>`,
-    `🔴 Отмен/возвратов (FBO): <b>${s.retFbo}</b>`,
-    `🔴 Отмен/возвратов всего: <b>${s.retTotal}</b>`,
+    `❌ Отмены/возвраты (FBS): <b>${s.cancelsFbs}</b>`,
+    `❌ Отмены/возвраты (FBO): <b>${s.cancelsFbo}</b>`,
+    `❌ Отмены/возвраты всего: <b>${s.cancelsTotal}</b>`,
+    `🔄 Сумма отмен/возвратов: <b>${moneyRub(s.cancelsSumTotal)}</b> ₽`,
     ``,
-    `💰 Сумма продаж (как в ЛК): <b>${moneyRub(s.salesSum)}</b> ₽`,
-    `🔄 Сумма отмен/возвратов: <b>${moneyRub(s.retSum)}</b> ₽`,
-    `📉 Итог: <b>${moneyRub(net)}</b> ₽`,
+    `✅ Актуально заказов (поступило − отмены): <b>${s.netOrders}</b>`,
+    `✅ Актуальная сумма (заказы − отмены): <b>${moneyRub(s.netSum)}</b> ₽`,
   ].join("\n");
 }
 
@@ -415,14 +492,14 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
   const clientId = creds.clientId;
 
   try {
-    const stats = await getDailySalesAndReturns({ clientId, apiKey, dateStr });
+    const stats = await getDailyOrdersAndCancels({ clientId, apiKey, dateStr });
     const text = widgetText(stats);
 
     if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
     else await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
   } catch (e) {
     const msg =
-      `❌ Не смог получить события/суммы за <b>${dateStr}</b>.\n\n` +
+      `❌ Не смог получить данные за <b>${dateStr}</b>.\n\n` +
       `<code>${String(e.message || e)}</code>`;
     if (editMessageId) await tgEditMessage(chatId, editMessageId, msg, widgetKeyboard(dateStr));
     else await tgSendMessage(chatId, msg, widgetKeyboard(dateStr));
@@ -470,7 +547,7 @@ app.post("/telegram-webhook", async (req, res) => {
     if (text === "/start") {
       const creds = getUserCreds(userId);
       if (creds?.clientId && creds?.apiKey) {
-        await tgSendMessage(chatId, "✅ Ключи уже сохранены. Показываю виджет за сегодня:");
+        await tgSendMessage(chatId, "✅ Ключи уже сохранены. Показываю заказы за сегодня:");
         await showWidget(chatId, userId, todayDateStr());
         return;
       }
@@ -506,7 +583,7 @@ app.post("/telegram-webhook", async (req, res) => {
     if (st?.step === "apiKey") {
       setUserCreds(userId, { clientId: st.clientId, apiKey: encrypt(text), savedAt: Date.now() });
       pending.delete(userId);
-      await tgSendMessage(chatId, "✅ Сохранил. Открываю виджет за сегодня:");
+      await tgSendMessage(chatId, "✅ Сохранил. Открываю заказы за сегодня:");
       await showWidget(chatId, userId, todayDateStr());
       return;
     }
