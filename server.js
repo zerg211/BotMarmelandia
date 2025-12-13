@@ -153,7 +153,14 @@ async function ozonPost(pathname, { clientId, apiKey, body }) {
     body: JSON.stringify(body),
   });
 
-  const data = await resp.json().catch(() => null);
+  const text = await resp.text(); // читаем как текст, чтобы видеть raw если JSON “ломается”
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { _raw: text };
+  }
+
   if (!resp.ok) {
     const msg = data?.message || data?.error || JSON.stringify(data);
     throw new Error(`Ozon API ${pathname} (${resp.status}): ${msg}`);
@@ -166,15 +173,40 @@ function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
 }
 
-function wideSinceToUTC(dateStr) {
+function makeRanges(dateStr) {
   const dayStart = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
   const dayEnd = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
 
-  // ISO без миллисекунд (часто стабильнее)
-  const since = dayStart.minus({ days: LOOKBACK_DAYS }).toUTC().toISO({ suppressMilliseconds: true });
-  const to = dayEnd.plus({ days: 1 }).toUTC().toISO({ suppressMilliseconds: true });
+  const sinceDT = dayStart.minus({ days: LOOKBACK_DAYS });
+  const toDT = dayEnd.plus({ days: 1 });
 
-  return { since, to };
+  // 4 формата, которые реально встречаются в примерах/интеграциях:
+  return [
+    // 1) date-only
+    {
+      label: "YYYY-MM-DD",
+      since: sinceDT.toFormat("yyyy-LL-dd"),
+      to: toDT.toFormat("yyyy-LL-dd"),
+    },
+    // 2) UTC ISO без миллисекунд
+    {
+      label: "ISO UTC no ms",
+      since: sinceDT.toUTC().toISO({ suppressMilliseconds: true }),
+      to: toDT.toUTC().toISO({ suppressMilliseconds: true }),
+    },
+    // 3) UTC ISO с миллисекундами
+    {
+      label: "ISO UTC with ms",
+      since: sinceDT.toUTC().toISO({ suppressMilliseconds: false }),
+      to: toDT.toUTC().toISO({ suppressMilliseconds: false }),
+    },
+    // 4) ISO в локальной TZ с оффсетом (+03:00)
+    {
+      label: "ISO local offset",
+      since: sinceDT.toISO({ suppressMilliseconds: true }),
+      to: toDT.toISO({ suppressMilliseconds: true }),
+    },
+  ];
 }
 
 function isSameDayInTZ(iso, dateStr) {
@@ -183,57 +215,79 @@ function isSameDayInTZ(iso, dateStr) {
   return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
 }
 
-function pickBestArrivedISO(p) {
-  // хотим “поступил заказ” => created_at в приоритете
+function pickArrivedISO(p) {
   return p?.created_at || p?.in_process_at || p?.shipment_date || null;
 }
 
-// ---------------- Core: FBO list ----------------
-async function listFboPostingsWide({ clientId, apiKey, dateStr, status }) {
-  const { since, to } = wideSinceToUTC(dateStr);
+// ---------------- Core: try variants until postings appear ----------------
+async function fboListOnce({ clientId, apiKey, since, to, status }) {
+  const body = {
+    dir: "asc",
+    filter: { since, to },
+    limit: 1000,
+    offset: 0,
+    with: { financial_data: false },
+  };
+  if (status) body.status = status;
 
-  let offset = 0;
-  const limit = 1000;
-  const postings = [];
+  const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
 
-  while (true) {
-    // ВАЖНО: status — на верхнем уровне, не в filter (так устроено в ряде реализаций/примеров)
-    const body = {
-      dir: "asc",
-      filter: { since, to },
-      limit,
-      offset,
-      with: { financial_data: false },
-    };
-    if (status) body.status = status;
+  const result = data?.result ?? data;
+  const postings = result?.postings ?? result?.result?.postings ?? [];
+  const hasNext = Boolean(result?.has_next ?? result?.result?.has_next);
 
-    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
-
-    // Разные версии могут упаковывать данные чуть по-разному — парсим максимально устойчиво
-    const result = data?.result ?? data;
-    const page = result?.postings ?? result?.result?.postings ?? [];
-
-    if (offset === 0) {
-      console.log("🧩 FBO list page0 keys:", JSON.stringify(Object.keys(result || {})));
-      console.log("🧩 FBO list page0 count:", Array.isArray(page) ? page.length : -1, "status=", status || "(all)");
-    }
-
-    if (Array.isArray(page)) postings.push(...page);
-
-    const hasNext = Boolean(result?.has_next ?? result?.result?.has_next);
-    if (!hasNext) break;
-
-    offset += limit;
-    if (offset > 200000) break;
-  }
-
-  return postings;
+  return { postings: Array.isArray(postings) ? postings : [], hasNext, rawKeys: Object.keys(result || {}) };
 }
 
-async function countFboOrdersArrivedToday({ clientId, apiKey, dateStr }) {
+async function listFboWithWorkingDateFormat({ clientId, apiKey, dateStr, status }) {
+  const ranges = makeRanges(dateStr);
+
+  for (const r of ranges) {
+    const one = await fboListOnce({ clientId, apiKey, since: r.since, to: r.to, status });
+
+    console.log(
+      `🧪 FBO try ${r.label} status=${status || "(all)"} keys=${JSON.stringify(one.rawKeys)} count=${one.postings.length} since=${r.since} to=${r.to}`
+    );
+
+    if (one.postings.length > 0) {
+      // если первая страница есть — дальше страницы по тому же формату
+      const postings = [...one.postings];
+      let offset = 1000;
+
+      while (one.hasNext) {
+        // следующую страницу дергаем тем же форматом
+        const body = {
+          dir: "asc",
+          filter: { since: r.since, to: r.to },
+          limit: 1000,
+          offset,
+          with: { financial_data: false },
+        };
+        if (status) body.status = status;
+
+        const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
+        const result = data?.result ?? data;
+        const page = result?.postings ?? result?.result?.postings ?? [];
+        const hasNext = Boolean(result?.has_next ?? result?.result?.has_next);
+
+        if (Array.isArray(page)) postings.push(...page);
+        if (!hasNext) break;
+        offset += 1000;
+        if (offset > 200000) break;
+      }
+
+      return postings;
+    }
+  }
+
+  return []; // ни один формат не дал postings
+}
+
+async function countFboArrivedToday({ clientId, apiKey, dateStr }) {
+  // Берём “обычные” и “cancelled” и объединяем. Отмены НЕ вычитаем.
   const [base, cancelled] = await Promise.all([
-    listFboPostingsWide({ clientId, apiKey, dateStr }),
-    listFboPostingsWide({ clientId, apiKey, dateStr, status: "cancelled" }),
+    listFboWithWorkingDateFormat({ clientId, apiKey, dateStr }),
+    listFboWithWorkingDateFormat({ clientId, apiKey, dateStr, status: "cancelled" }),
   ]);
 
   const uniq = new Map();
@@ -243,11 +297,9 @@ async function countFboOrdersArrivedToday({ clientId, apiKey, dateStr }) {
 
   let totalToday = 0;
   for (const p of uniq.values()) {
-    const iso = pickBestArrivedISO(p);
-    if (isSameDayInTZ(iso, dateStr)) totalToday += 1;
+    if (isSameDayInTZ(pickArrivedISO(p), dateStr)) totalToday += 1;
   }
 
-  // samples
   const samples = [];
   for (const p of uniq.values()) {
     if (samples.length >= 3) break;
@@ -296,7 +348,7 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
   const clientId = creds.clientId;
 
   try {
-    const total = await countFboOrdersArrivedToday({ clientId, apiKey, dateStr });
+    const total = await countFboArrivedToday({ clientId, apiKey, dateStr });
     const text = widgetText({ dateStr, total });
 
     if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
