@@ -11,9 +11,15 @@
       --accent:#4DA3FF; --danger:#FF5A6A; --line: rgba(255,255,255,.08);
     }
     *{box-sizing:border-box;}
-    body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
+
+    html, body { height: 100%; overflow: hidden; }
+    body{
+      margin:0;background:var(--bg);color:var(--text);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    }
+
     .app{
-      min-height:100dvh;
+      min-height:100vh;
       padding:calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
                calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
       display:flex;flex-direction:column;gap:14px;
@@ -54,7 +60,7 @@
   </style>
 </head>
 <body>
-  <div class="app">
+  <div class="app" id="appRoot">
     <div class="top">
       <div>
         <div class="title">Моя аналитика</div>
@@ -100,8 +106,22 @@
   </div>
 
   <script>
+    // Показать реальную ошибку вместо "белого экрана"
+    window.addEventListener("error", (e) => {
+      const msg = (e && e.message) ? e.message : "JS error";
+      document.body.innerHTML = '<pre style="white-space:pre-wrap;padding:16px;color:#fff;background:#000;">' + msg + '</pre>';
+    });
+    window.addEventListener("unhandledrejection", (e) => {
+      const msg = (e && e.reason) ? String(e.reason) : "Unhandled promise rejection";
+      document.body.innerHTML = '<pre style="white-space:pre-wrap;padding:16px;color:#fff;background:#000;">' + msg + '</pre>';
+    });
+
     const tg = window.Telegram?.WebApp;
-    if (tg) { tg.ready(); tg.expand(); }
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      tg.disableVerticalSwipes?.();
+    }
 
     const $ = (id) => document.getElementById(id);
     const statusEl = $("status");
@@ -138,11 +158,13 @@
     async function load(){
       hideHint();
 
+      // ВАЖНО: при открытии по кнопке «Открыть» initData иногда пустой.
+      // НЕ блокируем загрузку — просто показываем подсказку и даём «Обновить».
       const initData = tg?.initData || "";
       if (!initData) {
-        setStatus("открой в Telegram", true);
-        showHint("Открой это окно внутри Telegram (через кнопку «Моя аналитика» у бота).");
-        return;
+        setStatus("ожидание Telegram…", true);
+        showHint("Если данные не загрузились — нажми «Обновить». Telegram иногда передаёт данные с задержкой.");
+        // НЕ return
       }
 
       try{
@@ -151,11 +173,16 @@
         setStatus("обновление…");
 
         const r = await fetch("/api/dashboard/today", {
-          headers: { "X-Tg-Init-Data": initData }
+          headers: initData ? { "X-Tg-Init-Data": initData } : {}
         });
         const data = await r.json().catch(() => ({}));
 
         if (!r.ok || data.error) {
+          if (r.status === 401 || data.error === "unauthorized") {
+            setStatus("открой в Telegram", true);
+            showHint("Открой это окно внутри Telegram (через кнопку «Моя аналитика» у бота) и нажми «Обновить».");
+            return;
+          }
           if (data.error === "no_creds") {
             setStatus("нужны ключи", true);
             showHint("Ключи вводятся в боте: /start → Client ID → Api-Key. Потом вернись и нажми «Обновить».");
@@ -182,8 +209,16 @@
       }
     }
 
+    // авто-повтор 1 раз (на случай задержки initData при “Открыть”)
+    async function boot(){
+      await load();
+      if (tg && !(tg.initData || "")) {
+        setTimeout(() => load(), 350);
+      }
+    }
+
     refreshBtn.addEventListener("click", load);
-    load();
+    boot();
   </script>
 </body>
 </html>
