@@ -13,15 +13,13 @@ app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 
 const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
-
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
 
-// Считаем “сегодня” по UTC, как в примере из официальной доки
-const SALES_TZ = process.env.SALES_TZ || "UTC";
+// “СЕГОДНЯ” считаем по этой TZ (в ЛК обычно Москва)
+const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
-
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 const pending = new Map();
 
@@ -63,7 +61,6 @@ function encrypt(text) {
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const enc = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
-
   return { mode: "aes-256-gcm", iv: iv.toString("base64"), tag: tag.toString("base64"), value: enc.toString("base64") };
 }
 function decrypt(obj) {
@@ -127,65 +124,90 @@ function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
 }
 
-// КАК В ДОКЕ: since/to в UTC + миллисекунды
-function sinceToUtcMs(dateStr) {
-  const from = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: "UTC" }).startOf("day");
-  const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: "UTC" }).endOf("day");
+// отправляем since/to в UTC (как в доке), но считаем “сегодня” по SALES_TZ
+function dayBoundsUtcFromLocal(dateStr) {
+  const fromLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
+  const toLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
   return {
-    since: from.toUTC().toISO({ suppressMilliseconds: false }), // ...000Z
-    to: to.toUTC().toISO({ suppressMilliseconds: false }),     // ...828Z
+    since: fromLocal.toUTC().toISO({ suppressMilliseconds: false }), // ...000Z
+    to: toLocal.toUTC().toISO({ suppressMilliseconds: false }),     // ...999Z
+    dateStrLocal: dateStr,
   };
 }
 
+function isSameDayLocal(iso, dateStr) {
+  if (!iso) return false;
+  const d = DateTime.fromISO(iso, { setZone: true }).setZone(SALES_TZ);
+  return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
+}
+
 // ---------------- Core: FBO count ----------------
-async function countFboOrdersForDay({ clientId, apiKey, dateStr }) {
-  const { since, to } = sinceToUtcMs(dateStr);
+function extractPostings(data) {
+  // два реальных формата ответа:
+  // A) { result: [ ... ] }
+  // B) { result: { postings: [ ... ], has_next: ... } }
+  if (Array.isArray(data?.result)) return { postings: data.result, hasNext: false };
+  const r = data?.result || {};
+  if (Array.isArray(r?.postings)) return { postings: r.postings, hasNext: Boolean(r.has_next) };
+  // запасной вариант, если вдруг postings лежит в другом месте
+  if (Array.isArray(data?.postings)) return { postings: data.postings, hasNext: Boolean(data?.has_next) };
+  return { postings: [], hasNext: false };
+}
+
+async function fetchFboAllForDay({ clientId, apiKey, dateStr }) {
+  const { since, to } = dayBoundsUtcFromLocal(dateStr);
 
   let offset = 0;
   const limit = 1000;
-  let total = 0;
+  const all = [];
 
   while (true) {
+    // 1:1 как в доке, только limit/offset для всех страниц
     const body = {
       dir: "ASC",
-      filter: {
-        since,
-        to,
-        status: "", // ВАЖНО: как в доке — внутри filter и присутствует
-      },
+      filter: { since, to, status: "" },
       limit,
       offset,
       translit: true,
-      with: {
-        analytics_data: true,
-        financial_data: true,
-        legal_info: false,
-      },
+      with: { analytics_data: true, financial_data: true, legal_info: false },
     };
 
-    // Для отчётности в лог — покажем первый реальный запрос
     if (offset === 0) console.log("➡️ FBO request:", JSON.stringify(body));
 
     const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
+    const { postings, hasNext } = extractPostings(data);
 
-    const result = data?.result || {};
-    const postings = result?.postings || [];
-    total += postings.length;
+    all.push(...postings);
 
-    const hasNext = Boolean(result?.has_next);
     if (!hasNext) break;
-
     offset += limit;
     if (offset > 200000) break;
   }
 
-  return { total, since, to };
+  console.log(`📦 FBO received total postings=${all.length} (before local filter by created_at)`);
+  return all;
+}
+
+async function countArrivedTodayByCreatedAt({ clientId, apiKey, dateStr }) {
+  const postings = await fetchFboAllForDay({ clientId, apiKey, dateStr });
+
+  // считаем “поступило сегодня” по created_at (НЕ вычитаем cancelled)
+  let total = 0;
+  const samples = [];
+  for (const p of postings) {
+    if (isSameDayLocal(p?.created_at, dateStr)) total += 1;
+    if (samples.length < 3) samples.push({ posting_number: p?.posting_number, status: p?.status, created_at: p?.created_at });
+  }
+  console.log("🔎 Samples:", JSON.stringify(samples, null, 2));
+  return total;
 }
 
 // ---------------- widget ----------------
 function widgetText(c) {
   return [
-    `📅 <b>FBO заказы за сегодня</b>: <b>${c.dateStr}</b> (UTC)`,
+    `📅 <b>FBO: заказы поступили сегодня</b>: <b>${c.dateStr}</b> (${SALES_TZ})`,
+    `ℹ️ Отмены <b>НЕ вычитаем</b>`,
+    ``,
     `✅ Кол-во заказов: <b>${c.total}</b>`,
   ].join("\n");
 }
@@ -205,10 +227,10 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
   const clientId = creds.clientId;
 
   try {
-    const r = await countFboOrdersForDay({ clientId, apiKey, dateStr });
-    console.log(`✅ FBO count=${r.total} since=${r.since} to=${r.to}`);
+    const total = await countArrivedTodayByCreatedAt({ clientId, apiKey, dateStr });
+    console.log(`✅ Final count today=${total} (${dateStr} ${SALES_TZ})`);
 
-    const text = widgetText({ dateStr, total: r.total });
+    const text = widgetText({ dateStr, total });
     if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
     else await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
   } catch (e) {
