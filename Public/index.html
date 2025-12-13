@@ -9,10 +9,12 @@
     :root{
       --bg:#0B0F14; --card:#121923; --text:#EAF0FF; --muted:#93A4C7;
       --accent:#4DA3FF; --danger:#FF5A6A; --line: rgba(255,255,255,.08);
+
+      /* ✅ ВЕРХНИЙ "ФУТЕР" (опустить контент ниже шапки Telegram) */
+      --top-gap: 44px;            /* если мало/много — меняй только это */
     }
     *{box-sizing:border-box;}
 
-    /* ✅ FULLSCREEN: фиксируем высоту и убираем скролл body */
     html, body { height: 100%; overflow: hidden; }
     body{
       margin:0;background:var(--bg);color:var(--text);
@@ -20,12 +22,16 @@
     }
 
     .app{
-      /* ✅ FULLSCREEN: высота из Telegram viewport переменных */
       height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100dvh));
       min-height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100dvh));
 
-      padding:calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
-              calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+      /* ✅ добавили top-gap */
+      padding:
+        calc(var(--top-gap) + env(safe-area-inset-top) + 16px)
+        calc(16px + env(safe-area-inset-right))
+        calc(16px + env(safe-area-inset-bottom))
+        calc(16px + env(safe-area-inset-left));
+
       display:flex;flex-direction:column;gap:14px;
     }
 
@@ -153,7 +159,6 @@
   <script>
     const tg = window.Telegram?.WebApp;
 
-    /* ✅ FULLSCREEN: “как запомнить” */
     function applyFullscreen(){
       if (!tg) return;
       tg.ready();
@@ -195,7 +200,7 @@
       clientIdEl.value = localStorage.getItem("ozon_clientId") || "";
       apiKeyEl.value = localStorage.getItem("ozon_apiKey") || "";
       modalBg.style.display = "flex";
-      applyFullscreen(); // ✅ чтобы после модалки не “схлопнулось”
+      applyFullscreen();
     }
     function closeModal(){ modalBg.style.display = "none"; }
 
