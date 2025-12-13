@@ -45,11 +45,29 @@
     .btn:active{transform:scale(.99);}
     .spin{animation:spin .8s linear infinite;}
     @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-    .hint{
-      font-size:12px;color:var(--muted);
-      border:1px solid var(--line);background:rgba(255,255,255,.04);
-      border-radius:14px;padding:10px 12px;display:none;
+
+    /* modal */
+    .modal-backdrop{
+      position:fixed;inset:0;background:rgba(0,0,0,.55);
+      display:none;align-items:center;justify-content:center;padding:16px;
     }
+    .modal{
+      width:min(520px,100%);
+      background:var(--card);border:1px solid var(--line);
+      border-radius:18px;box-shadow:0 18px 60px rgba(0,0,0,.5);
+      padding:16px;display:flex;flex-direction:column;gap:12px;
+    }
+    .modal h3{margin:0;font-size:16px;}
+    .field{display:flex;flex-direction:column;gap:6px;}
+    .field label{font-size:12px;color:var(--muted);}
+    .field input{
+      width:100%;padding:12px 12px;border-radius:12px;
+      border:1px solid var(--line);background:rgba(255,255,255,.04);
+      color:var(--text);outline:none;
+    }
+    .row{display:flex;gap:10px;flex-wrap:wrap;}
+    .row .btn{flex:1;}
+    .err{font-size:12px;color:var(--danger);display:none;}
     @media (max-width:380px){.value{font-size:24px}.card{min-height:96px}}
   </style>
 </head>
@@ -57,13 +75,11 @@
   <div class="app">
     <div class="top">
       <div>
-        <div class="title">Моя аналитика</div>
+        <div class="title" id="title">Моя аналитика</div>
         <div class="sub" id="subtitle">FBO · Сегодня · Europe/Moscow</div>
       </div>
       <div class="badge" id="status">готово</div>
     </div>
-
-    <div class="hint" id="hint"></div>
 
     <div class="grid">
       <div class="card">
@@ -86,8 +102,8 @@
 
     <div class="footer">
       <div id="updatedAt">Последнее обновление: —</div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;">
-        <button class="btn secondary" id="helpBtn">🔑 Ключи</button>
+      <div class="row" style="justify-content:flex-end;">
+        <button class="btn secondary" id="keysBtn">🔑 Ключи</button>
         <button class="btn" id="refreshBtn">
           <svg id="refreshIcon" width="18" height="18" viewBox="0 0 24 24" fill="none">
             <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -99,16 +115,45 @@
     </div>
   </div>
 
+  <!-- modal -->
+  <div class="modal-backdrop" id="modalBg">
+    <div class="modal">
+      <h3>Ключи Ozon Seller</h3>
+
+      <div class="field">
+        <label>Client ID</label>
+        <input id="clientId" placeholder="например 2396143" />
+      </div>
+
+      <div class="field">
+        <label>Api-Key</label>
+        <input id="apiKey" placeholder="например 6157f0ba-..." />
+      </div>
+
+      <div class="err" id="modalErr">Ошибка</div>
+
+      <div class="row">
+        <button class="btn secondary" id="cancelBtn">Закрыть</button>
+        <button class="btn" id="saveBtn">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const tg = window.Telegram?.WebApp;
     if (tg) { tg.ready(); tg.expand(); }
 
     const $ = (id) => document.getElementById(id);
+
     const statusEl = $("status");
     const updatedAtEl = $("updatedAt");
     const refreshBtn = $("refreshBtn");
     const refreshIcon = $("refreshIcon");
-    const hintEl = $("hint");
+
+    const modalBg = $("modalBg");
+    const clientIdEl = $("clientId");
+    const apiKeyEl = $("apiKey");
+    const modalErr = $("modalErr");
 
     function setStatus(text, danger=false){
       statusEl.textContent = text;
@@ -123,25 +168,40 @@
       const rub = (Number(cents) / 100);
       return new Intl.NumberFormat("ru-RU", {minimumFractionDigits:2, maximumFractionDigits:2}).format(rub);
     }
-    function showHint(text){
-      hintEl.textContent = text;
-      hintEl.style.display = "block";
-    }
-    function hideHint(){
-      hintEl.style.display = "none";
-    }
 
-    $("helpBtn").addEventListener("click", () => {
-      showHint("Ключи вводятся в боте: напиши /start и отправь Client ID и Api-Key. Потом вернись сюда и нажми «Обновить».");
+    function openModal(){
+      modalErr.style.display = "none";
+      clientIdEl.value = localStorage.getItem("ozon_clientId") || "";
+      apiKeyEl.value = localStorage.getItem("ozon_apiKey") || "";
+      modalBg.style.display = "flex";
+    }
+    function closeModal(){ modalBg.style.display = "none"; }
+
+    $("keysBtn").addEventListener("click", openModal);
+    $("cancelBtn").addEventListener("click", closeModal);
+    modalBg.addEventListener("click", (e) => { if (e.target === modalBg) closeModal(); });
+
+    $("saveBtn").addEventListener("click", async () => {
+      const clientId = clientIdEl.value.trim();
+      const apiKey = apiKeyEl.value.trim();
+      if (!clientId || !apiKey) {
+        modalErr.textContent = "Заполни Client ID и Api-Key";
+        modalErr.style.display = "block";
+        return;
+      }
+      localStorage.setItem("ozon_clientId", clientId);
+      localStorage.setItem("ozon_apiKey", apiKey);
+      closeModal();
+      await load();
     });
 
     async function load(){
-      hideHint();
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
 
-      const initData = tg?.initData || "";
-      if (!initData) {
-        setStatus("открой в Telegram", true);
-        showHint("Открой это окно внутри Telegram (через кнопку «Моя аналитика» у бота).");
+      if (!clientId || !apiKey){
+        setStatus("нужны ключи", true);
+        openModal();
         return;
       }
 
@@ -150,20 +210,12 @@
         refreshIcon.classList.add("spin");
         setStatus("обновление…");
 
-        const r = await fetch("/api/dashboard/today", {
-          headers: { "X-Tg-Init-Data": initData }
-        });
-        const data = await r.json().catch(() => ({}));
+        const url = `/api/dashboard/today?clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}`;
+        const r = await fetch(url);
+        const data = await r.json();
+        if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
 
-        if (!r.ok || data.error) {
-          if (data.error === "no_creds") {
-            setStatus("нужны ключи", true);
-            showHint("Ключи вводятся в боте: /start → Client ID → Api-Key. Потом вернись и нажми «Обновить».");
-            return;
-          }
-          throw new Error(data.error || ("HTTP " + r.status));
-        }
-
+        // title/subtitle если сервер прислал
         if (data.title) $("subtitle").textContent = data.title;
 
         $("orders").textContent = data.orders ?? data.ordersCount ?? "—";
@@ -174,8 +226,7 @@
         setLastUpdated(data.updated_at);
         setStatus("актуально");
       } catch(e){
-        setStatus("ошибка", true);
-        showHint("Ошибка получения данных. Нажми «Обновить» ещё раз или проверь ключи в боте.");
+        setStatus("ошибка Ozon API", true);
       } finally{
         refreshIcon.classList.remove("spin");
         refreshBtn.disabled = false;
