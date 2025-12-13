@@ -125,12 +125,12 @@
       </div>
 
 <div class="card">
-  <div class="label">Выкуплено сегодня <span class="badge">шт</span></div>
+  <div class="label">Выкупы сегодня <span class="badge">₽</span></div>
   <div class="value" id="buyoutsQty">—</div>
   <div class="mini-list" id="buyoutsList"></div>
 </div>
 <div class="card">
-  <div class="label">Возвраты сегодня <span class="badge danger">шт</span></div>
+  <div class="label">Возвраты сегодня <span class="badge danger">₽</span></div>
   <div class="value" id="returnsQty">—</div>
   <div class="mini-list" id="returnsList"></div>
 </div>
@@ -275,8 +275,8 @@
         $("cancelsSum").textContent = fmtMoneyFromCents(data.cancels_sum ?? data.cancelsAmount);
 
         // новые виджеты
-        $("buyoutsQty").textContent = data.buyouts_total_qty ?? "—";
-        $("returnsQty").textContent = data.returns_total_qty ?? "—";
+        $("buyoutsQty").textContent = data.buyouts_sum_text ?? (data.buyouts_sum_cents!=null?fmtMoneyFromCents(data.buyouts_sum_cents):"—");
+        $("returnsQty").textContent = data.returns_sum_text ?? (data.returns_sum_cents!=null?fmtMoneyFromCents(data.returns_sum_cents):"—");
 
         function renderTop5(list){
           if (!Array.isArray(list) || list.length === 0) return "";
@@ -286,8 +286,8 @@
             return `<div class="row"><span>${id}</span><b>${qty} шт</b></div>`;
           }).join("");
         }
-        $("buyoutsList").innerHTML = renderTop5(data.buyouts_list);
-        $("returnsList").innerHTML = renderTop5(data.returns_list);
+        $("buyoutsList").innerHTML = "";
+        $("returnsList").innerHTML = "";
 
         // баланс (если смогли получить)
         if (data.balance_text && data.balance_text !== "—") $("balance").textContent = data.balance_text;
@@ -295,25 +295,6 @@
         else $("balance").textContent = "—";
 
 
-// Выкупы / Возвраты (по offer_id)
-const topN = (arr, n=5) => Array.isArray(arr) ? arr.slice(0, n) : [];
-const renderList = (el, arr) => {
-  if (!el) return;
-  const rows = topN(arr, 5);
-  if (!rows.length) { el.textContent = ""; return; }
-  el.innerHTML = rows.map(x => (
-    `<div class="row"><span class="k">${String(x.offer_id)}</span><span>${Number(x.qty||0)}</span></div>`
-  )).join("");
-};
-
-const bq = data.buyouts_total_qty ?? 0;
-const rq = data.returns_total_qty ?? 0;
-
-$("buyoutsQty").textContent = String(bq);
-$("returnsQty").textContent = String(rq);
-
-renderList($("buyoutsList"), data.buyouts_list);
-renderList($("returnsList"), data.returns_list);
 
         setLastUpdated(data.updated_at);
         setStatus("актуально");
