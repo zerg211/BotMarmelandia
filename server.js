@@ -15,15 +15,14 @@ const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
-
-// “сегодня” считаем по этой TZ (если ты в РФ — оставь Moscow)
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
-// store
+// Ширина окна, чтобы Ozon точно отдавал postings (иначе часто 0)
+const LOOKBACK_DAYS = Number(process.env.LOOKBACK_DAYS || 30);
+
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 
-// encryption (optional)
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 const pending = new Map();
 
@@ -169,37 +168,52 @@ function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
 }
 
-// Для FBO list фильтр работает через since/to (UTC ISO)
-function sinceToUtcISO(dateStr) {
-  const fromLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
-  const toLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
-  return {
-    since: fromLocal.toUTC().toISO({ suppressMilliseconds: true }),
-    to: toLocal.toUTC().toISO({ suppressMilliseconds: true }),
-  };
+function isoWithMillis(dt) {
+  // Ozon иногда капризничает без миллисекунд
+  return dt.toUTC().toISO({ suppressMilliseconds: false });
 }
 
-// ---------------- Core: count FBO orders for day ----------------
-async function countFboOrdersForDay({ clientId, apiKey, dateStr }) {
-  const { since, to } = sinceToUtcISO(dateStr);
+function wideSinceToUTC(dateStr) {
+  const dayStart = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
+  const dayEnd = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
+
+  // расширяем окно назад, чтобы точно “зацепить” postings
+  const since = isoWithMillis(dayStart.minus({ days: LOOKBACK_DAYS }));
+  const to = isoWithMillis(dayEnd.plus({ days: 1 })); // +1 день на всякий случай
+
+  return { since, to };
+}
+
+function isSameDayInTZ(iso, dateStr) {
+  if (!iso) return false;
+  const d = DateTime.fromISO(iso, { setZone: true }).setZone(SALES_TZ);
+  return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
+}
+
+function pickBestCreatedISO(p) {
+  // главное — created_at, иначе fallback
+  return p?.created_at || p?.in_process_at || p?.shipment_date || null;
+}
+
+// ---------------- Core: load FBO postings ----------------
+async function listFboPostingsWide({ clientId, apiKey, dateStr, status }) {
+  const { since, to } = wideSinceToUTC(dateStr);
 
   let offset = 0;
   const limit = 1000;
-  let total = 0;
+  const postings = [];
 
   while (true) {
-    // Важно: для /v2/posting/fbo/list традиционный фильтр — since/to (+status при желании).
-    // Чтобы не отрезать статусы, оставляем status пустым.
+    const filter = { since, to };
+    // статус добавляем только если явно указан
+    if (status) filter.status = status;
+
     const data = await ozonPost("/v2/posting/fbo/list", {
       clientId,
       apiKey,
       body: {
         dir: "asc",
-        filter: {
-          since,
-          to,
-          status: "", // не ограничиваем статус
-        },
+        filter,
         limit,
         offset,
         with: { financial_data: false },
@@ -207,21 +221,65 @@ async function countFboOrdersForDay({ clientId, apiKey, dateStr }) {
     });
 
     const result = data?.result || {};
-    const postings = result?.postings || [];
-    total += postings.length;
+    const page = result?.postings || [];
+    postings.push(...page);
 
     if (!result?.has_next) break;
     offset += limit;
     if (offset > 200000) break;
   }
 
-  return total;
+  return postings;
+}
+
+async function countFboOrdersArrivedToday({ clientId, apiKey, dateStr }) {
+  // 1) обычные статусы
+  const base = await listFboPostingsWide({ clientId, apiKey, dateStr });
+
+  // 2) пробуем отдельно cancelled (если метод принимает)
+  let cancelled = [];
+  try {
+    cancelled = await listFboPostingsWide({ clientId, apiKey, dateStr, status: "cancelled" });
+  } catch (e) {
+    // если Ozon не принимает status=cancelled — просто игнорируем
+    console.warn("⚠️ cancelled fetch skipped:", String(e.message || e));
+  }
+
+  // Объединяем по posting_number
+  const map = new Map();
+  for (const p of [...base, ...cancelled]) {
+    if (p?.posting_number) map.set(p.posting_number, p);
+  }
+
+  // Фильтруем “сегодня” по created_at (если есть), иначе fallback
+  let totalToday = 0;
+  for (const p of map.values()) {
+    const iso = pickBestCreatedISO(p);
+    if (isSameDayInTZ(iso, dateStr)) totalToday += 1;
+  }
+
+  // Debug в логи: покажем 3 примера, чтобы понять какими датами Ozon реально отдаёт
+  const samples = [];
+  for (const p of map.values()) {
+    if (samples.length >= 3) break;
+    samples.push({
+      posting_number: p.posting_number,
+      status: p.status,
+      created_at: p.created_at,
+      in_process_at: p.in_process_at,
+      shipment_date: p.shipment_date,
+    });
+  }
+  console.log("🔎 FBO samples:", JSON.stringify(samples, null, 2));
+
+  return totalToday;
 }
 
 // ---------------- widget ----------------
 function widgetText(c) {
   return [
-    `📅 <b>FBO заказы поступили сегодня</b>: <b>${c.dateStr}</b> (${SALES_TZ})`,
+    `📅 <b>FBO: поступившие заказы сегодня</b>: <b>${c.dateStr}</b> (${SALES_TZ})`,
+    `ℹ️ Отмены <b>не вычитаем</b>`,
     ``,
     `✅ Кол-во заказов: <b>${c.total}</b>`,
   ].join("\n");
@@ -249,7 +307,7 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
   const clientId = creds.clientId;
 
   try {
-    const total = await countFboOrdersForDay({ clientId, apiKey, dateStr });
+    const total = await countFboOrdersArrivedToday({ clientId, apiKey, dateStr });
     const text = widgetText({ dateStr, total });
 
     if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
