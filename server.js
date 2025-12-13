@@ -7,7 +7,6 @@ import { DateTime } from "luxon";
 const app = express();
 app.use(express.json());
 
-// Health
 app.get("/", (req, res) => res.status(200).send("OK"));
 app.get("/index.html", (req, res) => res.status(200).send("OK"));
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
@@ -18,19 +17,15 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
-// store
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 
-// encryption (optional)
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 
-// dialog state
 const pending = new Map();
 
-// caches
-const postingTypeCache = new Map(); // posting_number -> 'fbs'|'fbo'
-const postingAmountCache = new Map(); // posting_number -> { amount, type, ts }
+const postingTypeCache = new Map();
+const postingAmountCache = new Map();
 const POSTING_CACHE_TTL_MS = 60_000;
 
 // ---------------- store helpers ----------------
@@ -138,13 +133,9 @@ async function tgEditMessage(chatId, messageId, text, opts = {}) {
   });
 
   const data = await resp.json().catch(() => null);
-
-  // ✅ Игнорируем “message is not modified” — это не ошибка для нас
   if (!data?.ok) {
     const descr = String(data?.description || "");
-    if (!descr.includes("message is not modified")) {
-      console.error("❌ editMessageText failed:", data);
-    }
+    if (!descr.includes("message is not modified")) console.error("❌ editMessageText failed:", data);
   }
   return data;
 }
@@ -186,16 +177,18 @@ function rangeForDate(dateStr) {
   const from = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
   const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
 
-  // ВАЖНО: без миллисекунд
-  const sinceISO = from.toUTC().toISO({ suppressMilliseconds: true });
-  const toISO = to.toUTC().toISO({ suppressMilliseconds: true });
+  // без миллисекунд
+  const fromUtc = from.toUTC().toISO({ suppressMilliseconds: true });
+  const toUtc = to.toUTC().toISO({ suppressMilliseconds: true });
 
   return {
     dateStr,
-    sinceISO,
-    toISO,
-    fromUtcIso: sinceISO,
-    toUtcIso: toISO,
+    sinceISO: fromUtc,
+    toISO: toUtc,
+    cutoffFrom: fromUtc,
+    cutoffTo: toUtc,
+    fromUtcIso: fromUtc,
+    toUtcIso: toUtc,
   };
 }
 
@@ -223,8 +216,7 @@ async function getPostingAmountAndType({ clientId, apiKey, postingNumber }) {
       apiKey,
       body: { posting_number: postingNumber, with: { financial_data: true } },
     });
-    const fin = data?.result?.financial_data;
-    const amount = calcOrderAmountFromPostingFinancial(fin);
+    const amount = calcOrderAmountFromPostingFinancial(data?.result?.financial_data);
     postingTypeCache.set(postingNumber, "fbs");
     return { amount, type: "fbs" };
   };
@@ -235,8 +227,7 @@ async function getPostingAmountAndType({ clientId, apiKey, postingNumber }) {
       apiKey,
       body: { posting_number: postingNumber, with: { financial_data: true } },
     });
-    const fin = data?.result?.financial_data;
-    const amount = calcOrderAmountFromPostingFinancial(fin);
+    const amount = calcOrderAmountFromPostingFinancial(data?.result?.financial_data);
     postingTypeCache.set(postingNumber, "fbo");
     return { amount, type: "fbo" };
   };
@@ -273,8 +264,7 @@ async function mapLimit(items, limit, fn) {
   return res;
 }
 
-// ---------------- ORDERS: FBS (list + unfulfilled) ----------------
-// /v3/posting/fbs/list — список отправлений (вер.3) :contentReference[oaicite:1]{index=1}
+// -------- FBS orders: list + unfulfilled --------
 async function listFbsFromList({ clientId, apiKey, sinceISO, toISO }) {
   let offset = 0;
   const limit = 50;
@@ -294,19 +284,17 @@ async function listFbsFromList({ clientId, apiKey, sinceISO, toISO }) {
     });
 
     const result = data?.result || {};
-    const postings = result?.postings || [];
-    for (const p of postings) if (p?.posting_number) nums.push(p.posting_number);
+    for (const p of result?.postings || []) if (p?.posting_number) nums.push(p.posting_number);
 
     if (!result?.has_next) break;
     offset += limit;
     if (offset > 5000) break;
   }
-
   return nums;
 }
 
-// /v3/posting/fbs/unfulfilled/list — необработанные (новые) :contentReference[oaicite:2]{index=2}
-async function listFbsFromUnfulfilled({ clientId, apiKey, sinceISO, toISO }) {
+// ✅ FIX: unfulfilled/list uses cutoff_from/cutoff_to (NOT since/to). :contentReference[oaicite:2]{index=2}
+async function listFbsFromUnfulfilled({ clientId, apiKey, cutoffFrom, cutoffTo }) {
   let offset = 0;
   const limit = 50;
   const nums = [];
@@ -317,16 +305,22 @@ async function listFbsFromUnfulfilled({ clientId, apiKey, sinceISO, toISO }) {
       apiKey,
       body: {
         dir: "asc",
-        filter: { since: sinceISO, to: toISO },
+        filter: {
+          cutoff_from: cutoffFrom,
+          cutoff_to: cutoffTo,
+          delivery_method_id: [],
+          provider_id: [],
+          warehouse_id: [],
+          // status НЕ задаём, чтобы не отрезать нужное
+        },
         limit,
         offset,
-        with: { financial_data: false },
+        with: { financial_data: false, barcodes: false, analytics_data: false },
       },
     });
 
     const result = data?.result || {};
-    const postings = result?.postings || [];
-    for (const p of postings) if (p?.posting_number) nums.push(p.posting_number);
+    for (const p of result?.postings || []) if (p?.posting_number) nums.push(p.posting_number);
 
     if (!result?.has_next) break;
     offset += limit;
@@ -336,16 +330,16 @@ async function listFbsFromUnfulfilled({ clientId, apiKey, sinceISO, toISO }) {
   return nums;
 }
 
-async function listFbsOrdersCreated({ clientId, apiKey, sinceISO, toISO }) {
+async function listFbsOrdersForDay({ clientId, apiKey, sinceISO, toISO, cutoffFrom, cutoffTo }) {
   const [a, b] = await Promise.all([
     listFbsFromList({ clientId, apiKey, sinceISO, toISO }),
-    listFbsFromUnfulfilled({ clientId, apiKey, sinceISO, toISO }),
+    listFbsFromUnfulfilled({ clientId, apiKey, cutoffFrom, cutoffTo }),
   ]);
   return [...new Set([...a, ...b])];
 }
 
-// ---------------- ORDERS: FBO ----------------
-async function listFboOrdersCreated({ clientId, apiKey, sinceISO, toISO }) {
+// -------- FBO orders: list --------
+async function listFboOrdersForDay({ clientId, apiKey, sinceISO, toISO }) {
   let offset = 0;
   const limit = 50;
   const nums = [];
@@ -364,8 +358,7 @@ async function listFboOrdersCreated({ clientId, apiKey, sinceISO, toISO }) {
     });
 
     const result = data?.result || {};
-    const postings = result?.postings || [];
-    for (const p of postings) if (p?.posting_number) nums.push(p.posting_number);
+    for (const p of result?.postings || []) if (p?.posting_number) nums.push(p.posting_number);
 
     if (!result?.has_next) break;
     offset += limit;
@@ -375,16 +368,10 @@ async function listFboOrdersCreated({ clientId, apiKey, sinceISO, toISO }) {
   return [...new Set(nums)];
 }
 
-// ---------------- CANCELS/RETURNS from finance ----------------
+// -------- cancels/returns for day (finance) --------
 function isCancelOrReturn(opType, opName) {
   const s = `${opType || ""} ${opName || ""}`.toLowerCase();
-  return (
-    s.includes("return") ||
-    s.includes("refund") ||
-    s.includes("cancel") ||
-    s.includes("возврат") ||
-    s.includes("отмен")
-  );
+  return s.includes("return") || s.includes("refund") || s.includes("cancel") || s.includes("возврат") || s.includes("отмен");
 }
 
 async function listCancelPostingNumbersFromFinance({ clientId, apiKey, dateStr }) {
@@ -422,7 +409,6 @@ async function listCancelPostingNumbersFromFinance({ clientId, apiKey, dateStr }
     const pageCount = Number(result?.page_count || 0);
     if (pageCount && page >= pageCount) break;
     if (!ops || ops.length < page_size) break;
-
     page += 1;
     if (page > 50) break;
   }
@@ -430,54 +416,40 @@ async function listCancelPostingNumbersFromFinance({ clientId, apiKey, dateStr }
   return [...nums];
 }
 
-// ---------------- Main daily calc ----------------
 async function getDailyOrdersAndCancels({ clientId, apiKey, dateStr }) {
-  const { sinceISO, toISO } = rangeForDate(dateStr);
+  const { sinceISO, toISO, cutoffFrom, cutoffTo } = rangeForDate(dateStr);
 
-  // 1) orders that “came in” today (FBS + FBO)
-  const [orderFbsNums, orderFboNums] = await Promise.all([
-    listFbsOrdersCreated({ clientId, apiKey, sinceISO, toISO }),
-    listFboOrdersCreated({ clientId, apiKey, sinceISO, toISO }),
+  const [fbsNums, fboNums] = await Promise.all([
+    listFbsOrdersForDay({ clientId, apiKey, sinceISO, toISO, cutoffFrom, cutoffTo }),
+    listFboOrdersForDay({ clientId, apiKey, sinceISO, toISO }),
   ]);
 
-  // amounts for orders (as in LK)
-  const orderFbsInfo = await mapLimit(orderFbsNums, 8, (num) =>
-    getPostingAmountAndType({ clientId, apiKey, postingNumber: num })
-  );
-  const orderFboInfo = await mapLimit(orderFboNums, 8, (num) =>
-    getPostingAmountAndType({ clientId, apiKey, postingNumber: num })
-  );
+  const fbsInfo = await mapLimit(fbsNums, 8, (n) => getPostingAmountAndType({ clientId, apiKey, postingNumber: n }));
+  const fboInfo = await mapLimit(fboNums, 8, (n) => getPostingAmountAndType({ clientId, apiKey, postingNumber: n }));
 
   let ordersSumFbs = 0;
-  for (const r of orderFbsInfo) if (r && typeof r.amount === "number") ordersSumFbs += r.amount;
+  for (const r of fbsInfo) if (r && typeof r.amount === "number") ordersSumFbs += r.amount;
 
   let ordersSumFbo = 0;
-  for (const r of orderFboInfo) if (r && typeof r.amount === "number") ordersSumFbo += r.amount;
+  for (const r of fboInfo) if (r && typeof r.amount === "number") ordersSumFbo += r.amount;
 
-  // 2) cancels/returns today (finance)
   const cancelNums = await listCancelPostingNumbersFromFinance({ clientId, apiKey, dateStr });
-  const cancelInfo = await mapLimit(cancelNums, 8, (num) =>
-    getPostingAmountAndType({ clientId, apiKey, postingNumber: num })
-  );
+  const cancelInfo = await mapLimit(cancelNums, 8, (n) => getPostingAmountAndType({ clientId, apiKey, postingNumber: n }));
 
-  let cancelsFbs = 0, cancelsFbo = 0, cancelsSumFbs = 0, cancelsSumFbo = 0;
+  let cancelsFbs = 0, cancelsFbo = 0, cancelsSum = 0;
   for (const r of cancelInfo) {
     if (!r || typeof r.amount !== "number") continue;
-    if (r.type === "fbs") { cancelsFbs += 1; cancelsSumFbs += r.amount; }
-    else if (r.type === "fbo") { cancelsFbo += 1; cancelsSumFbo += r.amount; }
+    cancelsSum += r.amount;
+    if (r.type === "fbs") cancelsFbs += 1;
+    else if (r.type === "fbo") cancelsFbo += 1;
   }
 
-  const ordersFbs = orderFbsNums.length;
-  const ordersFbo = orderFboNums.length;
-
+  const ordersFbs = fbsNums.length;
+  const ordersFbo = fboNums.length;
   const ordersTotal = ordersFbs + ordersFbo;
   const ordersSumTotal = ordersSumFbs + ordersSumFbo;
 
   const cancelsTotal = cancelsFbs + cancelsFbo;
-  const cancelsSumTotal = cancelsSumFbs + cancelsSumFbo;
-
-  const netOrders = ordersTotal - cancelsTotal;
-  const netSum = ordersSumTotal - cancelsSumTotal;
 
   return {
     dateStr,
@@ -488,13 +460,12 @@ async function getDailyOrdersAndCancels({ clientId, apiKey, dateStr }) {
     cancelsFbs,
     cancelsFbo,
     cancelsTotal,
-    cancelsSumTotal,
-    netOrders,
-    netSum,
+    cancelsSumTotal: cancelsSum,
+    netOrders: ordersTotal - cancelsTotal,
+    netSum: ordersSumTotal - cancelsSum,
   };
 }
 
-// ---------------- widget ----------------
 function moneyRub(x) {
   const v = Math.round(Number(x || 0) * 100) / 100;
   return v.toLocaleString("ru-RU");
@@ -544,15 +515,10 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
     const stats = await getDailyOrdersAndCancels({ clientId, apiKey, dateStr });
     const text = widgetText(stats);
 
-    if (editMessageId) {
-      await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
-    } else {
-      await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
-    }
+    if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
+    else await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
   } catch (e) {
-    const msg =
-      `❌ Не смог получить данные за <b>${dateStr}</b>.\n\n` +
-      `<code>${String(e.message || e)}</code>`;
+    const msg = `❌ Не смог получить данные за <b>${dateStr}</b>.\n\n<code>${String(e.message || e)}</code>`;
     if (editMessageId) await tgEditMessage(chatId, editMessageId, msg, widgetKeyboard(dateStr));
     else await tgSendMessage(chatId, msg, widgetKeyboard(dateStr));
   }
