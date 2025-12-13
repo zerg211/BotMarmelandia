@@ -12,12 +12,12 @@
       --accent:#4DA3FF; --danger:#FF5A6A; --line: rgba(255,255,255,.08);
     }
     *{box-sizing:border-box;}
-    html, body { height: 100%; margin:0; padding:0; overflow:hidden; background:var(--bg); color:var(--text); }
+    html, body { height:100%; margin:0; padding:0; overflow:hidden; background:var(--bg); color:var(--text); }
 
-    /* ВАЖНО: Telegram WebApp даёт свои переменные высоты */
+    /* Telegram WebApp высота */
     .app{
-      height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100vh));
-      min-height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100vh));
+      height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100dvh));
+      min-height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100dvh));
       padding: calc(16px + env(safe-area-inset-top))
                calc(16px + env(safe-area-inset-right))
                calc(16px + env(safe-area-inset-bottom))
@@ -31,6 +31,7 @@
     .sub{font-size:12px;color:var(--muted);}
     .badge{font-size:11px;padding:4px 8px;border-radius:999px;background:rgba(77,163,255,.15);color:var(--accent);white-space:nowrap;}
     .badge.danger{background:rgba(255,90,106,.15);color:var(--danger);}
+
     .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}
     .card{
       background:var(--card);border-radius:16px;padding:14px;
@@ -40,6 +41,7 @@
     .label{font-size:12px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;gap:8px;}
     .value{font-size:28px;font-weight:900;letter-spacing:.2px;}
     .value.small{font-size:22px;}
+
     .footer{
       margin-top:auto;display:flex;justify-content:space-between;align-items:center;gap:12px;
       color:var(--muted);font-size:12px;
@@ -53,27 +55,22 @@
     .btn:active{transform:scale(.99);}
     .spin{animation:spin .8s linear infinite;}
     @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+
     .hint{
       font-size:12px;color:var(--muted);
       border:1px solid var(--line);background:rgba(255,255,255,.04);
       border-radius:14px;padding:10px 12px;display:none;
     }
-    @media (max-width:380px){.value{font-size:24px}.card{min-height:96px}}
 
-    /* Модалка */
-    .modal {
-      position: fixed; inset: 0;
-      display:flex; align-items:center; justify-content:center;
-      background: rgba(0,0,0,.55);
-      padding: 16px;
-    }
-    .modal[hidden] { display:none; }
+    /* Модалка ключей */
+    .modal { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.55); padding:16px; }
+    .modal[hidden]{ display:none; }
     .modalCard{
       width:min(520px, 100%);
-      background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 14px;
+      background:var(--card);
+      border:1px solid var(--line);
+      border-radius:18px;
+      padding:14px;
       box-shadow:0 12px 40px rgba(0,0,0,.4);
       display:flex; flex-direction:column; gap:10px;
     }
@@ -83,9 +80,9 @@
     .inp{
       width:100%; padding:10px 12px; border-radius:14px;
       border:1px solid var(--line);
-      background: rgba(255,255,255,.04);
-      color: var(--text);
-      outline: none;
+      background:rgba(255,255,255,.04);
+      color:var(--text);
+      outline:none;
       font-weight:700;
     }
     .row{display:flex;gap:10px;flex-wrap:wrap;}
@@ -101,7 +98,7 @@
         <div class="title">Моя аналитика</div>
         <div class="sub" id="subtitle">FBO · Сегодня · Europe/Moscow</div>
       </div>
-      <div class="badge" id="status">готово</div>
+      <div class="badge" id="status">загрузка…</div>
     </div>
 
     <div class="hint" id="hint"></div>
@@ -140,7 +137,6 @@
     </div>
   </div>
 
-  <!-- Модалка ключей (ввод в кабинете, НЕ в боте) -->
   <div class="modal" id="modal" hidden>
     <div class="modalCard" role="dialog" aria-modal="true">
       <div class="modalTop">
@@ -159,11 +155,229 @@
       </div>
 
       <div class="keysStatus">
-        Если после «Открыть» не грузит — вернись назад и открой через кнопку у бота, либо нажми «Обновить» несколько раз.
+        Если “Открыть” иногда пусто — нажми «Обновить». Это окно должно работать всегда.
       </div>
     </div>
   </div>
 
-  <script src="./app.js?v=6"></script>
+  <script>
+    // Показываем ошибку вместо "ничего не происходит"
+    window.addEventListener("error", (e) => {
+      const msg = (e && e.message) ? e.message : "JS error";
+      document.body.innerHTML = '<pre style="white-space:pre-wrap;padding:16px;color:#fff;background:#000;">' + msg + '</pre>';
+    });
+    window.addEventListener("unhandledrejection", (e) => {
+      const msg = (e && e.reason) ? String(e.reason) : "Unhandled promise rejection";
+      document.body.innerHTML = '<pre style="white-space:pre-wrap;padding:16px;color:#fff;background:#000;">' + msg + '</pre>';
+    });
+
+    const tg = window.Telegram?.WebApp;
+
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $("status");
+    const hintEl = $("hint");
+    const updatedAtEl = $("updatedAt");
+    const refreshBtn = $("refreshBtn");
+    const refreshIcon = $("refreshIcon");
+
+    const subtitleEl = $("subtitle");
+    const ordersEl = $("orders");
+    const ordersSumEl = $("ordersSum");
+    const cancelsEl = $("cancels");
+    const cancelsSumEl = $("cancelsSum");
+
+    // modal
+    const keysBtn = $("keysBtn");
+    const modal = $("modal");
+    const closeModal = $("closeModal");
+    const clientIdInp = $("clientId");
+    const apiKeyInp = $("apiKey");
+    const saveKeysBtn = $("saveKeys");
+    const deleteKeysBtn = $("deleteKeys");
+    const keysStatus = $("keysStatus");
+
+    function setStatus(text, danger=false){
+      statusEl.textContent = text;
+      statusEl.className = "badge" + (danger ? " danger" : "");
+    }
+    function showHint(text){
+      hintEl.textContent = text || "";
+      hintEl.style.display = text ? "block" : "none";
+    }
+    function setLastUpdated(iso){
+      const d = iso ? new Date(iso) : new Date();
+      updatedAtEl.textContent = "Последнее обновление: " + d.toLocaleString("ru-RU");
+    }
+    function fmtMoneyFromCents(cents){
+      if (cents === null || cents === undefined) return "—";
+      const rub = Number(cents) / 100;
+      return new Intl.NumberFormat("ru-RU", {minimumFractionDigits:2, maximumFractionDigits:2}).format(rub);
+    }
+
+    function applyFullscreen(){
+      if (!tg) return;
+      tg.ready();
+      tg.expand();
+      tg.disableVerticalSwipes?.();
+      tg.requestFullscreen?.();
+    }
+
+    // Важно: если JS не работает, статус не поменяется. Поэтому ставим явный маркер.
+    setStatus("js ok");
+
+    applyFullscreen();
+    try { tg?.onEvent?.("viewportChanged", applyFullscreen); } catch(e){}
+
+    function tgHeader(){
+      const initData = tg?.initData || "";
+      return initData ? { "X-Tg-Init-Data": initData, "x-telegram-init-data": initData } : {};
+    }
+
+    // Modal open/close
+    function openModal(){
+      modal.hidden = false;
+      keysStatus.textContent = "";
+      loadKeys().catch(()=>{});
+    }
+    function close(){
+      modal.hidden = true;
+    }
+
+    keysBtn.addEventListener("click", openModal);
+    closeModal.addEventListener("click", close);
+    modal.addEventListener("click", (e)=>{ if (e.target === modal) close(); });
+
+    saveKeysBtn.addEventListener("click", async ()=>{
+      keysStatus.textContent = "";
+      const clientId = clientIdInp.value.trim();
+      const apiKey = apiKeyInp.value.trim();
+      if (!clientId || !apiKey){
+        keysStatus.textContent = "Заполни Client ID и API Key";
+        return;
+      }
+      const r = await fetch("/api/keys", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", ...tgHeader() },
+        body: JSON.stringify({ clientId, apiKey })
+      });
+      const j = await r.json().catch(()=>({}));
+      if (!r.ok || !j.ok){
+        keysStatus.textContent = j.error || ("HTTP " + r.status);
+        return;
+      }
+      keysStatus.textContent = "Сохранено ✅";
+      close();
+      await loadDashboard();
+    });
+
+    deleteKeysBtn.addEventListener("click", async ()=>{
+      keysStatus.textContent = "";
+      const r = await fetch("/api/keys", { method:"DELETE", headers: tgHeader() });
+      const j = await r.json().catch(()=>({}));
+      if (!r.ok || !j.ok){
+        keysStatus.textContent = j.error || ("HTTP " + r.status);
+        return;
+      }
+      clientIdInp.value = "";
+      apiKeyInp.value = "";
+      keysStatus.textContent = "Удалено ✅";
+      await loadDashboard();
+    });
+
+    async function loadKeys(){
+      const r = await fetch("/api/keys", { headers: tgHeader() });
+      const j = await r.json().catch(()=>({}));
+
+      if (r.status === 401){
+        keysStatus.textContent = "Нет доступа (Telegram не передал initData). Открой через кнопку у бота или нажми «Обновить».";
+        return;
+      }
+      if (!r.ok){
+        keysStatus.textContent = "Ключи не найдены. Введи Client ID / API Key.";
+        return;
+      }
+
+      keysStatus.textContent = "Ключи найдены ✅";
+      clientIdInp.value = j.clientId || "";
+      apiKeyInp.value = "";
+    }
+
+    async function loadDashboard(){
+      showHint("");
+      setStatus("обновление…");
+
+      ordersEl.textContent = "—";
+      ordersSumEl.textContent = "—";
+      cancelsEl.textContent = "—";
+      cancelsSumEl.textContent = "—";
+
+      if (!tg?.initData){
+        showHint("Открыто без initData (часто при «Открыть»). Нажми «Обновить» или открой через кнопку у бота.");
+      }
+
+      const r = await fetch("/api/dashboard/today", { headers: tgHeader() });
+      const data = await r.json().catch(()=>({}));
+
+      if (r.status === 401){
+        setStatus("нет доступа", true);
+        showHint("Telegram не передал авторизацию. Открой WebApp через кнопку у бота.");
+        return;
+      }
+      if (!r.ok || data.error){
+        if (data.error === "no_creds" || data.error === "keys_not_found"){
+          setStatus("нужны ключи", true);
+          showHint("Нажми «Ключи» и введи Client ID / API Key.");
+          return;
+        }
+        setStatus("ошибка", true);
+        showHint(data.error || ("HTTP " + r.status));
+        return;
+      }
+
+      if (data.title) subtitleEl.textContent = data.title;
+
+      ordersEl.textContent = data.orders ?? data.ordersCount ?? "—";
+      ordersSumEl.textContent = fmtMoneyFromCents(data.orders_sum ?? data.ordersAmount);
+      cancelsEl.textContent = data.cancels ?? data.cancelsCount ?? "—";
+      cancelsSumEl.textContent = fmtMoneyFromCents(data.cancels_sum ?? data.cancelsAmount);
+
+      setLastUpdated(data.updated_at);
+      setStatus("актуально");
+    }
+
+    function setLoading(v){
+      refreshBtn.disabled = v;
+      if (v) refreshIcon.classList.add("spin");
+      else refreshIcon.classList.remove("spin");
+    }
+
+    // Автопопытки на старте (на мобиле tg.initData иногда появляется не сразу)
+    let tries = 0;
+    async function boot(){
+      setLoading(true);
+      try { applyFullscreen(); await loadDashboard(); }
+      finally { setLoading(false); }
+
+      if (!(tg?.initData || "") && tries < 6){
+        tries += 1;
+        setTimeout(boot, 350);
+      }
+    }
+
+    refreshBtn.addEventListener("click", ()=>{
+      tries = 0;
+      boot();
+    });
+
+    document.addEventListener("visibilitychange", ()=>{
+      if (!document.hidden){
+        tries = 0;
+        applyFullscreen();
+        boot();
+      }
+    });
+
+    boot();
+  </script>
 </body>
 </html>
