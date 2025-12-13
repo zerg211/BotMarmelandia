@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
 
-// “СЕГОДНЯ” считаем по этой TZ (в ЛК обычно Москва)
+// “Сегодня” считаем по МСК (или поменяй через ENV SALES_TZ)
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
 const DATA_DIR = process.env.DATA_DIR || ".";
@@ -124,14 +124,12 @@ function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
 }
 
-// отправляем since/to в UTC (как в доке), но считаем “сегодня” по SALES_TZ
 function dayBoundsUtcFromLocal(dateStr) {
   const fromLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
   const toLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
   return {
-    since: fromLocal.toUTC().toISO({ suppressMilliseconds: false }), // ...000Z
-    to: toLocal.toUTC().toISO({ suppressMilliseconds: false }),     // ...999Z
-    dateStrLocal: dateStr,
+    since: fromLocal.toUTC().toISO({ suppressMilliseconds: false }),
+    to: toLocal.toUTC().toISO({ suppressMilliseconds: false }),
   };
 }
 
@@ -141,15 +139,55 @@ function isSameDayLocal(iso, dateStr) {
   return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
 }
 
-// ---------------- Core: FBO count ----------------
+// ---------------- money helpers (без float) ----------------
+function toCents(val) {
+  if (val === null || val === undefined) return 0;
+  // val может быть number или string "5916.00"
+  const s = String(val).trim().replace(",", ".");
+  if (!s) return 0;
+  const parts = s.split(".");
+  const rub = parseInt(parts[0] || "0", 10) || 0;
+  const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10) || 0;
+  return rub * 100 + kop;
+}
+
+const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function centsToRubString(cents) {
+  return `${rubFmt.format(cents / 100)} ₽`;
+}
+
+function postingAmountCents(posting) {
+  // 1) Пытаемся считать по financial_data.products (там цена обычно числом)
+  const qtyBySku = new Map();
+  for (const pr of posting?.products || []) {
+    // в ответах Ozon sku часто совпадает с financial_data.product_id
+    qtyBySku.set(String(pr.sku), Number(pr.quantity || 0));
+  }
+
+  const finProds = posting?.financial_data?.products || [];
+  if (Array.isArray(finProds) && finProds.length > 0) {
+    let sum = 0;
+    for (const fp of finProds) {
+      const id = String(fp.product_id);
+      const qty = qtyBySku.get(id) ?? 1;
+      sum += toCents(fp.price) * qty;
+    }
+    if (sum > 0) return sum;
+  }
+
+  // 2) Fallback: products[].price
+  let sum2 = 0;
+  for (const pr of posting?.products || []) {
+    sum2 += toCents(pr.price) * Number(pr.quantity || 0);
+  }
+  return sum2;
+}
+
+// ---------------- Core: FBO fetch + stats ----------------
 function extractPostings(data) {
-  // два реальных формата ответа:
-  // A) { result: [ ... ] }
-  // B) { result: { postings: [ ... ], has_next: ... } }
   if (Array.isArray(data?.result)) return { postings: data.result, hasNext: false };
   const r = data?.result || {};
   if (Array.isArray(r?.postings)) return { postings: r.postings, hasNext: Boolean(r.has_next) };
-  // запасной вариант, если вдруг postings лежит в другом месте
   if (Array.isArray(data?.postings)) return { postings: data.postings, hasNext: Boolean(data?.has_next) };
   return { postings: [], hasNext: false };
 }
@@ -162,7 +200,6 @@ async function fetchFboAllForDay({ clientId, apiKey, dateStr }) {
   const all = [];
 
   while (true) {
-    // 1:1 как в доке, только limit/offset для всех страниц
     const body = {
       dir: "ASC",
       filter: { since, to, status: "" },
@@ -188,32 +225,68 @@ async function fetchFboAllForDay({ clientId, apiKey, dateStr }) {
   return all;
 }
 
-async function countArrivedTodayByCreatedAt({ clientId, apiKey, dateStr }) {
+async function calcTodayStats({ clientId, apiKey, dateStr }) {
   const postings = await fetchFboAllForDay({ clientId, apiKey, dateStr });
 
-  // считаем “поступило сегодня” по created_at (НЕ вычитаем cancelled)
-  let total = 0;
+  let ordersCount = 0;
+  let ordersAmount = 0;
+
+  let cancelsCount = 0;
+  let cancelsAmount = 0;
+
   const samples = [];
+
   for (const p of postings) {
-    if (isSameDayLocal(p?.created_at, dateStr)) total += 1;
-    if (samples.length < 3) samples.push({ posting_number: p?.posting_number, status: p?.status, created_at: p?.created_at });
+    if (!isSameDayLocal(p?.created_at, dateStr)) continue;
+
+    const amt = postingAmountCents(p);
+
+    ordersCount += 1;
+    ordersAmount += amt;
+
+    if (String(p?.status || "").toLowerCase() === "cancelled") {
+      cancelsCount += 1;
+      cancelsAmount += amt;
+    }
+
+    if (samples.length < 3) {
+      samples.push({ posting_number: p?.posting_number, status: p?.status, created_at: p?.created_at, amount: centsToRubString(amt) });
+    }
   }
-  console.log("🔎 Samples:", JSON.stringify(samples, null, 2));
-  return total;
+
+  console.log("🔎 Samples today:", JSON.stringify(samples, null, 2));
+
+  return {
+    dateStr,
+    ordersCount,
+    ordersAmount,
+    cancelsCount,
+    cancelsAmount,
+  };
 }
 
 // ---------------- widget ----------------
-function widgetText(c) {
+function widgetText(s) {
   return [
-    `📅 <b>FBO: заказы поступили сегодня</b>: <b>${c.dateStr}</b> (${SALES_TZ})`,
-    `ℹ️ Отмены <b>НЕ вычитаем</b>`,
+    `📅 <b>FBO: за сегодня</b> <b>${s.dateStr}</b> (${SALES_TZ})`,
     ``,
-    `✅ Кол-во заказов: <b>${c.total}</b>`,
+    `📦 Заказы: <b>${s.ordersCount}</b>`,
+    `💰 Сумма заказов: <b>${centsToRubString(s.ordersAmount)}</b>`,
+    ``,
+    `❌ Отмены: <b>${s.cancelsCount}</b>`,
+    `💸 Сумма отмен: <b>${centsToRubString(s.cancelsAmount)}</b>`,
   ].join("\n");
 }
 
 function widgetKeyboard(dateStr) {
-  return { reply_markup: { inline_keyboard: [[{ text: "🔄 Обновить", callback_data: `refresh:${dateStr}` }], [{ text: "🔑 Сменить ключи", callback_data: "reset_keys" }]] } };
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "🔄 Обновить", callback_data: `refresh:${dateStr}` }],
+        [{ text: "🔑 Сменить ключи", callback_data: "reset_keys" }],
+      ],
+    },
+  };
 }
 
 async function showWidget(chatId, userId, dateStr, editMessageId = null) {
@@ -227,10 +300,10 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
   const clientId = creds.clientId;
 
   try {
-    const total = await countArrivedTodayByCreatedAt({ clientId, apiKey, dateStr });
-    console.log(`✅ Final count today=${total} (${dateStr} ${SALES_TZ})`);
+    const s = await calcTodayStats({ clientId, apiKey, dateStr });
+    console.log(`✅ Today stats: orders=${s.ordersCount}, cancels=${s.cancelsCount}`);
 
-    const text = widgetText({ dateStr, total });
+    const text = widgetText(s);
     if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
     else await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
   } catch (e) {
@@ -281,7 +354,7 @@ app.post("/telegram-webhook", async (req, res) => {
     if (text === "/start") {
       const creds = getUserCreds(userId);
       if (creds?.clientId && creds?.apiKey) {
-        await tgSendMessage(chatId, "✅ Ключи уже сохранены. Показываю FBO заказы за сегодня:");
+        await tgSendMessage(chatId, "✅ Ключи уже сохранены. Показываю статистику за сегодня:");
         await showWidget(chatId, userId, todayDateStr());
         return;
       }
@@ -306,7 +379,7 @@ app.post("/telegram-webhook", async (req, res) => {
     if (st?.step === "apiKey") {
       setUserCreds(userId, { clientId: st.clientId, apiKey: encrypt(text), savedAt: Date.now() });
       pending.delete(userId);
-      await tgSendMessage(chatId, "✅ Сохранил. Открываю FBO заказы за сегодня:");
+      await tgSendMessage(chatId, "✅ Сохранил. Открываю статистику за сегодня:");
       await showWidget(chatId, userId, todayDateStr());
       return;
     }
