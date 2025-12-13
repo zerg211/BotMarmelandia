@@ -1,76 +1,164 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Ozon — Seller API</title>
-  <link rel="stylesheet" href="/style.css" />
+  <meta charset="UTF-8" />
+  <title>Продажи за сегодня</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root{
+      --bg:#0b1220; --card:rgba(255,255,255,.07); --border:rgba(255,255,255,.10);
+      --text:rgba(255,255,255,.92); --muted:rgba(255,255,255,.65);
+      --accent:#5eead4; --danger:#fb7185; --r:18px;
+      --shadow:0 16px 60px rgba(0,0,0,.35);
+    }
+    body{margin:0;min-height:100vh;display:flex;justify-content:center;align-items:center;
+      padding:20px 16px; color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+      background:radial-gradient(1200px 800px at 20% -10%, rgba(94,234,212,.18), transparent 55%),
+                 radial-gradient(900px 600px at 110% 10%, rgba(56,189,248,.12), transparent 50%),
+                 var(--bg);
+    }
+    .wrap{width:100%;max-width:420px;}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,.09), var(--card));
+      border:1px solid var(--border); border-radius:var(--r); box-shadow:var(--shadow);
+      padding:18px;
+    }
+    h1{margin:0 0 8px;font-size:18px;font-weight:800}
+    p{margin:0 0 14px;font-size:13px;color:var(--muted);line-height:1.35}
+    label{display:block;font-size:12px;color:var(--muted);margin:0 0 6px 2px}
+    input{width:100%;border-radius:14px;padding:12px;border:1px solid var(--border);
+      background:rgba(0,0,0,.18);color:var(--text);outline:none;font-size:14px}
+    input:focus{border-color:rgba(94,234,212,.55);box-shadow:0 0 0 4px rgba(94,234,212,.10)}
+    .btn{width:100%;border:0;border-radius:14px;padding:12px 14px;background:var(--accent);
+      color:#0b1220;font-weight:900;cursor:pointer;font-size:14px}
+    .btn2{width:100%;border:1px solid var(--border);border-radius:14px;padding:12px 14px;
+      background:rgba(0,0,0,.14);color:var(--text);font-weight:900;cursor:pointer;font-size:14px}
+    .row{display:flex;gap:10px}
+    .status{margin-top:10px;font-size:12px;color:var(--muted);min-height:16px}
+    .err{color:var(--danger)}
+    .metric{margin-top:10px}
+    .big{font-size:64px;font-weight:950;letter-spacing:-1.5px;line-height:.95}
+    .hidden{display:none}
+  </style>
 </head>
 <body>
-  <div class="bg"></div>
+  <div class="wrap">
+    <div class="card" id="setup">
+      <h1>Подключение</h1>
+      <p>Введи <b>Client ID</b> и <b>API Key</b> (сохраняется на телефоне). Потом появится виджет.</p>
 
-  <main class="wrap">
-    <header class="top">
-      <div class="brand">
-        <div class="dot"></div>
-        <div>
-          <div class="brand-title">Ozon • Seller API</div>
-          <div class="brand-sub">Продажи за день</div>
-        </div>
-      </div>
-      <div class="pill" id="datePill">—</div>
-    </header>
+      <label>Client ID</label>
+      <input id="client" placeholder="Например: 123456" />
 
-    <section class="card">
+      <div style="height:10px"></div>
+
+      <label>API Key</label>
+      <input id="key" placeholder="Вставь ключ целиком" />
+
+      <div style="height:14px"></div>
+      <button class="btn" id="saveBtn">Готово</button>
+      <div class="status" id="setupStatus"></div>
+    </div>
+
+    <div class="card hidden" id="widget">
       <h1>Продажи за сегодня</h1>
-      <p class="muted">Количество заказов, созданных сегодня (все статусы).</p>
+      <p>Количество заказов <b>FBO (со склада Ozon)</b>, созданных сегодня (все статусы).</p>
 
-      <div class="value">
-        <div class="num" id="count">—</div>
-        <div class="unit">шт</div>
+      <div class="metric">
+        <div class="big" id="count">—</div>
+        <div class="status" id="widgetStatus"></div>
       </div>
 
-      <div class="sum" id="sum"></div>
-
+      <div style="height:14px"></div>
       <div class="row">
-        <button class="btn" id="refreshBtn">
-          <span class="icon">⟳</span>
-          Обновить
-        </button>
-        <button class="btn ghost" id="keysBtn">
-          <span class="icon">🔑</span>
-          Ключи
-        </button>
+        <button class="btn2" id="refreshBtn">🔄 Обновить</button>
+        <button class="btn2" id="keysBtn">🔑 Ключи</button>
       </div>
-
-      <div class="hint" id="hint"></div>
-    </section>
-  </main>
-
-  <!-- modal -->
-  <div class="modal" id="modal" hidden>
-    <div class="modal-card">
-      <div class="modal-head">
-        <div class="modal-title">Ключи Ozon</div>
-        <button class="x" id="closeModal">✕</button>
-      </div>
-
-      <label class="lbl">Client ID</label>
-      <input class="inp" id="clientId" placeholder="Например: 123456" />
-
-      <label class="lbl">API Key</label>
-      <input class="inp" id="apiKey" placeholder="Вставьте API Key" />
-
-      <div class="row">
-        <button class="btn" id="saveKeys">Готово</button>
-        <button class="btn ghost" id="deleteKeys">Удалить</button>
-      </div>
-
-      <div class="muted small" id="keysStatus"></div>
     </div>
   </div>
 
-  <script src="/app.js"></script>
+<script>
+  const tg = window.Telegram?.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  const setup = document.getElementById("setup");
+  const widget = document.getElementById("widget");
+
+  const client = document.getElementById("client");
+  const key = document.getElementById("key");
+
+  const saveBtn = document.getElementById("saveBtn");
+  const refreshBtn = document.getElementById("refreshBtn");
+  const keysBtn = document.getElementById("keysBtn");
+
+  const setupStatus = document.getElementById("setupStatus");
+  const widgetStatus = document.getElementById("widgetStatus");
+  const countEl = document.getElementById("count");
+
+  function setSetupStatus(t, err=false){ setupStatus.textContent=t||""; setupStatus.className="status"+(err?" err":""); }
+  function setWidgetStatus(t, err=false){ widgetStatus.textContent=t||""; widgetStatus.className="status"+(err?" err":""); }
+
+  function showWidget(){ setup.classList.add("hidden"); widget.classList.remove("hidden"); }
+  function showSetup(){ widget.classList.add("hidden"); setup.classList.remove("hidden"); }
+
+  function loadSaved(){
+    client.value = localStorage.getItem("ozon_client_id") || "";
+    key.value = localStorage.getItem("ozon_api_key") || "";
+  }
+
+  async function fetchToday(){
+    setWidgetStatus("Обновляю…");
+    const cid = (localStorage.getItem("ozon_client_id")||"").trim();
+    const ak  = (localStorage.getItem("ozon_api_key")||"").trim();
+    if (!cid || !ak){
+      setWidgetStatus("Ключи не введены. Нажми «Ключи».", true);
+      return;
+    }
+
+    try{
+      const r = await fetch("/api/today-sales", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({ client_id: cid, api_key: ak })
+      });
+      const data = await r.json().catch(()=> ({}));
+      if (!r.ok){
+        setWidgetStatus(data?.error || "Ошибка Ozon API", true);
+        return;
+      }
+      countEl.textContent = data.count;
+      setWidgetStatus("Обновлено.");
+    }catch(e){
+      setWidgetStatus("Сервер не отвечает / нет сети", true);
+    }
+  }
+
+  saveBtn.addEventListener("click", async () => {
+    setSetupStatus("");
+    const cid = client.value.trim();
+    const ak = key.value.trim();
+    if (!cid || !ak){
+      setSetupStatus("Заполни оба поля.", true);
+      return;
+    }
+    localStorage.setItem("ozon_client_id", cid);
+    localStorage.setItem("ozon_api_key", ak);
+    showWidget();
+    await fetchToday();
+  });
+
+  refreshBtn.addEventListener("click", fetchToday);
+  keysBtn.addEventListener("click", () => { loadSaved(); showSetup(); });
+
+  // старт
+  loadSaved();
+  if (client.value && key.value){
+    showWidget();
+    fetchToday();
+  } else {
+    showSetup();
+  }
+</script>
 </body>
 </html>
