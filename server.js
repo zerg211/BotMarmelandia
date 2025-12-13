@@ -15,11 +15,15 @@ const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
-const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow"; // "сегодня" считаем по этой TZ
 
+// “сегодня” считаем по этой TZ (если ты в РФ — оставь Moscow)
+const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
+
+// store
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 
+// encryption (optional)
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 const pending = new Map();
 
@@ -98,13 +102,11 @@ async function tgSendMessage(chatId, text, opts = {}) {
     disable_web_page_preview: true,
     ...opts,
   };
-
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-
   const data = await resp.json().catch(() => null);
   if (!data?.ok) console.error("❌ sendMessage failed:", data);
   return data;
@@ -120,13 +122,11 @@ async function tgEditMessage(chatId, messageId, text, opts = {}) {
     disable_web_page_preview: true,
     ...opts,
   };
-
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-
   const data = await resp.json().catch(() => null);
   if (!data?.ok) {
     const descr = String(data?.description || "");
@@ -169,65 +169,36 @@ function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
 }
 
-function createdAtRangeUtc(dateStr) {
+// Для FBO list фильтр работает через since/to (UTC ISO)
+function sinceToUtcISO(dateStr) {
   const fromLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
   const toLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
   return {
-    from: fromLocal.toUTC().toISO({ suppressMilliseconds: true }),
+    since: fromLocal.toUTC().toISO({ suppressMilliseconds: true }),
     to: toLocal.toUTC().toISO({ suppressMilliseconds: true }),
   };
 }
 
-// ---------------- Counting orders ----------------
-async function countFbsOrdersToday({ clientId, apiKey, dateStr }) {
-  const { from, to } = createdAtRangeUtc(dateStr);
+// ---------------- Core: count FBO orders for day ----------------
+async function countFboOrdersForDay({ clientId, apiKey, dateStr }) {
+  const { since, to } = sinceToUtcISO(dateStr);
 
   let offset = 0;
   const limit = 1000;
   let total = 0;
 
   while (true) {
-    const data = await ozonPost("/v3/posting/fbs/list", {
-      clientId,
-      apiKey,
-      body: {
-        dir: "asc",
-        filter: {
-          created_at: { from, to }, // ✅ ключевой фильтр
-        },
-        limit,
-        offset,
-        with: { financial_data: false, analytics_data: false, barcodes: false },
-      },
-    });
-
-    const result = data?.result || {};
-    const postings = result?.postings || [];
-    total += postings.length;
-
-    if (!result?.has_next) break;
-    offset += limit;
-    if (offset > 100000) break; // защита
-  }
-
-  return total;
-}
-
-async function countFboOrdersToday({ clientId, apiKey, dateStr }) {
-  const { from, to } = createdAtRangeUtc(dateStr);
-
-  let offset = 0;
-  const limit = 1000;
-  let total = 0;
-
-  while (true) {
+    // Важно: для /v2/posting/fbo/list традиционный фильтр — since/to (+status при желании).
+    // Чтобы не отрезать статусы, оставляем status пустым.
     const data = await ozonPost("/v2/posting/fbo/list", {
       clientId,
       apiKey,
       body: {
         dir: "asc",
         filter: {
-          created_at: { from, to }, // ✅ ключевой фильтр
+          since,
+          to,
+          status: "", // не ограничиваем статус
         },
         limit,
         offset,
@@ -241,30 +212,18 @@ async function countFboOrdersToday({ clientId, apiKey, dateStr }) {
 
     if (!result?.has_next) break;
     offset += limit;
-    if (offset > 100000) break;
+    if (offset > 200000) break;
   }
 
   return total;
 }
 
-async function getOrdersCountForDay({ clientId, apiKey, dateStr }) {
-  const [fbs, fbo] = await Promise.all([
-    countFbsOrdersToday({ clientId, apiKey, dateStr }),
-    countFboOrdersToday({ clientId, apiKey, dateStr }),
-  ]);
-
-  return { dateStr, fbs, fbo, total: fbs + fbo };
-}
-
 // ---------------- widget ----------------
 function widgetText(c) {
   return [
-    `📅 <b>Заказы за сегодня</b>: <b>${c.dateStr}</b> (${SALES_TZ})`,
+    `📅 <b>FBO заказы поступили сегодня</b>: <b>${c.dateStr}</b> (${SALES_TZ})`,
     ``,
-    `📦 FBS: <b>${c.fbs}</b>`,
-    `🏬 FBO: <b>${c.fbo}</b>`,
-    ``,
-    `✅ Итого заказов: <b>${c.total}</b>`,
+    `✅ Кол-во заказов: <b>${c.total}</b>`,
   ].join("\n");
 }
 
@@ -290,8 +249,8 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
   const clientId = creds.clientId;
 
   try {
-    const counts = await getOrdersCountForDay({ clientId, apiKey, dateStr });
-    const text = widgetText(counts);
+    const total = await countFboOrdersForDay({ clientId, apiKey, dateStr });
+    const text = widgetText({ dateStr, total });
 
     if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
     else await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
@@ -343,7 +302,7 @@ app.post("/telegram-webhook", async (req, res) => {
     if (text === "/start") {
       const creds = getUserCreds(userId);
       if (creds?.clientId && creds?.apiKey) {
-        await tgSendMessage(chatId, "✅ Ключи уже сохранены. Показываю заказы за сегодня:");
+        await tgSendMessage(chatId, "✅ Ключи уже сохранены. Показываю FBO заказы за сегодня:");
         await showWidget(chatId, userId, todayDateStr());
         return;
       }
@@ -359,17 +318,6 @@ app.post("/telegram-webhook", async (req, res) => {
       return;
     }
 
-    if (text.startsWith("/date")) {
-      const parts = text.split(/\s+/);
-      const dateStr = parts[1];
-      if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-        await tgSendMessage(chatId, "Формат: <code>/date YYYY-MM-DD</code>");
-        return;
-      }
-      await showWidget(chatId, userId, dateStr);
-      return;
-    }
-
     const st = pending.get(userId);
     if (st?.step === "clientId") {
       pending.set(userId, { step: "apiKey", clientId: text });
@@ -379,12 +327,12 @@ app.post("/telegram-webhook", async (req, res) => {
     if (st?.step === "apiKey") {
       setUserCreds(userId, { clientId: st.clientId, apiKey: encrypt(text), savedAt: Date.now() });
       pending.delete(userId);
-      await tgSendMessage(chatId, "✅ Сохранил. Открываю заказы за сегодня:");
+      await tgSendMessage(chatId, "✅ Сохранил. Открываю FBO заказы за сегодня:");
       await showWidget(chatId, userId, todayDateStr());
       return;
     }
 
-    await tgSendMessage(chatId, "Команды:\n/start\n/date YYYY-MM-DD\n/reset");
+    await tgSendMessage(chatId, "Команды:\n/start\n/reset");
   } catch (err) {
     console.error("Webhook handler error:", err);
   }
