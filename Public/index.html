@@ -46,6 +46,7 @@
       box-shadow:0 8px 24px rgba(0,0,0,.25);
       display:flex;flex-direction:column;gap:10px;min-height:110px;border:1px solid var(--line);
     }
+    .card.full{grid-column:1/-1;}
     .label{font-size:12px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;gap:8px;}
     .value{font-size:28px;font-weight:900;letter-spacing:.2px;}
     .value.small{font-size:22px;}
@@ -116,11 +117,11 @@
         <div class="value small" id="ordersSum">—</div>
       </div>
       <div class="card">
-        <div class="label">Отмены <span class="badge danger">шт</span></div>
+        <div class="label">Отказы <span class="badge danger">шт</span></div>
         <div class="value" id="cancels">—</div>
       </div>
       <div class="card">
-        <div class="label">Сумма отмен <span class="badge danger">₽</span></div>
+        <div class="label">Сумма отказов <span class="badge danger">₽</span></div>
         <div class="value small" id="cancelsSum">—</div>
       </div>
 
@@ -135,11 +136,10 @@
   <div class="mini-list" id="returnsList"></div>
 </div>
 
-<div class="card">
+<div class="card full">
   <div class="label">Баланс кабинета <span class="badge">₽</span></div>
   <div class="value small" id="balance">—</div>
 </div>
-
     </div>
 
     <div class="footer">
@@ -274,27 +274,6 @@
         $("cancels").textContent = data.cancels ?? data.cancelsCount ?? "—";
         $("cancelsSum").textContent = fmtMoneyFromCents(data.cancels_sum ?? data.cancelsAmount);
 
-        // новые виджеты
-        $("buyoutsQty").textContent = data.buyouts_total_qty ?? "—";
-        $("returnsQty").textContent = data.returns_total_qty ?? "—";
-
-        function renderTop5(list){
-          if (!Array.isArray(list) || list.length === 0) return "";
-          return list.slice(0,5).map(x => {
-            const id = String(x.offer_id ?? "");
-            const qty = String(x.qty ?? 0);
-            return `<div class="row"><span>${id}</span><b>${qty} шт</b></div>`;
-          }).join("");
-        }
-        $("buyoutsList").innerHTML = renderTop5(data.buyouts_list);
-        $("returnsList").innerHTML = renderTop5(data.returns_list);
-
-        // баланс (если смогли получить)
-        if (data.balance_text && data.balance_text !== "—") $("balance").textContent = data.balance_text;
-        else if (data.balance_cents !== null && data.balance_cents !== undefined) $("balance").textContent = fmtMoneyFromCents(data.balance_cents);
-        else $("balance").textContent = "—";
-
-
 // Выкупы / Возвраты (по offer_id)
 const topN = (arr, n=5) => Array.isArray(arr) ? arr.slice(0, n) : [];
 const renderList = (el, arr) => {
@@ -315,6 +294,9 @@ $("returnsQty").textContent = String(rq);
 renderList($("buyoutsList"), data.buyouts_list);
 renderList($("returnsList"), data.returns_list);
 
+// Баланс (closing_balance)
+$("balance").textContent = data.balance_closing_text ? String(data.balance_closing_text).replace(" ₽", "") : fmtMoneyFromCents(data.balance_closing);
+
         setLastUpdated(data.updated_at);
         setStatus("актуально");
       } catch(e){
@@ -325,6 +307,7 @@ try{
   $("returnsQty").textContent = "—";
   $("buyoutsList").textContent = "";
   $("returnsList").textContent = "";
+  $("balance").textContent = "—";
 }catch(_){}
       } finally{
         refreshIcon.classList.remove("spin");
