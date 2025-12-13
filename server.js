@@ -18,17 +18,22 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
-// Хранилище ключей (файл)
-// ⚠️ На Railway при пересборке может обнулиться. Если нужно “навсегда” — подключим Postgres.
+// file store (simple)
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 
-// Шифрование Api-Key (рекомендую задать ENCRYPTION_KEY_B64 в Railway Variables)
+// encryption for Api-Key (optional but recommended)
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 
-// --- state диалога ввода ключей ---
+// conversation state
 const pending = new Map(); // userId -> { step: 'clientId'|'apiKey', clientId? }
 
+// small in-memory cache to reduce calls
+const postingTypeCache = new Map(); // posting_number -> 'fbs'|'fbo'
+const postingAmountCache = new Map(); // posting_number -> { amount, ts }
+const POSTING_CACHE_TTL_MS = 60_000;
+
+// ---------------- store helpers ----------------
 function loadStore() {
   try {
     if (!fs.existsSync(STORE_PATH)) return { users: {} };
@@ -56,6 +61,7 @@ function deleteUserCreds(userId) {
   saveStore(store);
 }
 
+// ---------------- crypto helpers ----------------
 function encrypt(text) {
   if (!ENCRYPTION_KEY_B64) return { mode: "plain", value: text };
 
@@ -77,7 +83,6 @@ function encrypt(text) {
     value: enc.toString("base64"),
   };
 }
-
 function decrypt(obj) {
   if (!obj) return null;
   if (obj.mode === "plain") return obj.value;
@@ -93,7 +98,7 @@ function decrypt(obj) {
   return dec.toString("utf8");
 }
 
-// --- Telegram helpers ---
+// ---------------- telegram helpers ----------------
 async function tgSendMessage(chatId, text, opts = {}) {
   const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
   const payload = {
@@ -146,7 +151,7 @@ async function tgAnswerCallback(callbackQueryId) {
   });
 }
 
-// --- Ozon helpers ---
+// ---------------- ozon helpers ----------------
 async function ozonPost(pathname, { clientId, apiKey, body }) {
   const resp = await fetch(`${OZON_API_BASE}${pathname}`, {
     method: "POST",
@@ -166,167 +171,101 @@ async function ozonPost(pathname, { clientId, apiKey, body }) {
   return data;
 }
 
-function isoRangeForDate(dateStr /* yyyy-LL-dd */) {
+function todayDateStr() {
+  return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
+}
+
+function rangeForDate(dateStr /* yyyy-MM-dd */) {
   const from = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
   const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
-
   return {
     dateStr,
     from,
     to,
-    sinceISO: from.toUTC().toISO({ suppressMilliseconds: true }),
-    toISO: to.toUTC().toISO({ suppressMilliseconds: true }),
+    fromUtcIso: from.toUTC().toISO({ suppressMilliseconds: false }),
+    toUtcIso: to.toUTC().toISO({ suppressMilliseconds: false }),
   };
 }
 
-function safeNum(x) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : 0;
-}
-
-// Пытаемся достать “сумму заказа” из финансовых данных постинга.
-// У Ozon поля могут отличаться, поэтому делаем несколько fallback-ов.
-function calcPostingAmountFromFinancial(financialData) {
-  if (!financialData) return 0;
-
-  // Иногда есть итоговые поля на уровне posting_services / payout и т.д.
-  // Но самое стабильное — суммировать продукты.
-  const products = financialData.products || [];
+// Сумма “как рядом с заказом” в ЛК: customer_price * quantity по products
+function calcOrderAmountFromPostingFinancial(financialData) {
+  const products = financialData?.products || [];
   let sum = 0;
-
   for (const p of products) {
-    const qty =
-      safeNum(p.quantity) ||
-      safeNum(p.qty) ||
-      1;
-
-    // приоритет: price -> item_price -> customer_price -> payout
-    const unit =
-      safeNum(p.price) ||
-      safeNum(p.item_price) ||
-      safeNum(p.customer_price) ||
-      safeNum(p.payout);
-
-    sum += unit * qty;
+    const qty = Number(p.quantity ?? 1) || 1;
+    const customerPrice = Number(p.customer_price ?? 0) || 0;
+    sum += customerPrice * qty;
   }
-
-  // Иногда products пустой, но есть total/amount
-  if (sum === 0) {
-    sum =
-      safeNum(financialData.total) ||
-      safeNum(financialData.amount) ||
-      safeNum(financialData.payout) ||
-      0;
-  }
-
   return sum;
 }
 
-async function listFbsPostings({ clientId, apiKey, sinceISO, toISO }) {
-  let offset = 0;
-  const limit = 50;
-  const postings = [];
+async function getPostingAmountAndType({ clientId, apiKey, postingNumber }) {
+  // cache
+  const cached = postingAmountCache.get(postingNumber);
+  if (cached && Date.now() - cached.ts < POSTING_CACHE_TTL_MS) return cached;
 
-  while (true) {
-    const data = await ozonPost("/v3/posting/fbs/list", {
+  // if we know type, try that first
+  const knownType = postingTypeCache.get(postingNumber);
+
+  const tryFbs = async () => {
+    const data = await ozonPost("/v3/posting/fbs/get", {
       clientId,
       apiKey,
-      body: {
-        filter: {
-          since: sinceISO,
-          to: toISO,
-          // статус не ограничиваем — нужны все созданные сегодня
-        },
-        limit,
-        offset,
-        with: {
-          financial_data: false, // суммы возьмём точнее через /get
-        },
-      },
+      body: { posting_number: postingNumber, with: { financial_data: true } },
     });
+    const fin = data?.result?.financial_data;
+    const amount = calcOrderAmountFromPostingFinancial(fin);
+    postingTypeCache.set(postingNumber, "fbs");
+    return { amount, type: "fbs" };
+  };
 
-    const result = data?.result;
-    const chunk = result?.postings || [];
-    postings.push(...chunk);
-
-    if (!result?.has_next) break;
-    offset += limit;
-    if (offset > 5000) break; // защита от бесконечности
-  }
-
-  return postings;
-}
-
-async function listFboPostings({ clientId, apiKey, sinceISO, toISO }) {
-  let offset = 0;
-  const limit = 50;
-  const postings = [];
-
-  while (true) {
-    const data = await ozonPost("/v2/posting/fbo/list", {
+  const tryFbo = async () => {
+    const data = await ozonPost("/v2/posting/fbo/get", {
       clientId,
       apiKey,
-      body: {
-        filter: {
-          since: sinceISO,
-          to: toISO,
-        },
-        limit,
-        offset,
-        with: {
-          financial_data: false,
-        },
-      },
+      body: { posting_number: postingNumber, with: { financial_data: true } },
     });
+    const fin = data?.result?.financial_data;
+    const amount = calcOrderAmountFromPostingFinancial(fin);
+    postingTypeCache.set(postingNumber, "fbo");
+    return { amount, type: "fbo" };
+  };
 
-    const result = data?.result;
-    const chunk = result?.postings || [];
-    postings.push(...chunk);
-
-    if (!result?.has_next) break;
-    offset += limit;
-    if (offset > 5000) break;
+  let result;
+  if (knownType === "fbs") {
+    try {
+      result = await tryFbs();
+    } catch {
+      result = await tryFbo();
+    }
+  } else if (knownType === "fbo") {
+    try {
+      result = await tryFbo();
+    } catch {
+      result = await tryFbs();
+    }
+  } else {
+    // unknown: try fbs then fbo
+    try {
+      result = await tryFbs();
+    } catch {
+      result = await tryFbo();
+    }
   }
 
-  return postings;
+  const out = { ...result, ts: Date.now() };
+  postingAmountCache.set(postingNumber, out);
+  return out;
 }
 
-async function getFbsPostingAmount({ clientId, apiKey, postingNumber }) {
-  const data = await ozonPost("/v3/posting/fbs/get", {
-    clientId,
-    apiKey,
-    body: {
-      posting_number: postingNumber,
-      with: { financial_data: true },
-    },
-  });
-
-  const fin = data?.result?.financial_data;
-  return calcPostingAmountFromFinancial(fin);
-}
-
-async function getFboPostingAmount({ clientId, apiKey, postingNumber }) {
-  const data = await ozonPost("/v2/posting/fbo/get", {
-    clientId,
-    apiKey,
-    body: {
-      posting_number: postingNumber,
-      with: { financial_data: true },
-    },
-  });
-
-  const fin = data?.result?.financial_data;
-  return calcPostingAmountFromFinancial(fin);
-}
-
-// Ограничиваем параллелизм, чтобы не уложить API
+// Ограничение параллелизма
 async function mapLimit(items, limit, fn) {
-  const res = [];
+  const res = new Array(items.length);
   let i = 0;
-
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (i < items.length) {
+    while (true) {
       const idx = i++;
+      if (idx >= items.length) break;
       try {
         res[idx] = await fn(items[idx], idx);
       } catch (e) {
@@ -334,67 +273,170 @@ async function mapLimit(items, limit, fn) {
       }
     }
   });
-
   await Promise.all(workers);
   return res;
 }
 
-async function getSalesForDate({ clientId, apiKey, dateStr }) {
-  const { from, to, sinceISO, toISO } = isoRangeForDate(dateStr);
+/**
+ * Получаем события “за день” из finance transactions:
+ * - sales: операции продажи (плюс)
+ * - returns/cancels: операции возврат/отмена (минус)
+ *
+ * Важно: названия operation_type могут различаться, поэтому мы используем
+ * “широкое” распознавание по подстрокам и безопасные fallback’и.
+ */
+function classifyOperation(opTypeRaw) {
+  const op = String(opTypeRaw || "").toLowerCase();
 
-  // 1) получаем список постингов за дату
-  const [fbsList, fboList] = await Promise.all([
-    listFbsPostings({ clientId, apiKey, sinceISO, toISO }),
-    listFboPostings({ clientId, apiKey, sinceISO, toISO }),
-  ]);
+  // sale
+  if (op.includes("sale") || op.includes("продаж")) return "sale";
 
-  const fbsNumbers = [...new Set(fbsList.map((p) => p.posting_number).filter(Boolean))];
-  const fboNumbers = [...new Set(fboList.map((p) => p.posting_number).filter(Boolean))];
+  // return/cancel/refund
+  if (op.includes("return") || op.includes("refund") || op.includes("cancel") || op.includes("возврат") || op.includes("отмен"))
+    return "return";
 
-  // 2) по каждому постингу тянем детализацию и считаем сумму
-  const fbsAmounts = await mapLimit(fbsNumbers, 8, async (num) =>
-    getFbsPostingAmount({ clientId, apiKey, postingNumber: num })
+  // unknown
+  return "other";
+}
+
+async function listFinanceTransactionsForDate({ clientId, apiKey, dateStr }) {
+  const { fromUtcIso, toUtcIso } = rangeForDate(dateStr);
+
+  let page = 1;
+  const page_size = 1000;
+  const items = [];
+
+  while (true) {
+    const body = {
+      filter: {
+        date: { from: fromUtcIso, to: toUtcIso },
+        operation_type: [],
+        posting_number: "",
+        transaction_type: "all",
+      },
+      page,
+      page_size,
+    };
+
+    const data = await ozonPost("/v3/finance/transaction/list", {
+      clientId,
+      apiKey,
+      body,
+    });
+
+    const result = data?.result || {};
+    const chunk = result?.operations || result?.items || [];
+    items.push(...chunk);
+
+    // определяем окончание по разным возможным полям
+    const totalPages =
+      Number(result?.page_count) ||
+      Number(result?.total_pages) ||
+      null;
+
+    if (totalPages && page >= totalPages) break;
+
+    const hasNext =
+      result?.has_next === true ||
+      (typeof result?.has_next === "boolean" ? result.has_next : null);
+
+    if (hasNext === false) break;
+
+    // fallback: если вернулось меньше page_size — скорее всего конец
+    if (!chunk || chunk.length < page_size) break;
+
+    page += 1;
+    if (page > 50) break; // защита
+  }
+
+  return items;
+}
+
+async function getDailySalesAndReturns({ clientId, apiKey, dateStr }) {
+  const ops = await listFinanceTransactionsForDate({ clientId, apiKey, dateStr });
+
+  // Собираем posting_number по операциям
+  const salesPostingNumbers = new Set();
+  const returnsPostingNumbers = new Set();
+
+  for (const it of ops) {
+    const postingNumber = it.posting_number || it.postingNumber || it.posting || "";
+    if (!postingNumber) continue;
+
+    const cls = classifyOperation(it.operation_type || it.operationType);
+    if (cls === "sale") salesPostingNumbers.add(postingNumber);
+    else if (cls === "return") returnsPostingNumbers.add(postingNumber);
+  }
+
+  const salesArr = [...salesPostingNumbers];
+  const returnsArr = [...returnsPostingNumbers];
+
+  // Тянем суммы “как в ЛК” по каждому заказу
+  const salesAmounts = await mapLimit(salesArr, 8, async (num) =>
+    getPostingAmountAndType({ clientId, apiKey, postingNumber: num })
   );
-  const fboAmounts = await mapLimit(fboNumbers, 8, async (num) =>
-    getFboPostingAmount({ clientId, apiKey, postingNumber: num })
+  const returnAmounts = await mapLimit(returnsArr, 8, async (num) =>
+    getPostingAmountAndType({ clientId, apiKey, postingNumber: num })
   );
 
-  const sumFbs = fbsAmounts.reduce((acc, x) => acc + (typeof x === "number" ? x : 0), 0);
-  const sumFbo = fboAmounts.reduce((acc, x) => acc + (typeof x === "number" ? x : 0), 0);
+  // Разбиваем FBS/FBO
+  let salesFbs = 0, salesFbo = 0, salesSumFbs = 0, salesSumFbo = 0;
+  for (const r of salesAmounts) {
+    if (!r || typeof r.amount !== "number") continue;
+    if (r.type === "fbs") { salesFbs += 1; salesSumFbs += r.amount; }
+    else if (r.type === "fbo") { salesFbo += 1; salesSumFbo += r.amount; }
+  }
+
+  let retFbs = 0, retFbo = 0, retSumFbs = 0, retSumFbo = 0;
+  for (const r of returnAmounts) {
+    if (!r || typeof r.amount !== "number") continue;
+    if (r.type === "fbs") { retFbs += 1; retSumFbs += r.amount; }
+    else if (r.type === "fbo") { retFbo += 1; retSumFbo += r.amount; }
+  }
 
   return {
     dateStr,
-    from,
-    to: DateTime.now().setZone(SALES_TZ),
-    ordersFbs: fbsNumbers.length,
-    ordersFbo: fboNumbers.length,
-    sumFbs,
-    sumFbo,
+    // sales
+    salesFbs,
+    salesFbo,
+    salesTotal: salesFbs + salesFbo,
+    salesSumFbs,
+    salesSumFbo,
+    salesSumTotal: salesSumFbs + salesSumFbo,
+
+    // returns/cancels
+    retFbs,
+    retFbo,
+    retTotal: retFbs + retFbo,
+    retSumFbs,
+    retSumFbo,
+    retSumTotal: retSumFbs + retSumFbo,
   };
 }
 
-// --- UI ---
+// ---------------- widget ----------------
 function moneyRub(x) {
-  const v = Math.round(safeNum(x) * 100) / 100;
+  const v = Math.round(Number(x || 0) * 100) / 100;
   return v.toLocaleString("ru-RU");
 }
 
 function widgetText(s) {
-  const totalOrders = s.ordersFbs + s.ordersFbo;
-  const totalSum = s.sumFbs + s.sumFbo;
+  const net = s.salesSumTotal - s.retSumTotal;
 
   return [
-    `📊 <b>Заказы за дату</b>: <b>${s.dateStr}</b> (${SALES_TZ})`,
+    `📊 <b>События за дату</b>: <b>${s.dateStr}</b> (${SALES_TZ})`,
     ``,
-    `🧾 FBS заказов: <b>${s.ordersFbs}</b>`,
-    `🧾 FBO заказов: <b>${s.ordersFbo}</b>`,
-    `🧾 Всего заказов: <b>${totalOrders}</b>`,
+    `🟢 Продаж (FBS): <b>${s.salesFbs}</b>`,
+    `🟢 Продаж (FBO): <b>${s.salesFbo}</b>`,
+    `🟢 Продаж всего: <b>${s.salesTotal}</b>`,
     ``,
-    `💰 Сумма FBS: <b>${moneyRub(s.sumFbs)}</b> ₽`,
-    `💰 Сумма FBO: <b>${moneyRub(s.sumFbo)}</b> ₽`,
-    `💰 Итого сумма: <b>${moneyRub(totalSum)}</b> ₽`,
+    `🔴 Отмен/возвратов (FBS): <b>${s.retFbs}</b>`,
+    `🔴 Отмен/возвратов (FBO): <b>${s.retFbo}</b>`,
+    `🔴 Отмен/возвратов всего: <b>${s.retTotal}</b>`,
     ``,
-    `Обновлено: ${s.to.toFormat("HH:mm:ss")}`,
+    `💰 Сумма продаж (как в ЛК): <b>${moneyRub(s.salesSumTotal)}</b> ₽`,
+    `🔄 Сумма отмен/возвратов: <b>${moneyRub(s.retSumTotal)}</b> ₽`,
+    `📉 Итог (продажи − отмены): <b>${moneyRub(net)}</b> ₽`,
   ].join("\n");
 }
 
@@ -412,10 +454,7 @@ function widgetKeyboard(dateStr) {
 async function showWidget(chatId, userId, dateStr, editMessageId = null) {
   const creds = getUserCreds(userId);
   if (!creds?.clientId || !creds?.apiKey) {
-    await tgSendMessage(
-      chatId,
-      "❗ Ключи Ozon не настроены.\n\nНапиши /start — и я попрошу Client ID и Api-Key."
-    );
+    await tgSendMessage(chatId, "❗ Ключи Ozon не настроены. Напиши /start.");
     return;
   }
 
@@ -423,7 +462,7 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
   const clientId = creds.clientId;
 
   try {
-    const stats = await getSalesForDate({ clientId, apiKey, dateStr });
+    const stats = await getDailySalesAndReturns({ clientId, apiKey, dateStr });
     const text = widgetText(stats);
 
     if (editMessageId) {
@@ -433,8 +472,8 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
     }
   } catch (e) {
     const msg =
-      `❌ Не смог получить заказы/сумму за дату <b>${dateStr}</b>.\n` +
-      `Проверь Client ID / Api-Key.\n\n` +
+      `❌ Не смог получить события/суммы за <b>${dateStr}</b>.\n\n` +
+      `Подсказка: проверь Client ID / Api-Key.\n\n` +
       `<code>${String(e.message || e)}</code>`;
 
     if (editMessageId) {
@@ -445,13 +484,9 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
   }
 }
 
-function todayDateStr() {
-  return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
-}
-
-// --- Telegram webhook ---
+// ---------------- webhook ----------------
 app.post("/telegram-webhook", async (req, res) => {
-  // Telegram должен быстро получить 200
+  // Telegram must get 200 fast
   res.sendStatus(200);
 
   try {
@@ -460,7 +495,7 @@ app.post("/telegram-webhook", async (req, res) => {
     const msg = update?.message;
     const cb = update?.callback_query;
 
-    // --- callbacks ---
+    // callbacks
     if (cb) {
       const chatId = cb.message?.chat?.id;
       const userId = cb.from?.id;
@@ -468,7 +503,6 @@ app.post("/telegram-webhook", async (req, res) => {
       const data = cb.data;
 
       await tgAnswerCallback(cb.id);
-
       if (!chatId || !userId) return;
 
       if (data?.startsWith("refresh:")) {
@@ -480,14 +514,14 @@ app.post("/telegram-webhook", async (req, res) => {
       if (data === "reset_keys") {
         deleteUserCreds(userId);
         pending.set(userId, { step: "clientId" });
-        await tgEditMessage(chatId, messageId, "🔑 Ок, давай заново.\n\nОтправь <b>Client ID</b>.");
+        await tgEditMessage(chatId, messageId, "🔑 Ок, заново.\n\nОтправь <b>Client ID</b>.");
         return;
       }
 
       return;
     }
 
-    // --- messages ---
+    // messages
     const chatId = msg?.chat?.id;
     const userId = msg?.from?.id;
     const text = msg?.text?.trim();
@@ -509,10 +543,7 @@ app.post("/telegram-webhook", async (req, res) => {
         return;
       }
       pending.set(userId, { step: "clientId" });
-      await tgSendMessage(
-        chatId,
-        "Привет! Настроим доступ к Ozon.\n\nОтправь <b>Client ID</b>."
-      );
+      await tgSendMessage(chatId, "Привет! Настроим доступ к Ozon.\n\nОтправь <b>Client ID</b>.");
       return;
     }
 
@@ -521,14 +552,14 @@ app.post("/telegram-webhook", async (req, res) => {
       const parts = text.split(/\s+/);
       const dateStr = parts[1];
       if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-        await tgSendMessage(chatId, "Формат: <code>/date YYYY-MM-DD</code>\nНапример: <code>/date 2025-12-13</code>");
+        await tgSendMessage(chatId, "Формат: <code>/date YYYY-MM-DD</code>\nПример: <code>/date 2025-12-13</code>");
         return;
       }
       await showWidget(chatId, userId, dateStr);
       return;
     }
 
-    // ввод ключей пошагово
+    // key input flow
     const st = pending.get(userId);
     if (st?.step === "clientId") {
       pending.set(userId, { step: "apiKey", clientId: text });
@@ -547,7 +578,7 @@ app.post("/telegram-webhook", async (req, res) => {
       return;
     }
 
-    // по умолчанию
+    // default help
     await tgSendMessage(
       chatId,
       "Команды:\n/start — настройка и виджет за сегодня\n/date YYYY-MM-DD — статистика за дату\n/reset — заново ввести ключи"
