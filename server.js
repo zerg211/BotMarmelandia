@@ -15,8 +15,9 @@ const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
-const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
-const LOOKBACK_DAYS = Number(process.env.LOOKBACK_DAYS || 30);
+
+// Считаем “сегодня” по UTC, как в примере из официальной доки
+const SALES_TZ = process.env.SALES_TZ || "UTC";
 
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
@@ -55,24 +56,15 @@ function deleteUserCreds(userId) {
 // ---------------- crypto helpers ----------------
 function encrypt(text) {
   if (!ENCRYPTION_KEY_B64) return { mode: "plain", value: text };
-
   const key = Buffer.from(ENCRYPTION_KEY_B64, "base64");
-  if (key.length !== 32) {
-    console.warn("⚠️ ENCRYPTION_KEY_B64 should decode to 32 bytes. Fallback to plain.");
-    return { mode: "plain", value: text };
-  }
+  if (key.length !== 32) return { mode: "plain", value: text };
 
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const enc = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
 
-  return {
-    mode: "aes-256-gcm",
-    iv: iv.toString("base64"),
-    tag: tag.toString("base64"),
-    value: enc.toString("base64"),
-  };
+  return { mode: "aes-256-gcm", iv: iv.toString("base64"), tag: tag.toString("base64"), value: enc.toString("base64") };
 }
 function decrypt(obj) {
   if (!obj) return null;
@@ -92,38 +84,16 @@ function decrypt(obj) {
 // ---------------- telegram helpers ----------------
 async function tgSendMessage(chatId, text, opts = {}) {
   const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-  const payload = {
-    chat_id: chatId,
-    text,
-    parse_mode: "HTML",
-    disable_web_page_preview: true,
-    ...opts,
-  };
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const payload = { chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true, ...opts };
+  const resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   const data = await resp.json().catch(() => null);
   if (!data?.ok) console.error("❌ sendMessage failed:", data);
   return data;
 }
-
 async function tgEditMessage(chatId, messageId, text, opts = {}) {
   const url = `https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`;
-  const payload = {
-    chat_id: chatId,
-    message_id: messageId,
-    text,
-    parse_mode: "HTML",
-    disable_web_page_preview: true,
-    ...opts,
-  };
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const payload = { chat_id: chatId, message_id: messageId, text, parse_mode: "HTML", disable_web_page_preview: true, ...opts };
+  const resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   const data = await resp.json().catch(() => null);
   if (!data?.ok) {
     const descr = String(data?.description || "");
@@ -131,36 +101,20 @@ async function tgEditMessage(chatId, messageId, text, opts = {}) {
   }
   return data;
 }
-
 async function tgAnswerCallback(callbackQueryId) {
   const url = `https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`;
-  await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callback_query_id: callbackQueryId }),
-  });
+  await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: callbackQueryId }) });
 }
 
 // ---------------- ozon helpers ----------------
 async function ozonPost(pathname, { clientId, apiKey, body }) {
   const resp = await fetch(`${OZON_API_BASE}${pathname}`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Client-Id": String(clientId),
-      "Api-Key": String(apiKey),
-    },
+    headers: { "Content-Type": "application/json", "Client-Id": String(clientId), "Api-Key": String(apiKey) },
     body: JSON.stringify(body),
   });
 
-  const text = await resp.text(); // читаем как текст, чтобы видеть raw если JSON “ломается”
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = { _raw: text };
-  }
-
+  const data = await resp.json().catch(() => null);
   if (!resp.ok) {
     const msg = data?.message || data?.error || JSON.stringify(data);
     throw new Error(`Ozon API ${pathname} (${resp.status}): ${msg}`);
@@ -173,168 +127,71 @@ function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
 }
 
-function makeRanges(dateStr) {
-  const dayStart = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
-  const dayEnd = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
-
-  const sinceDT = dayStart.minus({ days: LOOKBACK_DAYS });
-  const toDT = dayEnd.plus({ days: 1 });
-
-  // 4 формата, которые реально встречаются в примерах/интеграциях:
-  return [
-    // 1) date-only
-    {
-      label: "YYYY-MM-DD",
-      since: sinceDT.toFormat("yyyy-LL-dd"),
-      to: toDT.toFormat("yyyy-LL-dd"),
-    },
-    // 2) UTC ISO без миллисекунд
-    {
-      label: "ISO UTC no ms",
-      since: sinceDT.toUTC().toISO({ suppressMilliseconds: true }),
-      to: toDT.toUTC().toISO({ suppressMilliseconds: true }),
-    },
-    // 3) UTC ISO с миллисекундами
-    {
-      label: "ISO UTC with ms",
-      since: sinceDT.toUTC().toISO({ suppressMilliseconds: false }),
-      to: toDT.toUTC().toISO({ suppressMilliseconds: false }),
-    },
-    // 4) ISO в локальной TZ с оффсетом (+03:00)
-    {
-      label: "ISO local offset",
-      since: sinceDT.toISO({ suppressMilliseconds: true }),
-      to: toDT.toISO({ suppressMilliseconds: true }),
-    },
-  ];
-}
-
-function isSameDayInTZ(iso, dateStr) {
-  if (!iso) return false;
-  const d = DateTime.fromISO(iso, { setZone: true }).setZone(SALES_TZ);
-  return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
-}
-
-function pickArrivedISO(p) {
-  return p?.created_at || p?.in_process_at || p?.shipment_date || null;
-}
-
-// ---------------- Core: try variants until postings appear ----------------
-async function fboListOnce({ clientId, apiKey, since, to, status }) {
-  const body = {
-    dir: "asc",
-    filter: { since, to },
-    limit: 1000,
-    offset: 0,
-    with: { financial_data: false },
+// КАК В ДОКЕ: since/to в UTC + миллисекунды
+function sinceToUtcMs(dateStr) {
+  const from = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: "UTC" }).startOf("day");
+  const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: "UTC" }).endOf("day");
+  return {
+    since: from.toUTC().toISO({ suppressMilliseconds: false }), // ...000Z
+    to: to.toUTC().toISO({ suppressMilliseconds: false }),     // ...828Z
   };
-  if (status) body.status = status;
-
-  const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
-
-  const result = data?.result ?? data;
-  const postings = result?.postings ?? result?.result?.postings ?? [];
-  const hasNext = Boolean(result?.has_next ?? result?.result?.has_next);
-
-  return { postings: Array.isArray(postings) ? postings : [], hasNext, rawKeys: Object.keys(result || {}) };
 }
 
-async function listFboWithWorkingDateFormat({ clientId, apiKey, dateStr, status }) {
-  const ranges = makeRanges(dateStr);
+// ---------------- Core: FBO count ----------------
+async function countFboOrdersForDay({ clientId, apiKey, dateStr }) {
+  const { since, to } = sinceToUtcMs(dateStr);
 
-  for (const r of ranges) {
-    const one = await fboListOnce({ clientId, apiKey, since: r.since, to: r.to, status });
+  let offset = 0;
+  const limit = 1000;
+  let total = 0;
 
-    console.log(
-      `🧪 FBO try ${r.label} status=${status || "(all)"} keys=${JSON.stringify(one.rawKeys)} count=${one.postings.length} since=${r.since} to=${r.to}`
-    );
+  while (true) {
+    const body = {
+      dir: "ASC",
+      filter: {
+        since,
+        to,
+        status: "", // ВАЖНО: как в доке — внутри filter и присутствует
+      },
+      limit,
+      offset,
+      translit: true,
+      with: {
+        analytics_data: true,
+        financial_data: true,
+        legal_info: false,
+      },
+    };
 
-    if (one.postings.length > 0) {
-      // если первая страница есть — дальше страницы по тому же формату
-      const postings = [...one.postings];
-      let offset = 1000;
+    // Для отчётности в лог — покажем первый реальный запрос
+    if (offset === 0) console.log("➡️ FBO request:", JSON.stringify(body));
 
-      while (one.hasNext) {
-        // следующую страницу дергаем тем же форматом
-        const body = {
-          dir: "asc",
-          filter: { since: r.since, to: r.to },
-          limit: 1000,
-          offset,
-          with: { financial_data: false },
-        };
-        if (status) body.status = status;
+    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
 
-        const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
-        const result = data?.result ?? data;
-        const page = result?.postings ?? result?.result?.postings ?? [];
-        const hasNext = Boolean(result?.has_next ?? result?.result?.has_next);
+    const result = data?.result || {};
+    const postings = result?.postings || [];
+    total += postings.length;
 
-        if (Array.isArray(page)) postings.push(...page);
-        if (!hasNext) break;
-        offset += 1000;
-        if (offset > 200000) break;
-      }
+    const hasNext = Boolean(result?.has_next);
+    if (!hasNext) break;
 
-      return postings;
-    }
+    offset += limit;
+    if (offset > 200000) break;
   }
 
-  return []; // ни один формат не дал postings
-}
-
-async function countFboArrivedToday({ clientId, apiKey, dateStr }) {
-  // Берём “обычные” и “cancelled” и объединяем. Отмены НЕ вычитаем.
-  const [base, cancelled] = await Promise.all([
-    listFboWithWorkingDateFormat({ clientId, apiKey, dateStr }),
-    listFboWithWorkingDateFormat({ clientId, apiKey, dateStr, status: "cancelled" }),
-  ]);
-
-  const uniq = new Map();
-  for (const p of [...base, ...cancelled]) {
-    if (p?.posting_number) uniq.set(p.posting_number, p);
-  }
-
-  let totalToday = 0;
-  for (const p of uniq.values()) {
-    if (isSameDayInTZ(pickArrivedISO(p), dateStr)) totalToday += 1;
-  }
-
-  const samples = [];
-  for (const p of uniq.values()) {
-    if (samples.length >= 3) break;
-    samples.push({
-      posting_number: p.posting_number,
-      status: p.status,
-      created_at: p.created_at,
-      in_process_at: p.in_process_at,
-      shipment_date: p.shipment_date,
-    });
-  }
-  console.log("🔎 FBO samples:", JSON.stringify(samples, null, 2));
-
-  return totalToday;
+  return { total, since, to };
 }
 
 // ---------------- widget ----------------
 function widgetText(c) {
   return [
-    `📅 <b>FBO: поступившие заказы сегодня</b>: <b>${c.dateStr}</b> (${SALES_TZ})`,
-    `ℹ️ Отмены <b>не вычитаем</b>`,
-    ``,
+    `📅 <b>FBO заказы за сегодня</b>: <b>${c.dateStr}</b> (UTC)`,
     `✅ Кол-во заказов: <b>${c.total}</b>`,
   ].join("\n");
 }
 
 function widgetKeyboard(dateStr) {
-  return {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "🔄 Обновить", callback_data: `refresh:${dateStr}` }],
-        [{ text: "🔑 Сменить ключи", callback_data: "reset_keys" }],
-      ],
-    },
-  };
+  return { reply_markup: { inline_keyboard: [[{ text: "🔄 Обновить", callback_data: `refresh:${dateStr}` }], [{ text: "🔑 Сменить ключи", callback_data: "reset_keys" }]] } };
 }
 
 async function showWidget(chatId, userId, dateStr, editMessageId = null) {
@@ -348,9 +205,10 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
   const clientId = creds.clientId;
 
   try {
-    const total = await countFboArrivedToday({ clientId, apiKey, dateStr });
-    const text = widgetText({ dateStr, total });
+    const r = await countFboOrdersForDay({ clientId, apiKey, dateStr });
+    console.log(`✅ FBO count=${r.total} since=${r.since} to=${r.to}`);
 
+    const text = widgetText({ dateStr, total: r.total });
     if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
     else await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
   } catch (e) {
@@ -437,4 +295,4 @@ app.post("/telegram-webhook", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`✅ Server started on :${PORT}`));
+app.listen(PORT, () => console.log(`✅ Server started on :8080`));
