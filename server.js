@@ -17,11 +17,14 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
+// Сколько дней захватывать назад в since/to, чтобы не потерять заказы,
+// которые созданы раньше, но статус изменился сегодня:
+const LOOKBACK_DAYS = Number(process.env.LOOKBACK_DAYS || 30);
+
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
-
 const pending = new Map();
 
 const postingTypeCache = new Map();
@@ -174,21 +177,34 @@ function todayDateStr() {
 }
 
 function rangeForDate(dateStr) {
-  const from = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
-  const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
+  const dayFromLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
+  const dayToLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
 
-  // без миллисекунд
-  const fromUtc = from.toUTC().toISO({ suppressMilliseconds: true });
-  const toUtc = to.toUTC().toISO({ suppressMilliseconds: true });
+  const dayFromUtc = dayFromLocal.toUTC();
+  const dayToUtc = dayToLocal.toUTC();
+
+  // since/to делаем шире назад, чтобы не потерять заказы, созданные раньше:
+  const wideSinceUtc = dayFromUtc.minus({ days: LOOKBACK_DAYS });
+
+  const toIso = (dt) => dt.toISO({ suppressMilliseconds: true });
 
   return {
     dateStr,
-    sinceISO: fromUtc,
-    toISO: toUtc,
-    cutoffFrom: fromUtc,
-    cutoffTo: toUtc,
-    fromUtcIso: fromUtc,
-    toUtcIso: toUtc,
+    // “широкое” окно
+    sinceISO: toIso(wideSinceUtc),
+    toISO: toIso(dayToUtc),
+
+    // “сегодня” для last_changed_status_date
+    changedFromISO: toIso(dayFromUtc),
+    changedToISO: toIso(dayToUtc),
+
+    // cutoff для unfulfilled
+    cutoffFrom: toIso(dayFromUtc),
+    cutoffTo: toIso(dayToUtc),
+
+    // finance
+    fromUtcIso: toIso(dayFromUtc),
+    toUtcIso: toIso(dayToUtc),
   };
 }
 
@@ -264,8 +280,9 @@ async function mapLimit(items, limit, fn) {
   return res;
 }
 
-// -------- FBS orders: list + unfulfilled --------
-async function listFbsFromList({ clientId, apiKey, sinceISO, toISO }) {
+// ---------------- FBS: list (через last_changed_status_date) ----------------
+// Важно: last_changed_status_date добавлен в /v3/posting/fbs/list :contentReference[oaicite:1]{index=1}
+async function listFbsFromListByChanged({ clientId, apiKey, sinceISO, toISO, changedFromISO, changedToISO }) {
   let offset = 0;
   const limit = 50;
   const nums = [];
@@ -276,81 +293,11 @@ async function listFbsFromList({ clientId, apiKey, sinceISO, toISO }) {
       apiKey,
       body: {
         dir: "asc",
-        filter: { since: sinceISO, to: toISO },
-        limit,
-        offset,
-        with: { financial_data: false },
-      },
-    });
-
-    const result = data?.result || {};
-    for (const p of result?.postings || []) if (p?.posting_number) nums.push(p.posting_number);
-
-    if (!result?.has_next) break;
-    offset += limit;
-    if (offset > 5000) break;
-  }
-  return nums;
-}
-
-// ✅ FIX: unfulfilled/list uses cutoff_from/cutoff_to (NOT since/to). :contentReference[oaicite:2]{index=2}
-async function listFbsFromUnfulfilled({ clientId, apiKey, cutoffFrom, cutoffTo }) {
-  let offset = 0;
-  const limit = 50;
-  const nums = [];
-
-  while (true) {
-    const data = await ozonPost("/v3/posting/fbs/unfulfilled/list", {
-      clientId,
-      apiKey,
-      body: {
-        dir: "asc",
         filter: {
-          cutoff_from: cutoffFrom,
-          cutoff_to: cutoffTo,
-          delivery_method_id: [],
-          provider_id: [],
-          warehouse_id: [],
-          // status НЕ задаём, чтобы не отрезать нужное
+          since: sinceISO,
+          to: toISO,
+          last_changed_status_date: { from: changedFromISO, to: changedToISO },
         },
-        limit,
-        offset,
-        with: { financial_data: false, barcodes: false, analytics_data: false },
-      },
-    });
-
-    const result = data?.result || {};
-    for (const p of result?.postings || []) if (p?.posting_number) nums.push(p.posting_number);
-
-    if (!result?.has_next) break;
-    offset += limit;
-    if (offset > 5000) break;
-  }
-
-  return nums;
-}
-
-async function listFbsOrdersForDay({ clientId, apiKey, sinceISO, toISO, cutoffFrom, cutoffTo }) {
-  const [a, b] = await Promise.all([
-    listFbsFromList({ clientId, apiKey, sinceISO, toISO }),
-    listFbsFromUnfulfilled({ clientId, apiKey, cutoffFrom, cutoffTo }),
-  ]);
-  return [...new Set([...a, ...b])];
-}
-
-// -------- FBO orders: list --------
-async function listFboOrdersForDay({ clientId, apiKey, sinceISO, toISO }) {
-  let offset = 0;
-  const limit = 50;
-  const nums = [];
-
-  while (true) {
-    const data = await ozonPost("/v2/posting/fbo/list", {
-      clientId,
-      apiKey,
-      body: {
-        dir: "asc",
-        filter: { since: sinceISO, to: toISO },
         limit,
         offset,
         with: { financial_data: false },
@@ -368,7 +315,86 @@ async function listFboOrdersForDay({ clientId, apiKey, sinceISO, toISO }) {
   return [...new Set(nums)];
 }
 
-// -------- cancels/returns for day (finance) --------
+// unfulfilled/list (cutoff_from/cutoff_to) — оставляем как доп. источник
+async function listFbsFromUnfulfilled({ clientId, apiKey, cutoffFrom, cutoffTo }) {
+  let offset = 0;
+  const limit = 50;
+  const nums = [];
+
+  while (true) {
+    const data = await ozonPost("/v3/posting/fbs/unfulfilled/list", {
+      clientId,
+      apiKey,
+      body: {
+        dir: "asc",
+        filter: {
+          cutoff_from: cutoffFrom,
+          cutoff_to: cutoffTo,
+          delivery_method_id: [],
+          provider_id: [],
+          warehouse_id: [],
+        },
+        limit,
+        offset,
+        with: { financial_data: false, barcodes: false, analytics_data: false },
+      },
+    });
+
+    const result = data?.result || {};
+    for (const p of result?.postings || []) if (p?.posting_number) nums.push(p.posting_number);
+
+    if (!result?.has_next) break;
+    offset += limit;
+    if (offset > 5000) break;
+  }
+
+  return [...new Set(nums)];
+}
+
+async function listFbsOrdersForDay({ clientId, apiKey, sinceISO, toISO, changedFromISO, changedToISO, cutoffFrom, cutoffTo }) {
+  const [a, b] = await Promise.all([
+    listFbsFromListByChanged({ clientId, apiKey, sinceISO, toISO, changedFromISO, changedToISO }),
+    listFbsFromUnfulfilled({ clientId, apiKey, cutoffFrom, cutoffTo }),
+  ]);
+  return [...new Set([...a, ...b])];
+}
+
+// ---------------- FBO: list (тоже через last_changed_status_date) ----------------
+// Ozon писал, что last_changed_status_date добавляли и для FBO методов :contentReference[oaicite:2]{index=2}
+async function listFboOrdersForDay({ clientId, apiKey, sinceISO, toISO, changedFromISO, changedToISO }) {
+  let offset = 0;
+  const limit = 50;
+  const nums = [];
+
+  while (true) {
+    const data = await ozonPost("/v2/posting/fbo/list", {
+      clientId,
+      apiKey,
+      body: {
+        dir: "asc",
+        filter: {
+          since: sinceISO,
+          to: toISO,
+          last_changed_status_date: { from: changedFromISO, to: changedToISO },
+        },
+        limit,
+        offset,
+        with: { financial_data: false },
+      },
+    });
+
+    const result = data?.result || {};
+    for (const p of result?.postings || []) if (p?.posting_number) nums.push(p.posting_number);
+
+    if (!result?.has_next) break;
+    offset += limit;
+    if (offset > 5000) break;
+  }
+
+  return [...new Set(nums)];
+}
+
+// ---------------- cancels/returns for day (finance) ----------------
 function isCancelOrReturn(opType, opName) {
   const s = `${opType || ""} ${opName || ""}`.toLowerCase();
   return s.includes("return") || s.includes("refund") || s.includes("cancel") || s.includes("возврат") || s.includes("отмен");
@@ -409,6 +435,7 @@ async function listCancelPostingNumbersFromFinance({ clientId, apiKey, dateStr }
     const pageCount = Number(result?.page_count || 0);
     if (pageCount && page >= pageCount) break;
     if (!ops || ops.length < page_size) break;
+
     page += 1;
     if (page > 50) break;
   }
@@ -417,11 +444,11 @@ async function listCancelPostingNumbersFromFinance({ clientId, apiKey, dateStr }
 }
 
 async function getDailyOrdersAndCancels({ clientId, apiKey, dateStr }) {
-  const { sinceISO, toISO, cutoffFrom, cutoffTo } = rangeForDate(dateStr);
+  const { sinceISO, toISO, changedFromISO, changedToISO, cutoffFrom, cutoffTo } = rangeForDate(dateStr);
 
   const [fbsNums, fboNums] = await Promise.all([
-    listFbsOrdersForDay({ clientId, apiKey, sinceISO, toISO, cutoffFrom, cutoffTo }),
-    listFboOrdersForDay({ clientId, apiKey, sinceISO, toISO }),
+    listFbsOrdersForDay({ clientId, apiKey, sinceISO, toISO, changedFromISO, changedToISO, cutoffFrom, cutoffTo }),
+    listFboOrdersForDay({ clientId, apiKey, sinceISO, toISO, changedFromISO, changedToISO }),
   ]);
 
   const fbsInfo = await mapLimit(fbsNums, 8, (n) => getPostingAmountAndType({ clientId, apiKey, postingNumber: n }));
