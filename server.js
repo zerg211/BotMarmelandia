@@ -21,8 +21,6 @@ app.get(/^\/https?:\/\//, (req, res) => res.redirect(302, "/"));
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "Public", "index.html"));
 });
-
-// чтобы работало и /index.html тоже
 app.get("/index.html", (req, res) => {
   res.sendFile(path.join(__dirname, "Public", "index.html"));
 });
@@ -79,7 +77,12 @@ function encrypt(text) {
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const enc = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
-  return { mode: "aes-256-gcm", iv: iv.toString("base64"), tag: tag.toString("base64"), value: enc.toString("base64") };
+  return {
+    mode: "aes-256-gcm",
+    iv: iv.toString("base64"),
+    tag: tag.toString("base64"),
+    value: enc.toString("base64"),
+  };
 }
 function decrypt(obj) {
   if (!obj) return null;
@@ -141,7 +144,6 @@ async function ozonPost(pathname, { clientId, apiKey, body }) {
 function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
 }
-
 function dayBoundsUtcFromLocal(dateStr) {
   const fromLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
   const toLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
@@ -150,7 +152,6 @@ function dayBoundsUtcFromLocal(dateStr) {
     to: toLocal.toUTC().toISO({ suppressMilliseconds: false }),
   };
 }
-
 function isSameDayLocal(iso, dateStr) {
   if (!iso) return false;
   const d = DateTime.fromISO(iso, { setZone: true }).setZone(SALES_TZ);
@@ -167,7 +168,6 @@ function toCents(val) {
   const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10) || 0;
   return rub * 100 + kop;
 }
-
 const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function centsToRubString(cents) {
   return `${rubFmt.format(cents / 100)} ₽`;
@@ -223,19 +223,16 @@ async function fetchFboAllForDay({ clientId, apiKey, dateStr }) {
       with: { analytics_data: true, financial_data: true, legal_info: false },
     };
 
-    if (offset === 0) console.log("➡️ FBO request:", JSON.stringify(body));
-
     const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
     const { postings, hasNext } = extractPostings(data);
 
     all.push(...postings);
-
     if (!hasNext) break;
+
     offset += limit;
     if (offset > 200000) break;
   }
 
-  console.log(`📦 FBO received total postings=${all.length} (before local filter by created_at)`);
   return all;
 }
 
@@ -265,34 +262,78 @@ async function calcTodayStats({ clientId, apiKey, dateStr }) {
   return { dateStr, ordersCount, ordersAmount, cancelsCount, cancelsAmount };
 }
 
-// ====== API для Mini App (берём первого пользователя из store.json) ======
-app.get("/api/dashboard/today", async (req, res) => {
-  try {
-    const store = loadStore();
-    const firstUserId = Object.keys(store.users || {})[0];
-    if (!firstUserId) return res.status(400).json({ error: "no_users" });
+// ====== API: получить ключи из (query → user_id → первый юзер) ======
+function resolveCredsFromRequest(req) {
+  const qClient = req.query.clientId || req.query.client_id;
+  const qKey = req.query.apiKey || req.query.api_key;
 
+  // 1) Если MiniApp передал ключи прямо в запросе
+  if (qClient && qKey) {
+    return { clientId: String(qClient), apiKey: String(qKey), source: "query" };
+  }
+
+  // 2) Если передан user_id (telegram id)
+  const qUserId = req.query.user_id || req.query.userId;
+  if (qUserId) {
+    const creds = getUserCreds(String(qUserId));
+    if (creds?.clientId && creds?.apiKey) {
+      return { clientId: creds.clientId, apiKey: decrypt(creds.apiKey), source: "user_id" };
+    }
+  }
+
+  // 3) Иначе — первый пользователь в store.json
+  const store = loadStore();
+  const firstUserId = Object.keys(store.users || {})[0];
+  if (firstUserId) {
     const creds = getUserCreds(firstUserId);
-    if (!creds?.clientId || !creds?.apiKey) return res.status(400).json({ error: "no_creds" });
+    if (creds?.clientId && creds?.apiKey) {
+      return { clientId: creds.clientId, apiKey: decrypt(creds.apiKey), source: "first_user" };
+    }
+  }
 
-    const apiKey = decrypt(creds.apiKey);
-    const clientId = creds.clientId;
+  return null;
+}
+
+async function handleToday(req, res) {
+  try {
+    const resolved = resolveCredsFromRequest(req);
+    if (!resolved) return res.status(400).json({ error: "no_creds" });
 
     const dateStr = todayDateStr();
-    const s = await calcTodayStats({ clientId, apiKey, dateStr });
+    const s = await calcTodayStats({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr });
 
-    res.json({
+    return res.json({
       title: `FBO: за сегодня ${s.dateStr} (${SALES_TZ})`,
+      tz: SALES_TZ,
+      date: s.dateStr,
+
+      // для совместимости — и так и так
       orders: s.ordersCount,
-      orders_sum: s.ordersAmount,     // в копейках
+      ordersCount: s.ordersCount,
+
+      orders_sum: s.ordersAmount,          // копейки
+      ordersAmount: s.ordersAmount,        // копейки
+      orders_sum_text: centsToRubString(s.ordersAmount),
+
       cancels: s.cancelsCount,
-      cancels_sum: s.cancelsAmount,   // в копейках
+      cancelsCount: s.cancelsCount,
+
+      cancels_sum: s.cancelsAmount,        // копейки
+      cancelsAmount: s.cancelsAmount,      // копейки
+      cancels_sum_text: centsToRubString(s.cancelsAmount),
+
       updated_at: DateTime.now().setZone(SALES_TZ).toISO(),
+      source: resolved.source
     });
   } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
+    return res.status(500).json({ error: String(e.message || e) });
   }
-});
+}
+
+// ТРИ URL (на случай, что фронт зовёт другой путь)
+app.get("/api/dashboard/today", handleToday);
+app.get("/api/today", handleToday);
+app.get("/api/stats/today", handleToday);
 
 // ---------------- widget (чат) ----------------
 function widgetText(s) {
