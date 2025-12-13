@@ -263,306 +263,158 @@ async function calcTodayStats({ clientId, apiKey, dateStr }) {
 }
 
 
-// ---------------- Core: buyouts (delivered today) + returns (today) ----------------
-async function fetchFboAllForPeriod({ clientId, apiKey, sinceIso, toIso }) {
+// ---------------- Core: buyouts / returns / refusals by posting details ----------------
+// Идея: берём список отправлений за последние N дней (/v2/posting/fbo/list),
+// затем для каждого posting_number берём детали (/v2/posting/fbo/get) и классифицируем по substatus.
+
+async function fetchFboPostingNumbersLastDays({ clientId, apiKey, dateStr, days = 10 }) {
+  const from = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).minus({ days }).startOf("day");
+  const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
+  const sinceIso = from.toUTC().toISO({ suppressMilliseconds: false });
+  const toIso = to.toUTC().toISO({ suppressMilliseconds: false });
+
   let offset = 0;
   const limit = 1000;
-  const all = [];
+  const nums = [];
 
   while (true) {
     const body = {
       dir: "ASC",
-      filter: { since: sinceIso, to: toIso, status: "delivered" },
+      filter: { since: sinceIso, to: toIso, status: "" },
       limit,
       offset,
       translit: true,
-      with: { analytics_data: true, financial_data: false, legal_info: false },
+      with: { analytics_data: false, financial_data: false, legal_info: false },
     };
 
     const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
     const { postings, hasNext } = extractPostings(data);
-
-    all.push(...postings);
+    for (const p of postings || []) {
+      if (p?.posting_number) nums.push(String(p.posting_number));
+    }
     if (!hasNext) break;
 
     offset += limit;
     if (offset > 200000) break;
   }
 
-  return all;
+  // уникальные
+  return Array.from(new Set(nums));
 }
 
-function pickDeliveredIso(posting) {
-  // Считаем момент "выкупа" как момент смены статуса на DELIVERED (обычно это status_updated_at).
-  // Поля в разных версиях API могут отличаться — пробуем максимально широко.
+async function fetchFboPostingDetails({ clientId, apiKey, postingNumber }) {
+  const body = {
+    posting_number: postingNumber,
+    translit: true,
+    with: { analytics_data: false, financial_data: false, legal_info: false },
+  };
+  const data = await ozonPost("/v2/posting/fbo/get", { clientId, apiKey, body });
+  return data?.result || null;
+}
+
+function pickEventIsoForSubstatus(d) {
+  // пытаемся найти "когда статус поменялся" — в API может называться по-разному
   return (
-    posting?.status_updated_at ||
-    posting?.delivered_at ||
-    posting?.analytics_data?.delivered_at ||
-    posting?.analytics_data?.delivering_date ||
-    posting?.analytics_data?.delivery_date ||
-    posting?.analytics_data?.shipment_date ||
-    posting?.delivering_date ||
-    posting?.delivery_date ||
+    d?.status_updated_at ||
+    d?.updated_at ||
+    d?.substatus_updated_at ||
+    d?.in_process_at ||
+    d?.created_at ||
     null
   );
 }
 
-async function calcBuyoutsTodayByOffer({ clientId, apiKey, dateStr }) {
-  // "Выкуплено сегодня" = отправления, у которых СТАТУС сменился на DELIVERED сегодня (по МСК).
-  // Важно: /v2/posting/fbo/list фильтрует по created_at, поэтому берём широкий диапазон по созданию
-  // и уже в коде отбираем по статусным датам.
-  const day = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ });
-  const sinceCreated = day.minus({ days: 30 }).startOf("day").toUTC().toISO({ suppressMilliseconds: false });
-  const toCreated = day.endOf("day").toUTC().toISO({ suppressMilliseconds: false });
+async function calcEventsToday({ clientId, apiKey, dateStr }) {
+  const byBuyout = new Map();
+  const byReturn = new Map();
+  const byRefusal = new Map();
 
-  let offset = 0;
-  const limit = 1000;
+  let buyoutsQty = 0;
+  let returnsQty = 0;
+  let refusalsQty = 0;
+  let refusalsAmount = 0; // копейки
 
-  const byOffer = new Map();
-  let totalQty = 0;
+  const postingNumbers = await fetchFboPostingNumbersLastDays({ clientId, apiKey, dateStr, days: 10 });
 
-  while (true) {
-    const body = {
-      dir: "ASC",
-      filter: { since: sinceCreated, to: toCreated, status: "" },
-      limit,
-      offset,
-      translit: true,
-      with: { analytics_data: true, financial_data: false, legal_info: false },
-    };
+  // защита от слишком больших выборок
+  const MAX_DETAILS = 400;
+  const list = postingNumbers.slice(0, MAX_DETAILS);
 
-    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
-    const { postings, hasNext } = extractPostings(data);
+  // батчи по 10, чтобы не задушить API
+  const batchSize = 10;
+  for (let i = 0; i < list.length; i += batchSize) {
+    const batch = list.slice(i, i + batchSize);
+    const details = await Promise.all(batch.map((pn) => fetchFboPostingDetails({ clientId, apiKey, postingNumber: pn }).catch(() => null)));
 
-    for (const p of postings) {
-      // берём момент смены статуса на delivered
-      const deliveredIso = pickDeliveredIso(p);
-      if (!isSameDayLocal(deliveredIso, dateStr)) continue;
-      if (String(p?.status || "").toLowerCase() !== "delivered") continue;
+    for (const d of details) {
+      if (!d) continue;
 
-      for (const pr of p?.products || []) {
-        const offerId = pr?.offer_id != null ? String(pr.offer_id) : null;
-        const qty = Number(pr?.quantity || 0) || 0;
-        if (!offerId || qty <= 0) continue;
+      const status = String(d.status || "").toLowerCase();
+      const sub = String(d.substatus || "").toLowerCase();
 
-        totalQty += qty;
-        byOffer.set(offerId, (byOffer.get(offerId) || 0) + qty);
-      }
-    }
-
-    if (!hasNext) break;
-    offset += limit;
-    if (offset > 200000) break;
-  }
-
-  const list = Array.from(byOffer.entries())
-    .map(([offer_id, qty]) => ({ offer_id, qty }))
-    .sort((a, b) => b.qty - a.qty);
-
-  return { buyouts_total_qty: totalQty, buyouts_list: list };
-}
-
-async function calcReturnsTodayByOffer({ clientId, apiKey, dateStr }) {
-  // Возвраты сегодня: /v1/returns/list требует filter.status, но "all" у некоторых аккаунтов не работает.
-  // Поэтому передаём status = "" (как "все"), и берём широкий период, затем фильтруем по дате обновления.
-  const day = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ });
-  const fromStr = day.minus({ days: 30 }).toFormat("yyyy-LL-dd");
-  const toStr = day.toFormat("yyyy-LL-dd");
-
-  const byOffer = new Map();
-  let totalQty = 0;
-
-  let offset = 0;
-  const limit = 1000;
-
-  while (true) {
-    const body = {
-      filter: { date_from: fromStr, date_to: toStr, status: "" },
-      limit,
-      offset,
-    };
-
-    const data = await ozonPost("/v1/returns/list", { clientId, apiKey, body });
-
-    const root = data?.result ?? data ?? {};
-    const items =
-      root?.returns ||
-      root?.items ||
-      root?.result ||
-      root ||
-      [];
-
-    const arr = Array.isArray(items) ? items : [];
-    if (arr.length === 0) break;
-
-    for (const r of arr) {
-      // дата изменения статуса/обновления
-      const iso =
-        r?.updated_at ||
-        r?.status_updated_at ||
-        r?.last_updated_at ||
-        r?.last_changed_at ||
-        r?.created_at ||
-        null;
-
-      if (!isSameDayLocal(iso, dateStr)) continue;
-
-      const prods = Array.isArray(r?.products) ? r.products : [];
-      if (prods.length) {
-        for (const pr of prods) {
-          const offerId = pr?.offer_id != null ? String(pr.offer_id) : null;
+      // 1) Выкуплено сегодня: delivered + fact_delivery_date сегодня
+      if (status === "delivered" && isSameDayLocal(d.fact_delivery_date, dateStr)) {
+        for (const pr of d.products || []) {
+          const offerId = pr?.offer_id ? String(pr.offer_id) : (pr?.sku ? String(pr.sku) : "UNKNOWN");
           const qty = Number(pr?.quantity || 0) || 0;
-          if (!offerId || qty <= 0) continue;
-
-          totalQty += qty;
-          byOffer.set(offerId, (byOffer.get(offerId) || 0) + qty);
+          if (qty <= 0) continue;
+          buyoutsQty += qty;
+          byBuyout.set(offerId, (byBuyout.get(offerId) || 0) + qty);
         }
-      } else {
-        // fallback если products нет
-        const offerId = r?.offer_id != null ? String(r.offer_id) : null;
-        const qty = Number(r?.quantity || 0) || 0;
-        if (!offerId || qty <= 0) continue;
+      }
 
-        totalQty += qty;
-        byOffer.set(offerId, (byOffer.get(offerId) || 0) + qty);
+      // 2) Возвраты / Отказы: по substatus и дате обновления (если есть)
+      if (sub === "posting_received" || sub === "posting_canceled") {
+        const eventIso = pickEventIsoForSubstatus(d);
+        if (!isSameDayLocal(eventIso, dateStr)) continue;
+
+        for (const pr of d.products || []) {
+          const offerId = pr?.offer_id ? String(pr.offer_id) : (pr?.sku ? String(pr.sku) : "UNKNOWN");
+          const qty = Number(pr?.quantity || 0) || 0;
+          if (qty <= 0) continue;
+
+          if (sub === "posting_received") {
+            returnsQty += qty;
+            byReturn.set(offerId, (byReturn.get(offerId) || 0) + qty);
+          } else {
+            refusalsQty += qty;
+            byRefusal.set(offerId, (byRefusal.get(offerId) || 0) + qty);
+            // сумма отказов считаем по цене товара из products
+            refusalsAmount += toCents(pr?.price) * qty;
+          }
+        }
       }
     }
-
-    offset += limit;
-    if (arr.length < limit) break;
   }
 
-  const list = Array.from(byOffer.entries())
-    .map(([offer_id, qty]) => ({ offer_id, qty }))
-    .sort((a, b) => b.qty - a.qty);
+  const buyouts_list = Array.from(byBuyout.entries()).map(([offer_id, qty]) => ({ offer_id, qty })).sort((a, b) => b.qty - a.qty);
+  const returns_list = Array.from(byReturn.entries()).map(([offer_id, qty]) => ({ offer_id, qty })).sort((a, b) => b.qty - a.qty);
+  const refusals_list = Array.from(byRefusal.entries()).map(([offer_id, qty]) => ({ offer_id, qty })).sort((a, b) => b.qty - a.qty);
 
-  return { returns_total_qty: totalQty, returns_list: list };
+  return {
+    buyouts_total_qty: buyoutsQty,
+    buyouts_list,
+    returns_total_qty: returnsQty,
+    returns_list,
+    refusals_total_qty: refusalsQty,
+    refusals_amount: refusalsAmount,
+    refusals_list,
+    scanned_postings: list.length,
+  };
 }
 
-
-
-// ---------------- Core: balance (today) ----------------
-async function calcBalanceToday({ clientId, apiKey, dateStr }) {
-  // Самый прямой метод (у тебя он работает): /v1/finance/balance
-  // Запрос должен быть в формате YYYY-MM-DD
-  try {
-    const data = await ozonPost("/v1/finance/balance", {
-      clientId,
-      apiKey,
-      body: { date_from: dateStr, date_to: dateStr },
-    });
-
-    const total = data?.total || data?.result?.total;
-    const closing = total?.closing_balance?.value ?? total?.closing_balance ?? null;
-
-    if (closing !== null && closing !== undefined) {
-      const cents = toCents(closing);
-      return { balance_cents: cents, balance_text: centsToRubString(cents) };
-    }
-  } catch (e) {
-    // пойдём дальше (фолбэки)
-  }
-
-  // Фолбэк 1: некоторые аккаунты имеют /v2/finance/balance
-  try {
-    const data = await ozonPost("/v2/finance/balance", {
-      clientId,
-      apiKey,
-      body: { date_from: dateStr, date_to: dateStr },
-    });
-
-    const root = data?.result ?? data ?? {};
-    const total = root?.total ?? root;
-    const closing = total?.closing_balance?.value ?? total?.closing_balance ?? root?.balance ?? null;
-
-    if (closing !== null && closing !== undefined) {
-      const cents = toCents(closing);
-      return { balance_cents: cents, balance_text: centsToRubString(cents) };
-    }
-  } catch (e) {}
-
-  // Фолбэк 2: cash-flow (может быть неактуален по балансу, но лучше чем ничего)
-  const { since, to } = dayBoundsUtcFromLocal(dateStr);
-  try {
-    const data = await ozonPost("/v1/finance/cash-flow-statement/list", {
-      clientId,
-      apiKey,
-      body: { filter: { date_from: since, date_to: to } },
-    });
-    const r = data?.result ?? data ?? {};
-    const balance =
-      r?.summary?.closing_balance ??
-      r?.summary?.end_balance ??
-      r?.header?.closing_balance ??
-      r?.header?.end_balance ??
-      null;
-
-    if (balance !== null && balance !== undefined) {
-      const cents = toCents(balance);
-      return { balance_cents: cents, balance_text: centsToRubString(cents) };
-    }
-  } catch (e) {}
-
-  return { balance_cents: null, balance_text: "—" };
+async function getBalanceForDay({ clientId, apiKey, dateStr }) {
+  // dateStr: YYYY-MM-DD
+  const body = { date_from: dateStr, date_to: dateStr };
+  const data = await ozonPost("/v1/finance/balance", { clientId, apiKey, body });
+  const closing = data?.total?.closing_balance?.value;
+  const opening = data?.total?.opening_balance?.value;
+  return {
+    balance_opening_cents: Math.round(Number(opening || 0) * 100),
+    balance_closing_cents: Math.round(Number(closing || 0) * 100),
+  };
 }
 
-// ---------------- Core: balance (cabinet) ----------------
-async function calcBalanceNowCents({ clientId, apiKey, dateStr }) {
-  // В Seller API нет одного “идеального” метода баланса, поэтому делаем 2 попытки:
-  // 1) /v1/finance/mutual-settlement (отчёт взаиморасчётов) — часто содержит итоговую задолженность/баланс.
-  // 2) /v1/finance/cash-flow-statement/list (финансовый отчёт) — как запасной вариант.
-  // Возвращаем копейки. Если не получилось — null (чтобы фронт показывал "—", а не 0).
-  const fromMonth = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("month").toUTC().toISO({ suppressMilliseconds: false });
-  const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day").toUTC().toISO({ suppressMilliseconds: false });
-
-  // 1) mutual-settlement
-  try {
-    const body = { date_from: fromMonth, date_to: to };
-    const data = await ozonPost("/v1/finance/mutual-settlement", { clientId, apiKey, body });
-    const r = data?.result || data;
-
-    const candidates = [
-      r?.summary?.ending_balance,
-      r?.summary?.end_balance,
-      r?.summary?.closing_balance,
-      r?.header?.ending_balance,
-      r?.header?.end_balance,
-      r?.header?.closing_balance,
-      r?.balance,
-      r?.result?.balance,
-    ];
-
-    for (const c of candidates) {
-      const cents = toCents(c);
-      if (cents !== 0) return cents; // если реально есть баланс — возвращаем
-    }
-  } catch (_) {}
-
-  // 2) cash-flow-statement
-  try {
-    const body = { filter: { date_from: fromMonth, date_to: to }, page: 1, page_size: 1000 };
-    const data = await ozonPost("/v1/finance/cash-flow-statement/list", { clientId, apiKey, body });
-    const r = data?.result || data;
-
-    const candidates = [
-      r?.summary?.closing_balance,
-      r?.summary?.end_balance,
-      r?.summary?.ending_balance,
-      r?.header?.closing_balance,
-      r?.header?.end_balance,
-      r?.header?.ending_balance,
-      r?.balance,
-    ];
-
-    for (const c of candidates) {
-      const cents = toCents(c);
-      if (cents !== 0) return cents;
-    }
-  } catch (_) {}
-
-  return null;
-}
 // ====== API: получить ключи из (query → user_id → первый юзер) ======
 function resolveCredsFromRequest(req) {
   const qClient = req.query.clientId || req.query.client_id;
@@ -602,16 +454,23 @@ async function handleToday(req, res) {
 
     const dateStr = todayDateStr();
     const s = await calcTodayStats({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr });
-
-    const [buyoutsR, returnsR, balanceR] = await Promise.allSettled([
-      calcBuyoutsTodayByOffer({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
-      calcReturnsTodayByOffer({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
-      calcBalanceToday({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
+    const [eventsRes, balRes] = await Promise.allSettled([
+      calcEventsToday({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
+      getBalanceForDay({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
     ]);
 
-    const buyouts = buyoutsR.status === "fulfilled" ? buyoutsR.value : { buyouts_total_qty: 0, buyouts_list: [] };
-    const returns = returnsR.status === "fulfilled" ? returnsR.value : { returns_total_qty: 0, returns_list: [] };
-    const balance = balanceR.status === "fulfilled" ? balanceR.value : { balance_cents: null, balance_text: "—" };
+    const events = eventsRes.status === "fulfilled" ? eventsRes.value : {
+      buyouts_total_qty: 0,
+      buyouts_list: [],
+      returns_total_qty: 0,
+      returns_list: [],
+      refusals_total_qty: 0,
+      refusals_amount: 0,
+      refusals_list: [],
+      scanned_postings: 0,
+    };
+
+    const bal = balRes.status === "fulfilled" ? balRes.value : { balance_opening_cents: null, balance_closing_cents: null };
 
     return res.json({
       title: `FBO: за сегодня ${s.dateStr} (${SALES_TZ})`,
@@ -626,26 +485,29 @@ async function handleToday(req, res) {
       ordersAmount: s.ordersAmount,        // копейки
       orders_sum_text: centsToRubString(s.ordersAmount),
 
-      cancels: s.cancelsCount,
-      cancelsCount: s.cancelsCount,
+      // ❗ В интерфейсе переименовано в «Отказы» и считается по substatus=posting_canceled
+      cancels: events.refusals_total_qty,
+      cancelsCount: events.refusals_total_qty,
 
-      cancels_sum: s.cancelsAmount,        // копейки
-      cancelsAmount: s.cancelsAmount,      // копейки
-      cancels_sum_text: centsToRubString(s.cancelsAmount),
+      cancels_sum: events.refusals_amount,        // копейки
+      cancelsAmount: events.refusals_amount,      // копейки
+      cancels_sum_text: centsToRubString(events.refusals_amount),
 
-      // новые виджеты
-      buyouts_total_qty: buyouts.buyouts_total_qty,
-      buyouts_list: buyouts.buyouts_list,
-      returns_total_qty: returns.returns_total_qty,
-      returns_list: returns.returns_list,
+      // выкупы / возвраты
+      buyouts_total_qty: events.buyouts_total_qty,
+      buyouts_list: events.buyouts_list,
+      returns_total_qty: events.returns_total_qty,
+      returns_list: events.returns_list,
 
-      balance_cents: balance.balance_cents,
-      balance_text: balance.balance_text,
+      // баланс
+      balance_opening: bal.balance_opening_cents,
+      balance_closing: bal.balance_closing_cents,
+      balance_closing_text: (bal.balance_closing_cents === null ? "—" : centsToRubString(bal.balance_closing_cents)),
 
+      debug_scanned_postings: events.scanned_postings,
       widgets_errors: {
-        buyouts: buyoutsR.status === "rejected" ? String(buyoutsR.reason?.message || buyoutsR.reason) : null,
-        returns: returnsR.status === "rejected" ? String(returnsR.reason?.message || returnsR.reason) : null,
-        balance: balanceR.status === "rejected" ? String(balanceR.reason?.message || balanceR.reason) : null,
+        events: eventsRes.status === "rejected" ? String(eventsRes.reason?.message || eventsRes.reason) : null,
+        balance: balRes.status === "rejected" ? String(balRes.reason?.message || balRes.reason) : null,
       },
 
       updated_at: DateTime.now().setZone(SALES_TZ).toISO(),
