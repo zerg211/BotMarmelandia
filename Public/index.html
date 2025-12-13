@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ozon — Seller API</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div class="bg"></div>
+
+  <main class="wrap">
+    <header class="top">
+      <div class="brand">
+        <div class="dot"></div>
+        <div>
+          <div class="brand-title">Ozon • Seller API</div>
+          <div class="brand-sub">Продажи за день</div>
+        </div>
+      </div>
+      <div class="pill" id="datePill">—</div>
+    </header>
+
+    <section class="card">
+      <h1>Продажи за сегодня</h1>
+      <p class="muted">Количество заказов, созданных сегодня (все статусы).</p>
+
+      <div class="value">
+        <div class="num" id="count">—</div>
+        <div class="unit">шт</div>
+      </div>
+
+      <div class="sum" id="sum"></div>
+
+      <div class="row">
+        <button class="btn" id="refreshBtn">
+          <span class="icon">⟳</span>
+          Обновить
+        </button>
+        <button class="btn ghost" id="keysBtn">
+          <span class="icon">🔑</span>
+          Ключи
+        </button>
+      </div>
+
+      <div class="hint" id="hint"></div>
+    </section>
+  </main>
+
+  <!-- modal -->
+  <div class="modal" id="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <div class="modal-title">Ключи Ozon</div>
+        <button class="x" id="closeModal">✕</button>
+      </div>
+
+      <label class="lbl">Client ID</label>
+      <input class="inp" id="clientId" placeholder="Например: 123456" />
+
+      <label class="lbl">API Key</label>
+      <input class="inp" id="apiKey" placeholder="Вставьте API Key" />
+
+      <div class="row">
+        <button class="btn" id="saveKeys">Готово</button>
+        <button class="btn ghost" id="deleteKeys">Удалить</button>
+      </div>
+
+      <div class="muted small" id="keysStatus"></div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
