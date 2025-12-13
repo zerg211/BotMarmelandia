@@ -7,7 +7,7 @@ import { DateTime } from "luxon";
 const app = express();
 app.use(express.json());
 
-// Health routes
+// Health
 app.get("/", (req, res) => res.status(200).send("OK"));
 app.get("/index.html", (req, res) => res.status(200).send("OK"));
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
@@ -18,7 +18,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
-// store (simple file)
+// store
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 
@@ -28,7 +28,7 @@ const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 // dialog state
 const pending = new Map();
 
-// cache
+// caches
 const postingTypeCache = new Map(); // posting_number -> 'fbs'|'fbo'
 const postingAmountCache = new Map(); // posting_number -> { amount, type, ts }
 const POSTING_CACHE_TTL_MS = 60_000;
@@ -138,7 +138,14 @@ async function tgEditMessage(chatId, messageId, text, opts = {}) {
   });
 
   const data = await resp.json().catch(() => null);
-  if (!data?.ok) console.error("❌ editMessageText failed:", data);
+
+  // ✅ Игнорируем “message is not modified” — это не ошибка для нас
+  if (!data?.ok) {
+    const descr = String(data?.description || "");
+    if (!descr.includes("message is not modified")) {
+      console.error("❌ editMessageText failed:", data);
+    }
+  }
   return data;
 }
 
@@ -178,14 +185,17 @@ function todayDateStr() {
 function rangeForDate(dateStr) {
   const from = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
   const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
+
+  // ВАЖНО: без миллисекунд
+  const sinceISO = from.toUTC().toISO({ suppressMilliseconds: true });
+  const toISO = to.toUTC().toISO({ suppressMilliseconds: true });
+
   return {
     dateStr,
-    from,
-    to,
-    sinceISO: from.toUTC().toISO(),
-    toISO: to.toUTC().toISO(),
-    fromUtcIso: from.toUTC().toISO(),
-    toUtcIso: to.toUTC().toISO(),
+    sinceISO,
+    toISO,
+    fromUtcIso: sinceISO,
+    toUtcIso: toISO,
   };
 }
 
@@ -263,17 +273,19 @@ async function mapLimit(items, limit, fn) {
   return res;
 }
 
-// --- ORDERS: postings created in day (FBS + FBO) ---
-async function listFbsOrdersCreated({ clientId, apiKey, sinceISO, toISO }) {
+// ---------------- ORDERS: FBS (list + unfulfilled) ----------------
+// /v3/posting/fbs/list — список отправлений (вер.3) :contentReference[oaicite:1]{index=1}
+async function listFbsFromList({ clientId, apiKey, sinceISO, toISO }) {
   let offset = 0;
   const limit = 50;
-  const numbers = [];
+  const nums = [];
 
   while (true) {
     const data = await ozonPost("/v3/posting/fbs/list", {
       clientId,
       apiKey,
       body: {
+        dir: "asc",
         filter: { since: sinceISO, to: toISO },
         limit,
         offset,
@@ -283,26 +295,67 @@ async function listFbsOrdersCreated({ clientId, apiKey, sinceISO, toISO }) {
 
     const result = data?.result || {};
     const postings = result?.postings || [];
-    for (const p of postings) if (p?.posting_number) numbers.push(p.posting_number);
+    for (const p of postings) if (p?.posting_number) nums.push(p.posting_number);
 
     if (!result?.has_next) break;
     offset += limit;
     if (offset > 5000) break;
   }
 
-  return [...new Set(numbers)];
+  return nums;
 }
 
+// /v3/posting/fbs/unfulfilled/list — необработанные (новые) :contentReference[oaicite:2]{index=2}
+async function listFbsFromUnfulfilled({ clientId, apiKey, sinceISO, toISO }) {
+  let offset = 0;
+  const limit = 50;
+  const nums = [];
+
+  while (true) {
+    const data = await ozonPost("/v3/posting/fbs/unfulfilled/list", {
+      clientId,
+      apiKey,
+      body: {
+        dir: "asc",
+        filter: { since: sinceISO, to: toISO },
+        limit,
+        offset,
+        with: { financial_data: false },
+      },
+    });
+
+    const result = data?.result || {};
+    const postings = result?.postings || [];
+    for (const p of postings) if (p?.posting_number) nums.push(p.posting_number);
+
+    if (!result?.has_next) break;
+    offset += limit;
+    if (offset > 5000) break;
+  }
+
+  return nums;
+}
+
+async function listFbsOrdersCreated({ clientId, apiKey, sinceISO, toISO }) {
+  const [a, b] = await Promise.all([
+    listFbsFromList({ clientId, apiKey, sinceISO, toISO }),
+    listFbsFromUnfulfilled({ clientId, apiKey, sinceISO, toISO }),
+  ]);
+  return [...new Set([...a, ...b])];
+}
+
+// ---------------- ORDERS: FBO ----------------
 async function listFboOrdersCreated({ clientId, apiKey, sinceISO, toISO }) {
   let offset = 0;
   const limit = 50;
-  const numbers = [];
+  const nums = [];
 
   while (true) {
     const data = await ozonPost("/v2/posting/fbo/list", {
       clientId,
       apiKey,
       body: {
+        dir: "asc",
         filter: { since: sinceISO, to: toISO },
         limit,
         offset,
@@ -312,23 +365,26 @@ async function listFboOrdersCreated({ clientId, apiKey, sinceISO, toISO }) {
 
     const result = data?.result || {};
     const postings = result?.postings || [];
-    for (const p of postings) if (p?.posting_number) numbers.push(p.posting_number);
+    for (const p of postings) if (p?.posting_number) nums.push(p.posting_number);
 
     if (!result?.has_next) break;
     offset += limit;
     if (offset > 5000) break;
   }
 
-  return [...new Set(numbers)];
+  return [...new Set(nums)];
 }
 
-// --- CANCELS/RETURNS: finance operations in day -> posting numbers ---
-function classifyCancelOrReturn(opType, opName) {
+// ---------------- CANCELS/RETURNS from finance ----------------
+function isCancelOrReturn(opType, opName) {
   const s = `${opType || ""} ${opName || ""}`.toLowerCase();
-  // оставляем широкое распознавание (у тебя отмены уже считаются верно)
-  if (s.includes("return") || s.includes("refund") || s.includes("cancel") || s.includes("возврат") || s.includes("отмен"))
-    return true;
-  return false;
+  return (
+    s.includes("return") ||
+    s.includes("refund") ||
+    s.includes("cancel") ||
+    s.includes("возврат") ||
+    s.includes("отмен")
+  );
 }
 
 async function listCancelPostingNumbersFromFinance({ clientId, apiKey, dateStr }) {
@@ -358,7 +414,7 @@ async function listCancelPostingNumbersFromFinance({ clientId, apiKey, dateStr }
     const ops = result?.operations || [];
 
     for (const o of ops) {
-      if (!classifyCancelOrReturn(o.operation_type, o.operation_type_name)) continue;
+      if (!isCancelOrReturn(o.operation_type, o.operation_type_name)) continue;
       const num = o?.posting?.posting_number;
       if (num) nums.add(num);
     }
@@ -374,17 +430,17 @@ async function listCancelPostingNumbersFromFinance({ clientId, apiKey, dateStr }
   return [...nums];
 }
 
-// --- Main daily calc (orders + cancels) ---
+// ---------------- Main daily calc ----------------
 async function getDailyOrdersAndCancels({ clientId, apiKey, dateStr }) {
   const { sinceISO, toISO } = rangeForDate(dateStr);
 
-  // 1) Orders created today (FBS+FBO)
+  // 1) orders that “came in” today (FBS + FBO)
   const [orderFbsNums, orderFboNums] = await Promise.all([
     listFbsOrdersCreated({ clientId, apiKey, sinceISO, toISO }),
     listFboOrdersCreated({ clientId, apiKey, sinceISO, toISO }),
   ]);
 
-  // суммы заказов — по каждому posting get -> customer_price
+  // amounts for orders (as in LK)
   const orderFbsInfo = await mapLimit(orderFbsNums, 8, (num) =>
     getPostingAmountAndType({ clientId, apiKey, postingNumber: num })
   );
@@ -398,7 +454,7 @@ async function getDailyOrdersAndCancels({ clientId, apiKey, dateStr }) {
   let ordersSumFbo = 0;
   for (const r of orderFboInfo) if (r && typeof r.amount === "number") ordersSumFbo += r.amount;
 
-  // 2) Cancels/returns today (from finance)
+  // 2) cancels/returns today (finance)
   const cancelNums = await listCancelPostingNumbersFromFinance({ clientId, apiKey, dateStr });
   const cancelInfo = await mapLimit(cancelNums, 8, (num) =>
     getPostingAmountAndType({ clientId, apiKey, postingNumber: num })
@@ -425,21 +481,14 @@ async function getDailyOrdersAndCancels({ clientId, apiKey, dateStr }) {
 
   return {
     dateStr,
-
     ordersFbs,
     ordersFbo,
     ordersTotal,
-    ordersSumFbs,
-    ordersSumFbo,
     ordersSumTotal,
-
     cancelsFbs,
     cancelsFbo,
     cancelsTotal,
-    cancelsSumFbs,
-    cancelsSumFbo,
     cancelsSumTotal,
-
     netOrders,
     netSum,
   };
@@ -495,8 +544,11 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
     const stats = await getDailyOrdersAndCancels({ clientId, apiKey, dateStr });
     const text = widgetText(stats);
 
-    if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
-    else await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
+    if (editMessageId) {
+      await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
+    } else {
+      await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
+    }
   } catch (e) {
     const msg =
       `❌ Не смог получить данные за <b>${dateStr}</b>.\n\n` +
