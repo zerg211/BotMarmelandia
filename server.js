@@ -396,6 +396,51 @@ async function calcReturnsTodayByOffer({ clientId, apiKey, dateStr }) {
   return { returns_total_qty: totalQty, returns_list: list };
 }
 
+
+
+// ---------------- Core: balance (today) ----------------
+async function calcBalanceToday({ clientId, apiKey, dateStr }) {
+  // Пробуем получить баланс через финансовый отчёт за сегодня (по МСК).
+  // Если метод/поля у аккаунта отличаются — это НЕ должно ломать весь /api/dashboard/today.
+  const { since, to } = dayBoundsUtcFromLocal(dateStr);
+
+  // Некоторые методы ожидают date_from/date_to, некоторые since/to.
+  // Делаем 2 попытки.
+  const attempts = [
+    { filter: { date_from: since, date_to: to } },
+    { filter: { since, to } },
+  ];
+
+  let lastErr = null;
+  for (const a of attempts) {
+    try {
+      const data = await ozonPost("/v1/finance/cash-flow-statement/list", {
+        clientId, apiKey,
+        body: { ...a, page: 1, page_size: 1000 }
+      });
+
+      const r = data?.result || {};
+      // В разных версиях может быть summary/header с closing/end balance
+      const bal =
+        r?.summary?.closing_balance ??
+        r?.summary?.end_balance ??
+        r?.header?.closing_balance ??
+        r?.header?.end_balance ??
+        r?.summary?.balance ??
+        r?.header?.balance ??
+        null;
+
+      if (bal === null || bal === undefined) return { balance_cents: null, balance_text: "—" };
+
+      const cents = toCents(bal);
+      return { balance_cents: cents, balance_text: centsToRubString(cents) };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  throw lastErr || new Error("balance_failed");
+}
 // ====== API: получить ключи из (query → user_id → первый юзер) ======
 function resolveCredsFromRequest(req) {
   const qClient = req.query.clientId || req.query.client_id;
@@ -435,10 +480,16 @@ async function handleToday(req, res) {
 
     const dateStr = todayDateStr();
     const s = await calcTodayStats({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr });
-    const [buyouts, returns] = await Promise.all([
+
+    const [buyoutsR, returnsR, balanceR] = await Promise.allSettled([
       calcBuyoutsTodayByOffer({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
       calcReturnsTodayByOffer({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
+      calcBalanceToday({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
     ]);
+
+    const buyouts = buyoutsR.status === "fulfilled" ? buyoutsR.value : { buyouts_total_qty: 0, buyouts_list: [] };
+    const returns = returnsR.status === "fulfilled" ? returnsR.value : { returns_total_qty: 0, returns_list: [] };
+    const balance = balanceR.status === "fulfilled" ? balanceR.value : { balance_cents: null, balance_text: "—" };
 
     return res.json({
       title: `FBO: за сегодня ${s.dateStr} (${SALES_TZ})`,
@@ -465,6 +516,15 @@ async function handleToday(req, res) {
       buyouts_list: buyouts.buyouts_list,
       returns_total_qty: returns.returns_total_qty,
       returns_list: returns.returns_list,
+
+      balance_cents: balance.balance_cents,
+      balance_text: balance.balance_text,
+
+      widgets_errors: {
+        buyouts: buyoutsR.status === "rejected" ? String(buyoutsR.reason?.message || buyoutsR.reason) : null,
+        returns: returnsR.status === "rejected" ? String(returnsR.reason?.message || returnsR.reason) : null,
+        balance: balanceR.status === "rejected" ? String(balanceR.reason?.message || balanceR.reason) : null,
+      },
 
       updated_at: DateTime.now().setZone(SALES_TZ).toISO(),
       source: resolved.source
