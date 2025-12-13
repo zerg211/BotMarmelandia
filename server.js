@@ -13,25 +13,15 @@ app.use(express.json());
 
 // ====== MINI APP (страница + статика из /Public) ======
 app.use("/public", express.static(path.join(__dirname, "Public")));
-
-// если кто-то открывает кривой путь вида "/https://....." — редиректим на главную
 app.get(/^\/https?:\/\//, (req, res) => res.redirect(302, "/"));
 
-// главная Mini App
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "Public", "index.html"));
-});
-app.get("/index.html", (req, res) => {
-  res.sendFile(path.join(__dirname, "Public", "index.html"));
-});
-
+app.get("/", (req, res) => res.sendFile(path.join(__dirname, "Public", "index.html")));
+app.get("/index.html", (req, res) => res.sendFile(path.join(__dirname, "Public", "index.html")));
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 
 const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
-
-// “Сегодня” считаем по МСК (или поменяй через ENV SALES_TZ)
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
 const DATA_DIR = process.env.DATA_DIR || ".";
@@ -67,7 +57,7 @@ function deleteUserCreds(userId) {
   saveStore(store);
 }
 
-// ---------------- crypto helpers ----------------
+// ---------------- crypto (keys in store.json) ----------------
 function encrypt(text) {
   if (!ENCRYPTION_KEY_B64) return { mode: "plain", value: text };
   const key = Buffer.from(ENCRYPTION_KEY_B64, "base64");
@@ -77,12 +67,7 @@ function encrypt(text) {
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const enc = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
-  return {
-    mode: "aes-256-gcm",
-    iv: iv.toString("base64"),
-    tag: tag.toString("base64"),
-    value: enc.toString("base64"),
-  };
+  return { mode: "aes-256-gcm", iv: iv.toString("base64"), tag: tag.toString("base64"), value: enc.toString("base64") };
 }
 function decrypt(obj) {
   if (!obj) return null;
@@ -99,7 +84,48 @@ function decrypt(obj) {
   return dec.toString("utf8");
 }
 
-// ---------------- telegram helpers ----------------
+// ---------------- Telegram WebApp initData verify ----------------
+function parseInitData(initData) {
+  const params = new URLSearchParams(initData);
+  const obj = {};
+  for (const [k, v] of params.entries()) obj[k] = v;
+  return obj;
+}
+function verifyInitData(initData, botToken) {
+  if (!initData || !botToken) return { ok: false, reason: "missing_initdata_or_token" };
+
+  const data = parseInitData(initData);
+  const hash = data.hash;
+  if (!hash) return { ok: false, reason: "missing_hash" };
+
+  // build data_check_string
+  const pairs = [];
+  for (const [k, v] of Object.entries(data)) {
+    if (k === "hash") continue;
+    pairs.push([k, v]);
+  }
+  pairs.sort((a, b) => a[0].localeCompare(b[0]));
+  const dataCheckString = pairs.map(([k, v]) => `${k}=${v}`).join("\n");
+
+  const secretKey = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
+  const computed = crypto.createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
+
+  if (computed !== hash) return { ok: false, reason: "bad_hash" };
+
+  // extract user id
+  let userId = null;
+  try {
+    const user = JSON.parse(data.user || "{}");
+    userId = user?.id ? String(user.id) : null;
+  } catch {
+    userId = null;
+  }
+  if (!userId) return { ok: false, reason: "no_user_id" };
+
+  return { ok: true, userId, data };
+}
+
+// ---------------- Telegram Bot helpers ----------------
 async function tgSendMessage(chatId, text, opts = {}) {
   const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
   const payload = { chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true, ...opts };
@@ -124,7 +150,7 @@ async function tgAnswerCallback(callbackQueryId) {
   await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: callbackQueryId }) });
 }
 
-// ---------------- ozon helpers ----------------
+// ---------------- Ozon helpers ----------------
 async function ozonPost(pathname, { clientId, apiKey, body }) {
   const resp = await fetch(`${OZON_API_BASE}${pathname}`, {
     method: "POST",
@@ -172,12 +198,9 @@ const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximu
 function centsToRubString(cents) {
   return `${rubFmt.format(cents / 100)} ₽`;
 }
-
 function postingAmountCents(posting) {
   const qtyBySku = new Map();
-  for (const pr of posting?.products || []) {
-    qtyBySku.set(String(pr.sku), Number(pr.quantity || 0));
-  }
+  for (const pr of posting?.products || []) qtyBySku.set(String(pr.sku), Number(pr.quantity || 0));
 
   const finProds = posting?.financial_data?.products || [];
   if (Array.isArray(finProds) && finProds.length > 0) {
@@ -191,9 +214,7 @@ function postingAmountCents(posting) {
   }
 
   let sum2 = 0;
-  for (const pr of posting?.products || []) {
-    sum2 += toCents(pr.price) * Number(pr.quantity || 0);
-  }
+  for (const pr of posting?.products || []) sum2 += toCents(pr.price) * Number(pr.quantity || 0);
   return sum2;
 }
 
@@ -205,7 +226,6 @@ function extractPostings(data) {
   if (Array.isArray(data?.postings)) return { postings: data.postings, hasNext: Boolean(data?.has_next) };
   return { postings: [], hasNext: false };
 }
-
 async function fetchFboAllForDay({ clientId, apiKey, dateStr }) {
   const { since, to } = dayBoundsUtcFromLocal(dateStr);
 
@@ -232,24 +252,18 @@ async function fetchFboAllForDay({ clientId, apiKey, dateStr }) {
     offset += limit;
     if (offset > 200000) break;
   }
-
   return all;
 }
-
 async function calcTodayStats({ clientId, apiKey, dateStr }) {
   const postings = await fetchFboAllForDay({ clientId, apiKey, dateStr });
 
-  let ordersCount = 0;
-  let ordersAmount = 0;
-
-  let cancelsCount = 0;
-  let cancelsAmount = 0;
+  let ordersCount = 0, ordersAmount = 0;
+  let cancelsCount = 0, cancelsAmount = 0;
 
   for (const p of postings) {
     if (!isSameDayLocal(p?.created_at, dateStr)) continue;
 
     const amt = postingAmountCents(p);
-
     ordersCount += 1;
     ordersAmount += amt;
 
@@ -258,79 +272,61 @@ async function calcTodayStats({ clientId, apiKey, dateStr }) {
       cancelsAmount += amt;
     }
   }
-
   return { dateStr, ordersCount, ordersAmount, cancelsCount, cancelsAmount };
 }
 
-// ====== API: получить ключи из (query → user_id → первый юзер) ======
-function resolveCredsFromRequest(req) {
-  const qClient = req.query.clientId || req.query.client_id;
-  const qKey = req.query.apiKey || req.query.api_key;
+// ====== API для Mini App (авто: берём user_id из initData и читаем ключи из store.json) ======
+function resolveCredsFromInitData(req) {
+  const initData =
+    req.headers["x-tg-init-data"] ||
+    req.query.initData ||
+    req.query.init_data ||
+    "";
 
-  // 1) Если MiniApp передал ключи прямо в запросе
-  if (qClient && qKey) {
-    return { clientId: String(qClient), apiKey: String(qKey), source: "query" };
-  }
+  const v = verifyInitData(String(initData || ""), BOT_TOKEN);
+  if (!v.ok) return { ok: false, error: v.reason };
 
-  // 2) Если передан user_id (telegram id)
-  const qUserId = req.query.user_id || req.query.userId;
-  if (qUserId) {
-    const creds = getUserCreds(String(qUserId));
-    if (creds?.clientId && creds?.apiKey) {
-      return { clientId: creds.clientId, apiKey: decrypt(creds.apiKey), source: "user_id" };
-    }
-  }
+  const creds = getUserCreds(v.userId);
+  if (!creds?.clientId || !creds?.apiKey) return { ok: false, error: "no_creds_for_user" };
 
-  // 3) Иначе — первый пользователь в store.json
-  const store = loadStore();
-  const firstUserId = Object.keys(store.users || {})[0];
-  if (firstUserId) {
-    const creds = getUserCreds(firstUserId);
-    if (creds?.clientId && creds?.apiKey) {
-      return { clientId: creds.clientId, apiKey: decrypt(creds.apiKey), source: "first_user" };
-    }
-  }
-
-  return null;
+  return { ok: true, userId: v.userId, clientId: creds.clientId, apiKey: decrypt(creds.apiKey) };
 }
 
 async function handleToday(req, res) {
   try {
-    const resolved = resolveCredsFromRequest(req);
-    if (!resolved) return res.status(400).json({ error: "no_creds" });
+    const r = resolveCredsFromInitData(req);
+    if (!r.ok) return res.status(400).json({ error: "no_creds" });
 
     const dateStr = todayDateStr();
-    const s = await calcTodayStats({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr });
+    const s = await calcTodayStats({ clientId: r.clientId, apiKey: r.apiKey, dateStr });
 
     return res.json({
       title: `FBO: за сегодня ${s.dateStr} (${SALES_TZ})`,
       tz: SALES_TZ,
       date: s.dateStr,
 
-      // для совместимости — и так и так
       orders: s.ordersCount,
       ordersCount: s.ordersCount,
 
-      orders_sum: s.ordersAmount,          // копейки
-      ordersAmount: s.ordersAmount,        // копейки
+      orders_sum: s.ordersAmount, // копейки
+      ordersAmount: s.ordersAmount,
       orders_sum_text: centsToRubString(s.ordersAmount),
 
       cancels: s.cancelsCount,
       cancelsCount: s.cancelsCount,
 
-      cancels_sum: s.cancelsAmount,        // копейки
-      cancelsAmount: s.cancelsAmount,      // копейки
+      cancels_sum: s.cancelsAmount, // копейки
+      cancelsAmount: s.cancelsAmount,
       cancels_sum_text: centsToRubString(s.cancelsAmount),
 
       updated_at: DateTime.now().setZone(SALES_TZ).toISO(),
-      source: resolved.source
+      user_id: r.userId,
     });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
   }
 }
 
-// ТРИ URL (на случай, что фронт зовёт другой путь)
 app.get("/api/dashboard/today", handleToday);
 app.get("/api/today", handleToday);
 app.get("/api/stats/today", handleToday);
@@ -347,7 +343,6 @@ function widgetText(s) {
     `💸 Сумма отмен: <b>${centsToRubString(s.cancelsAmount)}</b>`,
   ].join("\n");
 }
-
 function widgetKeyboard(dateStr) {
   return {
     reply_markup: {
@@ -358,7 +353,6 @@ function widgetKeyboard(dateStr) {
     },
   };
 }
-
 async function showWidget(chatId, userId, dateStr, editMessageId = null) {
   const creds = getUserCreds(userId);
   if (!creds?.clientId || !creds?.apiKey) {
