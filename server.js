@@ -8,7 +8,6 @@ const app = express();
 app.use(express.json());
 
 app.get("/", (req, res) => res.status(200).send("OK"));
-app.get("/index.html", (req, res) => res.status(200).send("OK"));
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 
 const PORT = process.env.PORT || 8080;
@@ -17,17 +16,18 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
+// берем “последние N дней” и фильтруем “сегодня” локально
+const LOOKBACK_DAYS = Number(process.env.LOOKBACK_DAYS || 7);
+
+// store
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 
+// encryption (optional)
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 
+// dialog state
 const pending = new Map();
-
-// caches
-const postingTypeCache = new Map();      // posting_number -> 'fbs'|'fbo'
-const postingAmountCache = new Map();    // posting_number -> { amount, type, ts }
-const POSTING_CACHE_TTL_MS = 60_000;
 
 // ---------------- store helpers ----------------
 function loadStore() {
@@ -174,255 +174,135 @@ function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
 }
 
-function rangeForDate(dateStr) {
+function dayBounds(dateStr) {
   const from = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
   const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
-  const toIso = (dt) => dt.toUTC().toISO({ suppressMilliseconds: true });
-  return {
-    dateStr,
-    fromUtcIso: toIso(from),
-    toUtcIso: toIso(to),
-  };
+  return { from, to };
 }
 
-// сумма “как в ЛК рядом с заказом”: Σ customer_price * quantity
-function calcOrderAmountFromPostingFinancial(financialData) {
-  const products = financialData?.products || [];
-  let sum = 0;
-  for (const p of products) {
-    const qty = Number(p.quantity ?? 1) || 1;
-    const customerPrice = Number(p.customer_price ?? 0) || 0;
-    sum += customerPrice * qty;
-  }
-  return sum;
+function wideRangeISO(dateStr) {
+  const { from, to } = dayBounds(dateStr);
+  const wideFrom = from.minus({ days: LOOKBACK_DAYS }).toUTC().toISO({ suppressMilliseconds: true });
+  const wideTo = to.toUTC().toISO({ suppressMilliseconds: true });
+  return { sinceISO: wideFrom, toISO: wideTo };
 }
 
-async function getPostingAmountAndType({ clientId, apiKey, postingNumber }) {
-  const cached = postingAmountCache.get(postingNumber);
-  if (cached && Date.now() - cached.ts < POSTING_CACHE_TTL_MS) return cached;
-
-  const knownType = postingTypeCache.get(postingNumber);
-
-  const tryFbs = async () => {
-    const data = await ozonPost("/v3/posting/fbs/get", {
-      clientId,
-      apiKey,
-      body: { posting_number: postingNumber, with: { financial_data: true } },
-    });
-    const fin = data?.result?.financial_data;
-    const amount = calcOrderAmountFromPostingFinancial(fin);
-    postingTypeCache.set(postingNumber, "fbs");
-    return { amount, type: "fbs" };
-  };
-
-  const tryFbo = async () => {
-    const data = await ozonPost("/v2/posting/fbo/get", {
-      clientId,
-      apiKey,
-      body: { posting_number: postingNumber, with: { financial_data: true } },
-    });
-    const fin = data?.result?.financial_data;
-    const amount = calcOrderAmountFromPostingFinancial(fin);
-    postingTypeCache.set(postingNumber, "fbo");
-    return { amount, type: "fbo" };
-  };
-
-  let result;
-  if (knownType === "fbs") {
-    try { result = await tryFbs(); } catch { result = await tryFbo(); }
-  } else if (knownType === "fbo") {
-    try { result = await tryFbo(); } catch { result = await tryFbs(); }
-  } else {
-    try { result = await tryFbs(); } catch { result = await tryFbo(); }
-  }
-
-  const out = { ...result, ts: Date.now() };
-  postingAmountCache.set(postingNumber, out);
-  return out;
+// выбираем “дату заказа” максимально устойчиво по полям, которые обычно есть в posting
+function pickPostingDateISO(p) {
+  return (
+    p?.in_process_at ||
+    p?.created_at ||
+    p?.shipment_date ||
+    p?.deliver_at ||
+    p?.delivering_date ||
+    null
+  );
 }
 
-async function mapLimit(items, limit, fn) {
-  const res = new Array(items.length);
-  let i = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (true) {
-      const idx = i++;
-      if (idx >= items.length) break;
-      try {
-        res[idx] = await fn(items[idx], idx);
-      } catch (e) {
-        res[idx] = { __error: String(e?.message || e) };
-      }
-    }
-  });
-  await Promise.all(workers);
-  return res;
+function isSameDayInTZ(iso, dateStr) {
+  if (!iso) return false;
+  const d = DateTime.fromISO(iso, { setZone: true }).setZone(SALES_TZ);
+  return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
 }
 
-// ---------------- Finance: get operations for day ----------------
-async function listFinanceOperationsForDate({ clientId, apiKey, dateStr }) {
-  const { fromUtcIso, toUtcIso } = rangeForDate(dateStr);
-
-  let page = 1;
-  const page_size = 1000;
-  const ops = [];
+// --------- Load postings FBS ----------
+async function listFbsPostingsWide({ clientId, apiKey, dateStr }) {
+  const { sinceISO, toISO } = wideRangeISO(dateStr);
+  let offset = 0;
+  const limit = 50;
+  const postings = [];
 
   while (true) {
-    const data = await ozonPost("/v3/finance/transaction/list", {
+    const data = await ozonPost("/v3/posting/fbs/list", {
       clientId,
       apiKey,
       body: {
-        filter: {
-          date: { from: fromUtcIso, to: toUtcIso },
-          operation_type: [],
-          posting_number: "",
-          transaction_type: "",
-        },
-        page,
-        page_size,
+        dir: "asc",
+        filter: { since: sinceISO, to: toISO },
+        limit,
+        offset,
+        with: { financial_data: false, analytics_data: false, barcodes: false },
       },
     });
 
     const result = data?.result || {};
-    const chunk = result?.operations || [];
-    ops.push(...chunk);
+    postings.push(...(result?.postings || []));
 
-    const pageCount = Number(result?.page_count || 0);
-    if (pageCount && page >= pageCount) break;
-    if (!chunk || chunk.length < page_size) break;
-
-    page += 1;
-    if (page > 50) break;
+    if (!result?.has_next) break;
+    offset += limit;
+    if (offset > 10000) break;
   }
 
-  return ops;
+  return postings;
 }
 
-function isCancelOrReturn(opType, opName) {
-  const s = `${opType || ""} ${opName || ""}`.toLowerCase();
-  return (
-    s.includes("return") ||
-    s.includes("refund") ||
-    s.includes("cancel") ||
-    s.includes("возврат") ||
-    s.includes("отмен")
-  );
+// --------- Load postings FBO ----------
+async function listFboPostingsWide({ clientId, apiKey, dateStr }) {
+  const { sinceISO, toISO } = wideRangeISO(dateStr);
+  let offset = 0;
+  const limit = 50;
+  const postings = [];
+
+  while (true) {
+    const data = await ozonPost("/v2/posting/fbo/list", {
+      clientId,
+      apiKey,
+      body: {
+        dir: "asc",
+        filter: { since: sinceISO, to: toISO },
+        limit,
+        offset,
+        with: { financial_data: false },
+      },
+    });
+
+    const result = data?.result || {};
+    postings.push(...(result?.postings || []));
+
+    if (!result?.has_next) break;
+    offset += limit;
+    if (offset > 10000) break;
+  }
+
+  return postings;
 }
 
-// чтобы не посчитать “услуги/комиссии/доставку” как заказ:
-function isServiceLike(opType, opName) {
-  const s = `${opType || ""} ${opName || ""}`.toLowerCase();
-  return (
-    s.includes("service") ||
-    s.includes("fee") ||
-    s.includes("commission") ||
-    s.includes("delivery") ||
-    s.includes("logistic") ||
-    s.includes("storage") ||
-    s.includes("fulfillment") ||
-    s.includes("acquiring") ||
-    s.includes("комисс") ||
-    s.includes("услуг") ||
-    s.includes("достав") ||
-    s.includes("логист") ||
-    s.includes("хранен")
-  );
-}
+async function getOrdersCountForDay({ clientId, apiKey, dateStr }) {
+  const [fbs, fbo] = await Promise.all([
+    listFbsPostingsWide({ clientId, apiKey, dateStr }),
+    listFboPostingsWide({ clientId, apiKey, dateStr }),
+  ]);
 
-// “заказ поступил” по finance: есть posting_number, не отмена/возврат, не услуга.
-function isOrderEvent(opType, opName) {
-  if (isCancelOrReturn(opType, opName)) return false;
-  if (isServiceLike(opType, opName)) return false;
-  // на всякий — многие операции называются sale/заказ/начисление
-  const s = `${opType || ""} ${opName || ""}`.toLowerCase();
-  if (s.includes("sale") || s.includes("order") || s.includes("заказ") || s.includes("начисл") || s.includes("выручк")) {
-    return true;
-  }
-  // fallback: если это не услуга и не отмена, считаем как “событие заказа”
-  return true;
-}
-
-async function getDailyOrdersAndCancels({ clientId, apiKey, dateStr }) {
-  const ops = await listFinanceOperationsForDate({ clientId, apiKey, dateStr });
-
-  const orderNums = new Set();
-  const cancelNums = new Set();
-
-  for (const o of ops) {
-    const num = o?.posting?.posting_number;
-    if (!num) continue;
-
-    if (isCancelOrReturn(o.operation_type, o.operation_type_name)) cancelNums.add(num);
-    else if (isOrderEvent(o.operation_type, o.operation_type_name)) orderNums.add(num);
+  // считаем уникальные posting_number, которые относятся к дню
+  const fbsSet = new Set();
+  for (const p of fbs) {
+    const iso = pickPostingDateISO(p);
+    if (isSameDayInTZ(iso, dateStr) && p?.posting_number) fbsSet.add(p.posting_number);
   }
 
-  const ordersArr = [...orderNums];
-  const cancelsArr = [...cancelNums];
-
-  // суммы “как в ЛК рядом с заказом”
-  const ordersInfo = await mapLimit(ordersArr, 8, (n) =>
-    getPostingAmountAndType({ clientId, apiKey, postingNumber: n })
-  );
-  const cancelsInfo = await mapLimit(cancelsArr, 8, (n) =>
-    getPostingAmountAndType({ clientId, apiKey, postingNumber: n })
-  );
-
-  let ordersFbs = 0, ordersFbo = 0, ordersSum = 0;
-  for (const r of ordersInfo) {
-    if (!r || typeof r.amount !== "number") continue;
-    ordersSum += r.amount;
-    if (r.type === "fbs") ordersFbs += 1;
-    else if (r.type === "fbo") ordersFbo += 1;
+  const fboSet = new Set();
+  for (const p of fbo) {
+    const iso = pickPostingDateISO(p);
+    if (isSameDayInTZ(iso, dateStr) && p?.posting_number) fboSet.add(p.posting_number);
   }
-
-  let cancelsFbs = 0, cancelsFbo = 0, cancelsSum = 0;
-  for (const r of cancelsInfo) {
-    if (!r || typeof r.amount !== "number") continue;
-    cancelsSum += r.amount;
-    if (r.type === "fbs") cancelsFbs += 1;
-    else if (r.type === "fbo") cancelsFbo += 1;
-  }
-
-  const ordersTotal = ordersFbs + ordersFbo;
-  const cancelsTotal = cancelsFbs + cancelsFbo;
 
   return {
     dateStr,
-    ordersFbs,
-    ordersFbo,
-    ordersTotal,
-    ordersSumTotal: ordersSum,
-    cancelsFbs,
-    cancelsFbo,
-    cancelsTotal,
-    cancelsSumTotal: cancelsSum,
-    netOrders: ordersTotal - cancelsTotal,
-    netSum: ordersSum - cancelsSum,
+    fbs: fbsSet.size,
+    fbo: fboSet.size,
+    total: fbsSet.size + fboSet.size,
   };
 }
 
 // ---------------- widget ----------------
-function moneyRub(x) {
-  const v = Math.round(Number(x || 0) * 100) / 100;
-  return v.toLocaleString("ru-RU");
-}
-
-function widgetText(s) {
+function widgetText(c) {
   return [
-    `📅 <b>Заказы за дату</b>: <b>${s.dateStr}</b> (${SALES_TZ})`,
+    `📅 <b>Заказы за сегодня</b>: <b>${c.dateStr}</b> (${SALES_TZ})`,
     ``,
-    `📥 Заказы поступили (FBS): <b>${s.ordersFbs}</b>`,
-    `📥 Заказы поступили (FBO): <b>${s.ordersFbo}</b>`,
-    `📥 Заказы поступили всего: <b>${s.ordersTotal}</b>`,
-    `💰 Сумма заказов: <b>${moneyRub(s.ordersSumTotal)}</b> ₽`,
+    `📦 FBS: <b>${c.fbs}</b>`,
+    `🏬 FBO: <b>${c.fbo}</b>`,
     ``,
-    `❌ Отмены/возвраты (FBS): <b>${s.cancelsFbs}</b>`,
-    `❌ Отмены/возвраты (FBO): <b>${s.cancelsFbo}</b>`,
-    `❌ Отмены/возвраты всего: <b>${s.cancelsTotal}</b>`,
-    `🔄 Сумма отмен/возвратов: <b>${moneyRub(s.cancelsSumTotal)}</b> ₽`,
-    ``,
-    `✅ Актуально заказов (поступило − отмены): <b>${s.netOrders}</b>`,
-    `✅ Актуальная сумма (заказы − отмены): <b>${moneyRub(s.netSum)}</b> ₽`,
+    `✅ Итого заказов: <b>${c.total}</b>`,
   ].join("\n");
 }
 
@@ -448,8 +328,8 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
   const clientId = creds.clientId;
 
   try {
-    const stats = await getDailyOrdersAndCancels({ clientId, apiKey, dateStr });
-    const text = widgetText(stats);
+    const counts = await getOrdersCountForDay({ clientId, apiKey, dateStr });
+    const text = widgetText(counts);
 
     if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
     else await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
