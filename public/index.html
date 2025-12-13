@@ -1,56 +1,472 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>Продажи за сегодня</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
   <style>
-    body { font-family: Arial; padding: 20px; }
-    input, button { width: 100%; margin: 10px 0; padding: 10px; }
-    .count { font-size: 48px; text-align: center; }
+    :root{
+      --bg: #0b1220;
+      --card: rgba(255,255,255,0.06);
+      --card2: rgba(255,255,255,0.08);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.65);
+      --border: rgba(255,255,255,0.10);
+      --accent: #5eead4; /* бирюза */
+      --danger: #fb7185;
+      --shadow: 0 16px 60px rgba(0,0,0,0.35);
+      --radius: 18px;
+    }
+
+    /* Telegram theme support */
+    body.tg {
+      --bg: var(--tg-theme-bg-color, #0b1220);
+      --text: var(--tg-theme-text-color, rgba(255,255,255,0.92));
+      --muted: var(--tg-theme-hint-color, rgba(255,255,255,0.65));
+      --card: rgba(127,127,127,0.10);
+      --card2: rgba(127,127,127,0.14);
+      --border: rgba(127,127,127,0.18);
+      --accent: var(--tg-theme-button-color, #5eead4);
+    }
+
+    *{ box-sizing:border-box; }
+    html,body{ height:100%; }
+    body{
+      margin:0;
+      background: radial-gradient(1200px 800px at 20% -10%, rgba(94,234,212,0.18), transparent 55%),
+                  radial-gradient(900px 600px at 110% 10%, rgba(56,189,248,0.12), transparent 50%),
+                  var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding: 22px 16px calc(22px + env(safe-area-inset-bottom));
+    }
+
+    .wrap{
+      width: 100%;
+      max-width: 420px;
+    }
+
+    .top{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      margin-bottom: 12px;
+    }
+    .brand{
+      font-size: 14px;
+      color: var(--muted);
+      letter-spacing: 0.2px;
+    }
+    .pill{
+      font-size: 12px;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      background: var(--card);
+      padding: 6px 10px;
+      border-radius: 999px;
+    }
+
+    .card{
+      background: linear-gradient(180deg, var(--card2), var(--card));
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 18px;
+      overflow:hidden;
+      position:relative;
+    }
+    .card:before{
+      content:"";
+      position:absolute;
+      inset:-2px;
+      background: radial-gradient(500px 180px at 20% 0%, rgba(94,234,212,0.10), transparent 60%);
+      pointer-events:none;
+    }
+
+    .title{
+      font-size: 18px;
+      font-weight: 700;
+      margin: 0 0 8px 0;
+      position:relative;
+    }
+    .subtitle{
+      margin:0 0 14px 0;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.35;
+      position:relative;
+    }
+
+    .field{
+      margin: 10px 0 12px 0;
+      position:relative;
+    }
+    label{
+      display:block;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0 0 6px 2px;
+    }
+    input{
+      width: 100%;
+      background: rgba(0,0,0,0.18);
+      border: 1px solid var(--border);
+      color: var(--text);
+      outline: none;
+      border-radius: 14px;
+      padding: 12px 12px;
+      font-size: 14px;
+    }
+    input::placeholder{ color: rgba(255,255,255,0.35); }
+    input:focus{
+      border-color: rgba(94,234,212,0.55);
+      box-shadow: 0 0 0 4px rgba(94,234,212,0.10);
+    }
+
+    .row{
+      display:flex;
+      gap: 10px;
+      margin-top: 14px;
+      position:relative;
+    }
+
+    .btn{
+      width:100%;
+      border: 0;
+      background: var(--accent);
+      color: #0b1220;
+      font-weight: 800;
+      border-radius: 14px;
+      padding: 12px 14px;
+      cursor:pointer;
+      font-size: 14px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap: 8px;
+    }
+    .btn:active{ transform: translateY(1px); }
+    .btn.secondary{
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+      font-weight: 700;
+    }
+
+    .hint{
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      position:relative;
+    }
+
+    /* widget view */
+    .metric{
+      margin-top: 12px;
+      display:flex;
+      align-items:flex-end;
+      justify-content:space-between;
+      gap: 12px;
+      position:relative;
+    }
+    .metric .label{
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .metric .value{
+      font-size: 64px;
+      font-weight: 900;
+      letter-spacing: -1.5px;
+      line-height: 0.95;
+    }
+    .metric .unit{
+      font-size: 14px;
+      color: var(--muted);
+      margin-left: 6px;
+      font-weight: 700;
+    }
+
+    .toolbar{
+      margin-top: 14px;
+      display:flex;
+      gap: 10px;
+      position:relative;
+    }
+
+    .iconbtn{
+      flex: 1;
+      border: 1px solid var(--border);
+      background: rgba(0,0,0,0.14);
+      color: var(--text);
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-weight: 800;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap: 10px;
+      cursor:pointer;
+      user-select:none;
+    }
+    .icon{
+      width: 18px;
+      height: 18px;
+      display:inline-block;
+    }
+
+    .status{
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      min-height: 16px;
+      position:relative;
+    }
+    .status.err{ color: var(--danger); }
+
+    .spinner{
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid rgba(0,0,0,0.18);
+      border-top-color: rgba(0,0,0,0.65);
+      display:inline-block;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg);} }
+
+    .hidden{ display:none !important; }
   </style>
 </head>
+
 <body>
+  <div class="wrap">
+    <div class="top">
+      <div class="brand">Ozon • Seller API</div>
+      <div class="pill" id="datePill">Сегодня</div>
+    </div>
 
-<div id="form">
-  <input id="client" placeholder="Client ID">
-  <input id="key" placeholder="API Key">
-  <button onclick="save()">Готово</button>
-</div>
+    <!-- SCREEN 1: setup -->
+    <div class="card" id="screenSetup">
+      <h1 class="title">Подключение</h1>
+      <p class="subtitle">
+        Введите <b>Client ID</b> и <b>API Key</b>. После сохранения появится виджет с продажами за сегодня.
+      </p>
 
-<div id="widget" style="display:none">
-  <h3>Продажи за сегодня</h3>
-  <div class="count" id="count">—</div>
-  <button onclick="load()">🔄 Обновить</button>
-</div>
+      <div class="field">
+        <label for="client">Client ID</label>
+        <input id="client" placeholder="Например: 123456" autocomplete="off" />
+      </div>
+
+      <div class="field">
+        <label for="key">API Key</label>
+        <input id="key" placeholder="Вставьте ключ целиком" autocomplete="off" />
+      </div>
+
+      <div class="row">
+        <button class="btn" id="btnSave">
+          <span id="saveText">Готово</span>
+          <span class="spinner hidden" id="saveSpin"></span>
+        </button>
+      </div>
+
+      <div class="hint">Ключи сохраняются только для вашего Telegram-аккаунта.</div>
+      <div class="status" id="setupStatus"></div>
+    </div>
+
+    <!-- SCREEN 2: widget -->
+    <div class="card hidden" id="screenWidget">
+      <h1 class="title">Продажи за сегодня</h1>
+      <p class="subtitle" id="widgetSub">Количество заказов, созданных сегодня (все статусы).</p>
+
+      <div class="metric">
+        <div>
+          <div class="label">Заказы</div>
+          <div style="display:flex;align-items:baseline;gap:6px;">
+            <div class="value" id="count">—</div>
+            <div class="unit">шт</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="iconbtn" id="btnRefresh">
+          <svg class="icon" viewBox="0 0 24 24" fill="none">
+            <path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path d="M20 4v6h-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <span id="refreshText">Обновить</span>
+          <span class="spinner hidden" id="refreshSpin"></span>
+        </div>
+
+        <div class="iconbtn" id="btnChange">
+          <svg class="icon" viewBox="0 0 24 24" fill="none">
+            <path d="M12 6h8M12 12h8M12 18h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path d="M4 7l1.5 1.5L8 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M4 13l1.5 1.5L8 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M4 19l1.5 1.5L8 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Ключи</span>
+        </div>
+      </div>
+
+      <div class="status" id="widgetStatus"></div>
+    </div>
+  </div>
 
 <script>
-  const tg = window.Telegram.WebApp;
-  tg.ready();
-
-  const telegram_id = tg.initDataUnsafe.user.id;
-
-  async function save() {
-    await fetch("/api/save-credentials", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        telegram_id,
-        client_id: client.value,
-        api_key: key.value
-      })
-    });
-    form.style.display = "none";
-    widget.style.display = "block";
-    load();
+  const tg = window.Telegram?.WebApp;
+  if (tg) {
+    document.body.classList.add("tg");
+    tg.ready();
+    tg.expand();
   }
 
-  async function load() {
-    const res = await fetch(`/api/today-sales?telegram_id=${telegram_id}`);
-    const data = await res.json();
-    count.innerText = data.count;
+  // Pill date
+  const datePill = document.getElementById("datePill");
+  const d = new Date();
+  const dd = String(d.getDate()).padStart(2,'0');
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  datePill.textContent = `Сегодня • ${dd}.${mm}`;
+
+  // DOM
+  const screenSetup = document.getElementById("screenSetup");
+  const screenWidget = document.getElementById("screenWidget");
+  const client = document.getElementById("client");
+  const key = document.getElementById("key");
+
+  const btnSave = document.getElementById("btnSave");
+  const setupStatus = document.getElementById("setupStatus");
+  const saveSpin = document.getElementById("saveSpin");
+  const saveText = document.getElementById("saveText");
+
+  const countEl = document.getElementById("count");
+  const btnRefresh = document.getElementById("btnRefresh");
+  const btnChange = document.getElementById("btnChange");
+  const widgetStatus = document.getElementById("widgetStatus");
+  const refreshSpin = document.getElementById("refreshSpin");
+  const refreshText = document.getElementById("refreshText");
+
+  const telegram_id = tg?.initDataUnsafe?.user?.id;
+
+  function setSetupStatus(text, isErr=false){
+    setupStatus.textContent = text || "";
+    setupStatus.classList.toggle("err", !!isErr);
+  }
+  function setWidgetStatus(text, isErr=false){
+    widgetStatus.textContent = text || "";
+    widgetStatus.classList.toggle("err", !!isErr);
+  }
+
+  function setLoading(btn, spin, textEl, loading){
+    btn.style.pointerEvents = loading ? "none" : "auto";
+    spin.classList.toggle("hidden", !loading);
+    if (textEl) textEl.style.opacity = loading ? "0.6" : "1";
+  }
+
+  function showWidget(){
+    screenSetup.classList.add("hidden");
+    screenWidget.classList.remove("hidden");
+  }
+  function showSetup(){
+    screenWidget.classList.add("hidden");
+    screenSetup.classList.remove("hidden");
+  }
+
+  // If we already have saved creds in localStorage -> show widget
+  const savedClient = localStorage.getItem("ozon_client_id") || "";
+  const savedKey = localStorage.getItem("ozon_api_key") || "";
+  if (savedClient && savedKey) {
+    showWidget();
+    loadSales();
+  } else {
+    showSetup();
+  }
+
+  btnChange.addEventListener("click", () => {
+    showSetup();
+    setSetupStatus("");
+    client.value = localStorage.getItem("ozon_client_id") || "";
+    key.value = localStorage.getItem("ozon_api_key") || "";
+  });
+
+  btnSave.addEventListener("click", saveCreds);
+  btnRefresh.addEventListener("click", loadSales);
+
+  async function saveCreds(){
+    setSetupStatus("");
+    if (!telegram_id) {
+      setSetupStatus("Не удалось получить Telegram user.id. Откройте из Telegram, не из браузера.", true);
+      return;
+    }
+    const cid = (client.value || "").trim();
+    const apikey = (key.value || "").trim();
+    if (!cid || !apikey){
+      setSetupStatus("Заполните оба поля: Client ID и API Key.", true);
+      return;
+    }
+
+    setLoading(btnSave, saveSpin, saveText, true);
+    try{
+      const r = await fetch("/api/save-credentials", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          telegram_id,
+          client_id: cid,
+          api_key: apikey
+        })
+      });
+      const data = await r.json().catch(()=> ({}));
+      if (!r.ok){
+        setSetupStatus(data?.error || "Ошибка сохранения ключей.", true);
+        return;
+      }
+
+      // Save locally too for convenience
+      localStorage.setItem("ozon_client_id", cid);
+      localStorage.setItem("ozon_api_key", apikey);
+
+      showWidget();
+      setWidgetStatus("Ключи сохранены. Обновляю…");
+      await loadSales();
+    }catch(e){
+      setSetupStatus("Не удалось связаться с сервером. Попробуйте ещё раз.", true);
+    }finally{
+      setLoading(btnSave, saveSpin, saveText, false);
+    }
+  }
+
+  async function loadSales(){
+    setWidgetStatus("");
+    if (!telegram_id){
+      setWidgetStatus("Не удалось получить Telegram user.id. Откройте из Telegram.", true);
+      return;
+    }
+    setLoading(btnRefresh, refreshSpin, refreshText, true);
+    try{
+      const r = await fetch(`/api/today-sales?telegram_id=${encodeURIComponent(telegram_id)}`);
+      const data = await r.json().catch(()=> ({}));
+      if (!r.ok){
+        if (r.status === 404) {
+          setWidgetStatus("Ключи не найдены. Нажмите «Ключи» и введите Client ID / API Key.", true);
+        } else {
+          setWidgetStatus(data?.error || "Ошибка получения данных.", true);
+        }
+        return;
+      }
+      countEl.textContent = Number.isFinite(data.count) ? data.count : (data?.count ?? "—");
+      setWidgetStatus("Обновлено.");
+    }catch(e){
+      setWidgetStatus("Сеть недоступна или сервер не отвечает.", true);
+    }finally{
+      setLoading(btnRefresh, refreshSpin, refreshText, false);
+    }
   }
 </script>
-
 </body>
 </html>
