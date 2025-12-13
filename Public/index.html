@@ -26,7 +26,7 @@
     }
 
     .top{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;}
-    .title{font-size:20px;font-weight:900;letter-spacing:.2px;}
+    .title{font-size:20px;font-weight:900;}
     .sub{font-size:12px;color:var(--muted);}
     .badge{font-size:11px;padding:4px 8px;border-radius:999px;background:rgba(77,163,255,.15);color:var(--accent);white-space:nowrap;}
     .badge.danger{background:rgba(255,90,106,.15);color:var(--danger);}
@@ -38,7 +38,7 @@
       display:flex;flex-direction:column;gap:10px;min-height:110px;border:1px solid var(--line);
     }
     .label{font-size:12px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;gap:8px;}
-    .value{font-size:28px;font-weight:900;letter-spacing:.2px;}
+    .value{font-size:28px;font-weight:900;}
     .value.small{font-size:22px;}
 
     .footer{
@@ -96,7 +96,7 @@
         <div class="title">Моя аналитика</div>
         <div class="sub" id="subtitle">FBO · Сегодня · Europe/Moscow</div>
       </div>
-      <div class="badge" id="status">загрузка…</div>
+      <div class="badge" id="status">…</div>
     </div>
 
     <div class="hint" id="hint"></div>
@@ -155,10 +155,17 @@
   </div>
 
   <script>
-    // ✅ ВОТ ТУТ ТВОЙ BACKEND (Railway)
-    const API_BASE = "https://botmarmelandia-production.up.railway.app";
-
     const tg = window.Telegram?.WebApp;
+
+    function applyFullscreen(){
+      if (!tg) return;
+      tg.ready();
+      tg.expand();
+      tg.disableVerticalSwipes?.();
+      tg.requestFullscreen?.();
+    }
+    applyFullscreen();
+    try { tg?.onEvent?.("viewportChanged", applyFullscreen); } catch(e){}
 
     const $ = (id) => document.getElementById(id);
     const statusEl = $("status");
@@ -200,17 +207,6 @@
       return new Intl.NumberFormat("ru-RU", {minimumFractionDigits:2, maximumFractionDigits:2}).format(rub);
     }
 
-    // ✅ ПОЛНЫЙ ЭКРАН: CSS через tg viewport + tg.expand() + disableVerticalSwipes + requestFullscreen
-    function applyFullscreen(){
-      if (!tg) return;
-      tg.ready();
-      tg.expand();
-      tg.disableVerticalSwipes?.();
-      tg.requestFullscreen?.();
-    }
-    applyFullscreen();
-    try { tg?.onEvent?.("viewportChanged", applyFullscreen); } catch(e){}
-
     function tgHeader(){
       const initData = tg?.initData || "";
       return initData ? { "X-Tg-Init-Data": initData, "x-telegram-init-data": initData } : {};
@@ -224,17 +220,12 @@
     function close(){
       modal.hidden = true;
     }
-
     keysBtn.addEventListener("click", openModal);
     closeModal.addEventListener("click", close);
     modal.addEventListener("click", (e)=>{ if (e.target === modal) close(); });
 
     async function apiFetch(path, opts = {}){
-      const url = API_BASE.replace(/\/+$/, "") + path;
-      return fetch(url, {
-        ...opts,
-        credentials: "include",
-      });
+      return fetch(path, { ...opts, credentials: "include" });
     }
 
     saveKeysBtn.addEventListener("click", async ()=>{
@@ -245,19 +236,16 @@
         keysStatus.textContent = "Заполни Client ID и API Key";
         return;
       }
-
       const r = await apiFetch("/api/keys", {
         method:"POST",
         headers:{ "Content-Type":"application/json", ...tgHeader() },
         body: JSON.stringify({ clientId, apiKey })
       });
       const j = await r.json().catch(()=>({}));
-
       if (!r.ok || !j.ok){
         keysStatus.textContent = j.error || ("HTTP " + r.status);
         return;
       }
-
       keysStatus.textContent = "Сохранено ✅";
       close();
       await loadDashboard();
@@ -267,12 +255,10 @@
       keysStatus.textContent = "";
       const r = await apiFetch("/api/keys", { method:"DELETE", headers: tgHeader() });
       const j = await r.json().catch(()=>({}));
-
       if (!r.ok || !j.ok){
         keysStatus.textContent = j.error || ("HTTP " + r.status);
         return;
       }
-
       clientIdInp.value = "";
       apiKeyInp.value = "";
       keysStatus.textContent = "Удалено ✅";
@@ -282,25 +268,27 @@
     async function loadKeys(){
       const r = await apiFetch("/api/keys", { headers: tgHeader() });
       const j = await r.json().catch(()=>({}));
-
+      if (r.status === 404){
+        keysStatus.textContent = "Ключи не найдены. Введи Client ID / API Key.";
+        return;
+      }
       if (!r.ok){
         keysStatus.textContent = j.error || ("HTTP " + r.status);
         return;
       }
-
       keysStatus.textContent = "Ключи найдены ✅";
       clientIdInp.value = j.clientId || "";
       apiKeyInp.value = "";
     }
 
     async function loadDashboard(){
-      showHint("");
       setStatus("обновление…");
+      showHint("");
 
       const r = await apiFetch("/api/dashboard/today", { headers: tgHeader() });
       const data = await r.json().catch(()=>({}));
 
-      if (!r.ok || data.error){
+      if (!r.ok || data.error || data.ok === false){
         if (data.error === "no_creds" || data.error === "keys_not_found"){
           setStatus("нужны ключи", true);
           showHint("Нажми «Ключи» и введи Client ID / API Key.");
