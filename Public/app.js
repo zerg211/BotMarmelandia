@@ -1,7 +1,9 @@
 const tg = window.Telegram?.WebApp;
+
 if (tg) {
   tg.ready();
   tg.expand();
+  tg.disableVerticalSwipes?.();
 }
 
 const $ = (id) => document.getElementById(id);
@@ -22,6 +24,16 @@ const saveKeysBtn = $("saveKeys");
 const deleteKeysBtn = $("deleteKeys");
 const keysStatus = $("keysStatus");
 
+// Показать реальную ошибку вместо "белого экрана"
+window.addEventListener("error", (e) => {
+  const msg = (e && e.message) ? e.message : "JS error";
+  document.body.innerHTML = `<pre style="white-space:pre-wrap;padding:16px;color:#fff;background:#000;">${msg}</pre>`;
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const msg = (e && e.reason) ? String(e.reason) : "Unhandled promise rejection";
+  document.body.innerHTML = `<pre style="white-space:pre-wrap;padding:16px;color:#fff;background:#000;">${msg}</pre>`;
+});
+
 function initDataHeader() {
   const initData = tg?.initData || "";
   return initData ? { "x-telegram-init-data": initData } : {};
@@ -40,15 +52,15 @@ function close() {
   modal.hidden = true;
 }
 
-keysBtn.addEventListener("click", openModal);
-closeModal.addEventListener("click", close);
-modal.addEventListener("click", (e) => {
+keysBtn?.addEventListener("click", openModal);
+closeModal?.addEventListener("click", close);
+modal?.addEventListener("click", (e) => {
   if (e.target === modal) close();
 });
 
-refreshBtn.addEventListener("click", () => refresh().catch(() => {}));
+refreshBtn?.addEventListener("click", () => refresh().catch(() => {}));
 
-saveKeysBtn.addEventListener("click", async () => {
+saveKeysBtn?.addEventListener("click", async () => {
   keysStatus.textContent = "";
   try {
     const clientId = clientIdInp.value.trim();
@@ -72,7 +84,7 @@ saveKeysBtn.addEventListener("click", async () => {
   }
 });
 
-deleteKeysBtn.addEventListener("click", async () => {
+deleteKeysBtn?.addEventListener("click", async () => {
   keysStatus.textContent = "";
   try {
     const r = await fetch("/api/keys", { method: "DELETE", headers: initDataHeader() });
@@ -111,6 +123,11 @@ async function refresh() {
   sumEl.textContent = "";
   datePill.textContent = "…";
 
+  // ВАЖНО: при открытии по «Открыть» initData может быть пустой — не падаем.
+  if (!tg?.initData) {
+    showHint("Telegram ещё не передал данные. Нажми «Обновить» через пару секунд.");
+  }
+
   const r = await fetch("/api/today", { headers: initDataHeader() });
   const j = await r.json().catch(() => ({}));
 
@@ -137,4 +154,12 @@ async function refresh() {
   }
 }
 
-refresh().catch(() => {});
+// авто-повтор 1 раз на старте (когда initData приезжает с задержкой)
+async function boot(){
+  await refresh().catch(() => {});
+  if (tg && !(tg.initData || "")) {
+    setTimeout(() => refresh().catch(() => {}), 350);
+  }
+}
+
+boot();
