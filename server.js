@@ -3,27 +3,37 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { DateTime } from "luxon";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
 
-app.get("/", (req, res) => res.status(200).send("OK"));
-app.get("/index.html", (req, res) => res.status(200).send("OK"));
-app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
+// ================== STATIC (MINI APP) ==================
+app.use("/public", express.static(path.join(__dirname, "Public")));
 
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "Public", "index.html"));
+});
+
+// ================== HEALTH ==================
+app.get("/health", (req, res) => res.json({ status: "ok" }));
+
+// ================== CONFIG ==================
 const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
-
-// “Сегодня” считаем по МСК (или поменяй через ENV SALES_TZ)
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
+
 const pending = new Map();
 
-// ---------------- store helpers ----------------
+// ================== STORE ==================
 function loadStore() {
   try {
     if (!fs.existsSync(STORE_PATH)) return { users: {} };
@@ -51,7 +61,7 @@ function deleteUserCreds(userId) {
   saveStore(store);
 }
 
-// ---------------- crypto helpers ----------------
+// ================== CRYPTO ==================
 function encrypt(text) {
   if (!ENCRYPTION_KEY_B64) return { mode: "plain", value: text };
   const key = Buffer.from(ENCRYPTION_KEY_B64, "base64");
@@ -61,7 +71,13 @@ function encrypt(text) {
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const enc = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
-  return { mode: "aes-256-gcm", iv: iv.toString("base64"), tag: tag.toString("base64"), value: enc.toString("base64") };
+
+  return {
+    mode: "aes-256-gcm",
+    iv: iv.toString("base64"),
+    tag: tag.toString("base64"),
+    value: enc.toString("base64"),
+  };
 }
 function decrypt(obj) {
   if (!obj) return null;
@@ -78,316 +94,108 @@ function decrypt(obj) {
   return dec.toString("utf8");
 }
 
-// ---------------- telegram helpers ----------------
-async function tgSendMessage(chatId, text, opts = {}) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-  const payload = { chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true, ...opts };
-  const resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-  const data = await resp.json().catch(() => null);
-  if (!data?.ok) console.error("❌ sendMessage failed:", data);
-  return data;
-}
-async function tgEditMessage(chatId, messageId, text, opts = {}) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`;
-  const payload = { chat_id: chatId, message_id: messageId, text, parse_mode: "HTML", disable_web_page_preview: true, ...opts };
-  const resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-  const data = await resp.json().catch(() => null);
-  if (!data?.ok) {
-    const descr = String(data?.description || "");
-    if (!descr.includes("message is not modified")) console.error("❌ editMessageText failed:", data);
-  }
-  return data;
-}
-async function tgAnswerCallback(callbackQueryId) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`;
-  await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: callbackQueryId }) });
-}
-
-// ---------------- ozon helpers ----------------
-async function ozonPost(pathname, { clientId, apiKey, body }) {
-  const resp = await fetch(`${OZON_API_BASE}${pathname}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Client-Id": String(clientId), "Api-Key": String(apiKey) },
-    body: JSON.stringify(body),
-  });
-
-  const data = await resp.json().catch(() => null);
-  if (!resp.ok) {
-    const msg = data?.message || data?.error || JSON.stringify(data);
-    throw new Error(`Ozon API ${pathname} (${resp.status}): ${msg}`);
-  }
-  return data;
-}
-
-// ---------------- date helpers ----------------
+// ================== DATE ==================
 function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
 }
-
 function dayBoundsUtcFromLocal(dateStr) {
   const fromLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
   const toLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
   return {
-    since: fromLocal.toUTC().toISO({ suppressMilliseconds: false }),
-    to: toLocal.toUTC().toISO({ suppressMilliseconds: false }),
+    since: fromLocal.toUTC().toISO(),
+    to: toLocal.toUTC().toISO(),
   };
 }
-
 function isSameDayLocal(iso, dateStr) {
   if (!iso) return false;
-  const d = DateTime.fromISO(iso, { setZone: true }).setZone(SALES_TZ);
-  return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
+  return DateTime.fromISO(iso).setZone(SALES_TZ).toFormat("yyyy-LL-dd") === dateStr;
 }
 
-// ---------------- money helpers (без float) ----------------
+// ================== MONEY ==================
 function toCents(val) {
-  if (val === null || val === undefined) return 0;
-  // val может быть number или string "5916.00"
-  const s = String(val).trim().replace(",", ".");
-  if (!s) return 0;
-  const parts = s.split(".");
-  const rub = parseInt(parts[0] || "0", 10) || 0;
-  const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10) || 0;
-  return rub * 100 + kop;
+  if (!val) return 0;
+  const s = String(val).replace(",", ".");
+  const [r, k = "0"] = s.split(".");
+  return parseInt(r, 10) * 100 + parseInt(k.padEnd(2, "0").slice(0, 2), 10);
+}
+function centsToRub(c) {
+  return new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2 }).format(c / 100);
 }
 
-const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-function centsToRubString(cents) {
-  return `${rubFmt.format(cents / 100)} ₽`;
+// ================== OZON ==================
+async function ozonPost(pathname, { clientId, apiKey, body }) {
+  const r = await fetch(`${OZON_API_BASE}${pathname}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Client-Id": String(clientId),
+      "Api-Key": String(apiKey),
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data?.message || "Ozon error");
+  return data;
 }
 
-function postingAmountCents(posting) {
-  // 1) Пытаемся считать по financial_data.products (там цена обычно числом)
-  const qtyBySku = new Map();
-  for (const pr of posting?.products || []) {
-    // в ответах Ozon sku часто совпадает с financial_data.product_id
-    qtyBySku.set(String(pr.sku), Number(pr.quantity || 0));
-  }
-
-  const finProds = posting?.financial_data?.products || [];
-  if (Array.isArray(finProds) && finProds.length > 0) {
-    let sum = 0;
-    for (const fp of finProds) {
-      const id = String(fp.product_id);
-      const qty = qtyBySku.get(id) ?? 1;
-      sum += toCents(fp.price) * qty;
-    }
-    if (sum > 0) return sum;
-  }
-
-  // 2) Fallback: products[].price
-  let sum2 = 0;
-  for (const pr of posting?.products || []) {
-    sum2 += toCents(pr.price) * Number(pr.quantity || 0);
-  }
-  return sum2;
-}
-
-// ---------------- Core: FBO fetch + stats ----------------
-function extractPostings(data) {
-  if (Array.isArray(data?.result)) return { postings: data.result, hasNext: false };
-  const r = data?.result || {};
-  if (Array.isArray(r?.postings)) return { postings: r.postings, hasNext: Boolean(r.has_next) };
-  if (Array.isArray(data?.postings)) return { postings: data.postings, hasNext: Boolean(data?.has_next) };
-  return { postings: [], hasNext: false };
-}
-
-async function fetchFboAllForDay({ clientId, apiKey, dateStr }) {
+async function fetchFboForToday({ clientId, apiKey }) {
+  const dateStr = todayDateStr();
   const { since, to } = dayBoundsUtcFromLocal(dateStr);
 
-  let offset = 0;
-  const limit = 1000;
-  const all = [];
+  const body = {
+    dir: "ASC",
+    filter: { since, to, status: "" },
+    limit: 1000,
+    offset: 0,
+    with: { analytics_data: true, financial_data: true },
+  };
 
-  while (true) {
-    const body = {
-      dir: "ASC",
-      filter: { since, to, status: "" },
-      limit,
-      offset,
-      translit: true,
-      with: { analytics_data: true, financial_data: true, legal_info: false },
-    };
+  const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
+  const postings = data?.result || [];
 
-    if (offset === 0) console.log("➡️ FBO request:", JSON.stringify(body));
-
-    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
-    const { postings, hasNext } = extractPostings(data);
-
-    all.push(...postings);
-
-    if (!hasNext) break;
-    offset += limit;
-    if (offset > 200000) break;
-  }
-
-  console.log(`📦 FBO received total postings=${all.length} (before local filter by created_at)`);
-  return all;
-}
-
-async function calcTodayStats({ clientId, apiKey, dateStr }) {
-  const postings = await fetchFboAllForDay({ clientId, apiKey, dateStr });
-
-  let ordersCount = 0;
-  let ordersAmount = 0;
-
-  let cancelsCount = 0;
-  let cancelsAmount = 0;
-
-  const samples = [];
+  let orders = 0, ordersSum = 0;
+  let cancels = 0, cancelsSum = 0;
 
   for (const p of postings) {
-    if (!isSameDayLocal(p?.created_at, dateStr)) continue;
+    if (!isSameDayLocal(p.created_at, dateStr)) continue;
 
-    const amt = postingAmountCents(p);
+    const amount = toCents(p.financial_data?.products?.[0]?.price || 0);
+    orders++;
+    ordersSum += amount;
 
-    ordersCount += 1;
-    ordersAmount += amt;
-
-    if (String(p?.status || "").toLowerCase() === "cancelled") {
-      cancelsCount += 1;
-      cancelsAmount += amt;
-    }
-
-    if (samples.length < 3) {
-      samples.push({ posting_number: p?.posting_number, status: p?.status, created_at: p?.created_at, amount: centsToRubString(amt) });
+    if (String(p.status).toLowerCase() === "cancelled") {
+      cancels++;
+      cancelsSum += amount;
     }
   }
 
-  console.log("🔎 Samples today:", JSON.stringify(samples, null, 2));
-
-  return {
-    dateStr,
-    ordersCount,
-    ordersAmount,
-    cancelsCount,
-    cancelsAmount,
-  };
+  return { orders, ordersSum, cancels, cancelsSum, dateStr };
 }
 
-// ---------------- widget ----------------
-function widgetText(s) {
-  return [
-    `📅 <b>FBO: за сегодня</b> <b>${s.dateStr}</b> (${SALES_TZ})`,
-    ``,
-    `📦 Заказы: <b>${s.ordersCount}</b>`,
-    `💰 Сумма заказов: <b>${centsToRubString(s.ordersAmount)}</b>`,
-    ``,
-    `❌ Отмены: <b>${s.cancelsCount}</b>`,
-    `💸 Сумма отмен: <b>${centsToRubString(s.cancelsAmount)}</b>`,
-  ].join("\n");
-}
-
-function widgetKeyboard(dateStr) {
-  return {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "🔄 Обновить", callback_data: `refresh:${dateStr}` }],
-        [{ text: "🔑 Сменить ключи", callback_data: "reset_keys" }],
-      ],
-    },
-  };
-}
-
-async function showWidget(chatId, userId, dateStr, editMessageId = null) {
-  const creds = getUserCreds(userId);
-  if (!creds?.clientId || !creds?.apiKey) {
-    await tgSendMessage(chatId, "❗ Ключи Ozon не настроены. Напиши /start.");
-    return;
-  }
-
-  const apiKey = decrypt(creds.apiKey);
-  const clientId = creds.clientId;
-
+// ================== API FOR MINI APP ==================
+app.get("/api/dashboard/today", async (req, res) => {
   try {
-    const s = await calcTodayStats({ clientId, apiKey, dateStr });
-    console.log(`✅ Today stats: orders=${s.ordersCount}, cancels=${s.cancelsCount}`);
+    const store = loadStore();
+    const userId = Object.keys(store.users || {})[0];
+    if (!userId) return res.status(400).json({ error: "no user" });
 
-    const text = widgetText(s);
-    if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
-    else await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
+    const creds = getUserCreds(userId);
+    const apiKey = decrypt(creds.apiKey);
+    const clientId = creds.clientId;
+
+    const s = await fetchFboForToday({ clientId, apiKey });
+
+    res.json({
+      orders: s.orders,
+      orders_sum: s.ordersSum,
+      cancels: s.cancels,
+      cancels_sum: s.cancelsSum,
+      updated_at: DateTime.now().setZone(SALES_TZ).toISO(),
+    });
   } catch (e) {
-    const msg = `❌ Не смог получить данные за <b>${dateStr}</b>.\n\n<code>${String(e.message || e)}</code>`;
-    if (editMessageId) await tgEditMessage(chatId, editMessageId, msg, widgetKeyboard(dateStr));
-    else await tgSendMessage(chatId, msg, widgetKeyboard(dateStr));
-  }
-}
-
-// ---------------- webhook ----------------
-app.post("/telegram-webhook", async (req, res) => {
-  res.sendStatus(200);
-
-  try {
-    const update = req.body;
-    const msg = update?.message;
-    const cb = update?.callback_query;
-
-    if (cb) {
-      const chatId = cb.message?.chat?.id;
-      const userId = cb.from?.id;
-      const messageId = cb.message?.message_id;
-      const data = cb.data;
-
-      await tgAnswerCallback(cb.id);
-      if (!chatId || !userId) return;
-
-      if (data?.startsWith("refresh:")) {
-        const dateStr = data.split(":")[1] || todayDateStr();
-        await showWidget(chatId, userId, dateStr, messageId);
-        return;
-      }
-
-      if (data === "reset_keys") {
-        deleteUserCreds(userId);
-        pending.set(userId, { step: "clientId" });
-        await tgEditMessage(chatId, messageId, "🔑 Ок, заново.\n\nОтправь <b>Client ID</b>.");
-        return;
-      }
-      return;
-    }
-
-    const chatId = msg?.chat?.id;
-    const userId = msg?.from?.id;
-    const text = msg?.text?.trim();
-    if (!chatId || !userId || !text) return;
-
-    if (text === "/start") {
-      const creds = getUserCreds(userId);
-      if (creds?.clientId && creds?.apiKey) {
-        await tgSendMessage(chatId, "✅ Ключи уже сохранены. Показываю статистику за сегодня:");
-        await showWidget(chatId, userId, todayDateStr());
-        return;
-      }
-      pending.set(userId, { step: "clientId" });
-      await tgSendMessage(chatId, "Отправь <b>Client ID</b>.");
-      return;
-    }
-
-    if (text === "/reset") {
-      deleteUserCreds(userId);
-      pending.set(userId, { step: "clientId" });
-      await tgSendMessage(chatId, "Ок. Отправь <b>Client ID</b>.");
-      return;
-    }
-
-    const st = pending.get(userId);
-    if (st?.step === "clientId") {
-      pending.set(userId, { step: "apiKey", clientId: text });
-      await tgSendMessage(chatId, "Теперь отправь <b>Api-Key</b>.");
-      return;
-    }
-    if (st?.step === "apiKey") {
-      setUserCreds(userId, { clientId: st.clientId, apiKey: encrypt(text), savedAt: Date.now() });
-      pending.delete(userId);
-      await tgSendMessage(chatId, "✅ Сохранил. Открываю статистику за сегодня:");
-      await showWidget(chatId, userId, todayDateStr());
-      return;
-    }
-
-    await tgSendMessage(chatId, "Команды:\n/start\n/reset");
-  } catch (err) {
-    console.error("Webhook handler error:", err);
+    res.status(500).json({ error: String(e.message) });
   }
 });
 
-app.listen(PORT, () => console.log(`✅ Server started on :8080`));
+// ================== START ==================
+app.listen(PORT, () => console.log(`✅ Server started on ${PORT}`));
