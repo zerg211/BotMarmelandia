@@ -1,51 +1,56 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
   <title>Продажи за сегодня</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    body {
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #0f172a;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
-    }
-    .card {
-      background: #020617;
-      padding: 32px;
-      border-radius: 20px;
-      text-align: center;
-      width: 90%;
-      max-width: 320px;
-    }
-    .number {
-      font-size: 64px;
-      font-weight: 700;
-      margin: 20px 0;
-    }
-    .label {
-      font-size: 18px;
-      opacity: 0.8;
-    }
+    body { font-family: Arial; padding: 20px; }
+    input, button { width: 100%; margin: 10px 0; padding: 10px; }
+    .count { font-size: 48px; text-align: center; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="label">Продажи за сегодня</div>
-    <div class="number" id="count">—</div>
-  </div>
 
-  <script>
-    fetch("/api/today-sales")
-      .then(res => res.json())
-      .then(data => {
-        document.getElementById("count").innerText = data.count;
-      });
-  </script>
+<div id="form">
+  <input id="client" placeholder="Client ID">
+  <input id="key" placeholder="API Key">
+  <button onclick="save()">Готово</button>
+</div>
+
+<div id="widget" style="display:none">
+  <h3>Продажи за сегодня</h3>
+  <div class="count" id="count">—</div>
+  <button onclick="load()">🔄 Обновить</button>
+</div>
+
+<script>
+  const tg = window.Telegram.WebApp;
+  tg.ready();
+
+  const telegram_id = tg.initDataUnsafe.user.id;
+
+  async function save() {
+    await fetch("/api/save-credentials", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        telegram_id,
+        client_id: client.value,
+        api_key: key.value
+      })
+    });
+    form.style.display = "none";
+    widget.style.display = "block";
+    load();
+  }
+
+  async function load() {
+    const res = await fetch(`/api/today-sales?telegram_id=${telegram_id}`);
+    const data = await res.json();
+    count.innerText = data.count;
+  }
+</script>
+
 </body>
 </html>
