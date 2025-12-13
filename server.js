@@ -8,25 +8,19 @@ const app = express();
 app.use(express.json());
 
 app.get("/", (req, res) => res.status(200).send("OK"));
+app.get("/index.html", (req, res) => res.status(200).send("OK"));
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 
 const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
-const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
+const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow"; // "сегодня" считаем по этой TZ
 
-// берем “последние N дней” и фильтруем “сегодня” локально
-const LOOKBACK_DAYS = Number(process.env.LOOKBACK_DAYS || 7);
-
-// store
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 
-// encryption (optional)
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
-
-// dialog state
 const pending = new Map();
 
 // ---------------- store helpers ----------------
@@ -170,47 +164,27 @@ async function ozonPost(pathname, { clientId, apiKey, body }) {
   return data;
 }
 
+// ---------------- date helpers ----------------
 function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
 }
 
-function dayBounds(dateStr) {
-  const from = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
-  const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
-  return { from, to };
+function createdAtRangeUtc(dateStr) {
+  const fromLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
+  const toLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
+  return {
+    from: fromLocal.toUTC().toISO({ suppressMilliseconds: true }),
+    to: toLocal.toUTC().toISO({ suppressMilliseconds: true }),
+  };
 }
 
-function wideRangeISO(dateStr) {
-  const { from, to } = dayBounds(dateStr);
-  const wideFrom = from.minus({ days: LOOKBACK_DAYS }).toUTC().toISO({ suppressMilliseconds: true });
-  const wideTo = to.toUTC().toISO({ suppressMilliseconds: true });
-  return { sinceISO: wideFrom, toISO: wideTo };
-}
+// ---------------- Counting orders ----------------
+async function countFbsOrdersToday({ clientId, apiKey, dateStr }) {
+  const { from, to } = createdAtRangeUtc(dateStr);
 
-// выбираем “дату заказа” максимально устойчиво по полям, которые обычно есть в posting
-function pickPostingDateISO(p) {
-  return (
-    p?.in_process_at ||
-    p?.created_at ||
-    p?.shipment_date ||
-    p?.deliver_at ||
-    p?.delivering_date ||
-    null
-  );
-}
-
-function isSameDayInTZ(iso, dateStr) {
-  if (!iso) return false;
-  const d = DateTime.fromISO(iso, { setZone: true }).setZone(SALES_TZ);
-  return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
-}
-
-// --------- Load postings FBS ----------
-async function listFbsPostingsWide({ clientId, apiKey, dateStr }) {
-  const { sinceISO, toISO } = wideRangeISO(dateStr);
   let offset = 0;
-  const limit = 50;
-  const postings = [];
+  const limit = 1000;
+  let total = 0;
 
   while (true) {
     const data = await ozonPost("/v3/posting/fbs/list", {
@@ -218,7 +192,9 @@ async function listFbsPostingsWide({ clientId, apiKey, dateStr }) {
       apiKey,
       body: {
         dir: "asc",
-        filter: { since: sinceISO, to: toISO },
+        filter: {
+          created_at: { from, to }, // ✅ ключевой фильтр
+        },
         limit,
         offset,
         with: { financial_data: false, analytics_data: false, barcodes: false },
@@ -226,22 +202,23 @@ async function listFbsPostingsWide({ clientId, apiKey, dateStr }) {
     });
 
     const result = data?.result || {};
-    postings.push(...(result?.postings || []));
+    const postings = result?.postings || [];
+    total += postings.length;
 
     if (!result?.has_next) break;
     offset += limit;
-    if (offset > 10000) break;
+    if (offset > 100000) break; // защита
   }
 
-  return postings;
+  return total;
 }
 
-// --------- Load postings FBO ----------
-async function listFboPostingsWide({ clientId, apiKey, dateStr }) {
-  const { sinceISO, toISO } = wideRangeISO(dateStr);
+async function countFboOrdersToday({ clientId, apiKey, dateStr }) {
+  const { from, to } = createdAtRangeUtc(dateStr);
+
   let offset = 0;
-  const limit = 50;
-  const postings = [];
+  const limit = 1000;
+  let total = 0;
 
   while (true) {
     const data = await ozonPost("/v2/posting/fbo/list", {
@@ -249,7 +226,9 @@ async function listFboPostingsWide({ clientId, apiKey, dateStr }) {
       apiKey,
       body: {
         dir: "asc",
-        filter: { since: sinceISO, to: toISO },
+        filter: {
+          created_at: { from, to }, // ✅ ключевой фильтр
+        },
         limit,
         offset,
         with: { financial_data: false },
@@ -257,41 +236,24 @@ async function listFboPostingsWide({ clientId, apiKey, dateStr }) {
     });
 
     const result = data?.result || {};
-    postings.push(...(result?.postings || []));
+    const postings = result?.postings || [];
+    total += postings.length;
 
     if (!result?.has_next) break;
     offset += limit;
-    if (offset > 10000) break;
+    if (offset > 100000) break;
   }
 
-  return postings;
+  return total;
 }
 
 async function getOrdersCountForDay({ clientId, apiKey, dateStr }) {
   const [fbs, fbo] = await Promise.all([
-    listFbsPostingsWide({ clientId, apiKey, dateStr }),
-    listFboPostingsWide({ clientId, apiKey, dateStr }),
+    countFbsOrdersToday({ clientId, apiKey, dateStr }),
+    countFboOrdersToday({ clientId, apiKey, dateStr }),
   ]);
 
-  // считаем уникальные posting_number, которые относятся к дню
-  const fbsSet = new Set();
-  for (const p of fbs) {
-    const iso = pickPostingDateISO(p);
-    if (isSameDayInTZ(iso, dateStr) && p?.posting_number) fbsSet.add(p.posting_number);
-  }
-
-  const fboSet = new Set();
-  for (const p of fbo) {
-    const iso = pickPostingDateISO(p);
-    if (isSameDayInTZ(iso, dateStr) && p?.posting_number) fboSet.add(p.posting_number);
-  }
-
-  return {
-    dateStr,
-    fbs: fbsSet.size,
-    fbo: fboSet.size,
-    total: fbsSet.size + fboSet.size,
-  };
+  return { dateStr, fbs, fbo, total: fbs + fbo };
 }
 
 // ---------------- widget ----------------
@@ -401,7 +363,7 @@ app.post("/telegram-webhook", async (req, res) => {
       const parts = text.split(/\s+/);
       const dateStr = parts[1];
       if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-        await tgSendMessage(chatId, "Формат: <code>/date YYYY-MM-DD</code>\nПример: <code>/date 2025-12-13</code>");
+        await tgSendMessage(chatId, "Формат: <code>/date YYYY-MM-DD</code>");
         return;
       }
       await showWidget(chatId, userId, dateStr);
