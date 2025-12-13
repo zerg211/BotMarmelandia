@@ -22,4 +22,124 @@
                calc(16px + env(safe-area-inset-right))
                calc(16px + env(safe-area-inset-bottom))
                calc(16px + env(safe-area-inset-left));
-      display:flex; flex-direction:column
+      display:flex; flex-direction:column; gap:14px;
+    }
+
+    .top{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;}
+    .title{font-size:20px;font-weight:900;}
+    .sub{font-size:12px;color:var(--muted);}
+    .badge{font-size:11px;padding:4px 8px;border-radius:999px;background:rgba(77,163,255,.15);color:var(--accent);white-space:nowrap;}
+    .badge.danger{background:rgba(255,90,106,.15);color:var(--danger);}
+
+    .card{
+      background:var(--card);
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:14px;
+      box-shadow:0 8px 24px rgba(0,0,0,.25);
+      display:flex; flex-direction:column; gap:10px;
+    }
+
+    .row{display:flex; gap:12px; align-items:baseline; justify-content:space-between; flex-wrap:wrap;}
+    .value{font-size:34px; font-weight:900; letter-spacing:.2px;}
+    .muted{color:var(--muted); font-size:12px;}
+    .sum{font-size:16px; font-weight:800; color:var(--text);}
+
+    .hint{
+      font-size:12px;color:var(--muted);
+      border:1px solid var(--line);background:rgba(255,255,255,.04);
+      border-radius:14px;padding:10px 12px; display:none;
+    }
+
+    .footer{
+      margin-top:auto; display:flex; justify-content:space-between; align-items:center; gap:12px;
+      color:var(--muted); font-size:12px;
+    }
+
+    .btn{
+      border:1px solid var(--line); background:rgba(77,163,255,.18); color:var(--text);
+      padding:10px 12px; border-radius:14px; font-weight:900; cursor:pointer;
+      display:flex; align-items:center; gap:8px;
+    }
+    .btn.secondary{background:rgba(255,255,255,.06);}
+    .btn:active{transform:scale(.99);}
+
+    /* modal */
+    .modal { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.55); padding:16px; }
+    .modal[hidden]{ display:none; }
+    .modalCard{
+      width:min(520px, 100%);
+      background:var(--card);
+      border:1px solid var(--line);
+      border-radius:18px;
+      padding:14px;
+      box-shadow:0 12px 40px rgba(0,0,0,.4);
+      display:flex; flex-direction:column; gap:10px;
+    }
+    .modalTop{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+    .modalTitle{font-size:16px;font-weight:900;}
+    .xbtn{border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--text);border-radius:12px;padding:8px 10px;cursor:pointer;font-weight:900;}
+    .inp{
+      width:100%; padding:10px 12px; border-radius:14px;
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.04);
+      color:var(--text);
+      outline:none;
+      font-weight:800;
+    }
+    .keysStatus{font-size:12px;color:var(--muted);}
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <div class="top">
+      <div>
+        <div class="title">Моя аналитика</div>
+        <div class="sub">FBO · Сегодня · Europe/Moscow</div>
+      </div>
+      <div class="badge" id="datePill">…</div>
+    </div>
+
+    <div class="hint" id="hint"></div>
+
+    <div class="card">
+      <div class="row">
+        <div class="muted">Заказов за сегодня</div>
+        <div class="badge" id="statusPill">готово</div>
+      </div>
+      <div class="value" id="count">—</div>
+      <div class="sum" id="sum"></div>
+    </div>
+
+    <div class="footer">
+      <div class="muted">Если не грузит — нажми «Обновить»</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;">
+        <button class="btn secondary" id="keysBtn">🔑 Ключи</button>
+        <button class="btn" id="refreshBtn">⟳ Обновить</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal" hidden>
+    <div class="modalCard" role="dialog" aria-modal="true">
+      <div class="modalTop">
+        <div class="modalTitle">Ключи Ozon Seller</div>
+        <button class="xbtn" id="closeModal">✕</button>
+      </div>
+
+      <div class="keysStatus" id="keysStatus"></div>
+
+      <input class="inp" id="clientId" placeholder="Client ID" autocomplete="off" />
+      <input class="inp" id="apiKey" placeholder="API Key" autocomplete="off" />
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button class="btn" id="saveKeys">Сохранить</button>
+        <button class="btn secondary" id="deleteKeys">Удалить</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./app.js?v=1"></script>
+</body>
+</html>
