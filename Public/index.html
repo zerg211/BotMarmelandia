@@ -11,13 +11,24 @@
       --accent:#4DA3FF; --danger:#FF5A6A; --line: rgba(255,255,255,.08);
     }
     *{box-sizing:border-box;}
-    body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
+
+    /* ✅ FULLSCREEN: фиксируем высоту и убираем скролл body */
+    html, body { height: 100%; overflow: hidden; }
+    body{
+      margin:0;background:var(--bg);color:var(--text);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    }
+
     .app{
-      min-height:100dvh;
+      /* ✅ FULLSCREEN: высота из Telegram viewport переменных */
+      height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100dvh));
+      min-height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100dvh));
+
       padding:calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
-               calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+              calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
       display:flex;flex-direction:column;gap:14px;
     }
+
     .top{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;}
     .title{font-size:20px;font-weight:900;letter-spacing:.2px;}
     .sub{font-size:12px;color:var(--muted);}
@@ -141,7 +152,17 @@
 
   <script>
     const tg = window.Telegram?.WebApp;
-    if (tg) { tg.ready(); tg.expand(); }
+
+    /* ✅ FULLSCREEN: “как запомнить” */
+    function applyFullscreen(){
+      if (!tg) return;
+      tg.ready();
+      tg.expand();
+      tg.disableVerticalSwipes?.();
+      tg.requestFullscreen?.();
+    }
+    applyFullscreen();
+    try { tg?.onEvent?.("viewportChanged", applyFullscreen); } catch(e) {}
 
     const $ = (id) => document.getElementById(id);
 
@@ -174,6 +195,7 @@
       clientIdEl.value = localStorage.getItem("ozon_clientId") || "";
       apiKeyEl.value = localStorage.getItem("ozon_apiKey") || "";
       modalBg.style.display = "flex";
+      applyFullscreen(); // ✅ чтобы после модалки не “схлопнулось”
     }
     function closeModal(){ modalBg.style.display = "none"; }
 
@@ -215,7 +237,6 @@
         const data = await r.json();
         if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
 
-        // title/subtitle если сервер прислал
         if (data.title) $("subtitle").textContent = data.title;
 
         $("orders").textContent = data.orders ?? data.ordersCount ?? "—";
@@ -233,7 +254,7 @@
       }
     }
 
-    refreshBtn.addEventListener("click", load);
+    refreshBtn.addEventListener("click", () => { applyFullscreen(); load(); });
     load();
   </script>
 </body>
