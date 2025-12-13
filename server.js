@@ -1,61 +1,75 @@
 import express from "express";
-import https from "https";
 
 const app = express();
-
-// Telegram/Railway присылают JSON
 app.use(express.json());
 
-// --- Health routes (чтобы не было 404 на / и /index.html) ---
+// Health routes (браузер будет видеть OK — это нормально)
 app.get("/", (req, res) => res.status(200).send("OK"));
 app.get("/index.html", (req, res) => res.status(200).send("OK"));
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 
-// --- ENV ---
 const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const WEBHOOK_URL = process.env.WEBHOOK_URL; // https://xxx.up.railway.app/telegram-webhook
 
-// --- Telegram webhook endpoint ---
+if (!BOT_TOKEN) {
+  console.warn("⚠️ BOT_TOKEN is not set");
+}
+
+// Функция отправки сообщения в Telegram (без лишних библиотек)
+async function tgSendMessage(chatId, text) {
+  const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    }),
+  });
+
+  const data = await resp.json();
+  if (!data?.ok) {
+    console.error("❌ sendMessage failed:", data);
+  }
+  return data;
+}
+
+// Webhook
 app.post("/telegram-webhook", async (req, res) => {
   try {
     const update = req.body;
-
-    // временно, чтобы убедиться что апдейты реально приходят
     console.log("TG update:", JSON.stringify(update));
 
-    // TODO: твоя логика обработки update
-    return res.sendStatus(200);
+    const msg = update?.message;
+    const chatId = msg?.chat?.id;
+    const text = msg?.text;
+
+    // Telegram должен быстро получить 200
+    res.sendStatus(200);
+
+    if (!chatId || !text) return;
+    if (!BOT_TOKEN) return;
+
+    if (text === "/start") {
+      await tgSendMessage(
+        chatId,
+        "Привет! Я онлайн ✅\n\nНапиши мне любое сообщение — я отвечу."
+      );
+      return;
+    }
+
+    // Эхо (потом заменим на твою бизнес-логику)
+    await tgSendMessage(chatId, `Ты написал: <b>${text}</b>`);
   } catch (err) {
     console.error("Webhook handler error:", err);
-    return res.sendStatus(200);
+    // даже при ошибке лучше 200, чтобы Telegram не долбил ретраями
+    res.sendStatus(200);
   }
 });
 
-// --- Set webhook on boot ---
-function setTelegramWebhook() {
-  if (!BOT_TOKEN || !WEBHOOK_URL) {
-    console.warn("⚠️ BOT_TOKEN or WEBHOOK_URL is not set. Skip setWebhook.");
-    return;
-  }
-
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=${encodeURIComponent(
-    WEBHOOK_URL
-  )}`;
-
-  https
-    .get(url, (r) => {
-      let data = "";
-      r.on("data", (chunk) => (data += chunk));
-      r.on("end", () => {
-        console.log("✅ Telegram webhook set:", WEBHOOK_URL);
-        // console.log("setWebhook response:", data); // если нужно посмотреть ответ
-      });
-    })
-    .on("error", (e) => console.error("setWebhook error:", e));
-}
-
 app.listen(PORT, () => {
   console.log(`✅ Server started on :${PORT}`);
-  setTelegramWebhook();
 });
