@@ -616,14 +616,16 @@ async function handleToday(req, res) {
     const dateStr = todayDateStr();
     const s = await calcTodayStats({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr });
 
-    const [buyoutsR, returnsR, balanceR] = await Promise.allSettled([
+    const [buyoutsR, balanceR] = await Promise.allSettled([
       calcBuyoutsTodayByOffer({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
-      calcReturnsTodayByOffer({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
       calcBalanceToday({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
     ]);
 
+    // Возвраты по offer_id за «сегодня» через posting/substatus Ozon корректно не отдаёт (нет даты события).
+    // Поэтому по артикулам не считаем, а показываем только сумму возвратов из finance/balance.
+    const returnsData = { returns_total_qty: 0, returns_list: [] };
+
     const buyouts = buyoutsR.status === "fulfilled" ? buyoutsR.value : { buyouts_total_qty: 0, buyouts_list: [] };
-    const returns = returnsR.status === "fulfilled" ? returnsR.value : { returns_total_qty: 0, returns_list: [] };
     const balance = balanceR.status === "fulfilled" ? balanceR.value : { balance_cents: null, balance_text: "—" };
 
     return res.json({
@@ -649,8 +651,8 @@ async function handleToday(req, res) {
       // новые виджеты
       buyouts_total_qty: buyouts.buyouts_total_qty,
       buyouts_list: buyouts.buyouts_list,
-      returns_total_qty: returns.returns_total_qty,
-      returns_list: returns.returns_list,
+      returns_total_qty: returnsData.returns_total_qty,
+      returns_list: returnsData.returns_list,
 
 
       // деньги по факту за сегодня (по /v1/finance/balance) — совпадает с кабинетом
@@ -664,7 +666,7 @@ async function handleToday(req, res) {
 
       widgets_errors: {
         buyouts: buyoutsR.status === "rejected" ? String(buyoutsR.reason?.message || buyoutsR.reason) : null,
-        returns: returnsR.status === "rejected" ? String(returnsR.reason?.message || returnsR.reason) : null,
+        returns: null,
         balance: balanceR.status === "rejected" ? String(balanceR.reason?.message || balanceR.reason) : null,
       },
 
