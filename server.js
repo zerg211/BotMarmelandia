@@ -272,7 +272,7 @@ async function fetchFboAllForPeriod({ clientId, apiKey, sinceIso, toIso }) {
   while (true) {
     const body = {
       dir: "ASC",
-      filter: { since: sinceIso, to: toIso, status: "" },
+      filter: { since: sinceIso, to: toIso, status: "delivered" },
       limit,
       offset,
       translit: true,
@@ -293,13 +293,17 @@ async function fetchFboAllForPeriod({ clientId, apiKey, sinceIso, toIso }) {
 }
 
 function pickDeliveredIso(posting) {
-  // В разных версиях API поле может называться по-разному — пробуем несколько вариантов
+  // Считаем момент "выкупа" как момент смены статуса на DELIVERED (обычно это status_updated_at).
+  // Поля в разных версиях API могут отличаться — пробуем максимально широко.
   return (
+    posting?.status_updated_at ||
     posting?.delivered_at ||
-    posting?.delivering_date ||
     posting?.analytics_data?.delivered_at ||
     posting?.analytics_data?.delivering_date ||
-    posting?.status_updated_at ||
+    posting?.analytics_data?.delivery_date ||
+    posting?.analytics_data?.shipment_date ||
+    posting?.delivering_date ||
+    posting?.delivery_date ||
     null
   );
 }
@@ -307,7 +311,7 @@ function pickDeliveredIso(posting) {
 async function calcBuyoutsTodayByOffer({ clientId, apiKey, dateStr }) {
   // Чтобы поймать "доставлено сегодня", даже если заказ был создан раньше,
   // берём окно 30 дней назад -> конец сегодняшнего дня (по МСК), потом фильтруем delivered_at по today.
-  const from30 = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).minus({ days: 30 }).startOf("day");
+  const from30 = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).minus({ days: 180 }).startOf("day");
   const toToday = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
   const sinceIso = from30.toUTC().toISO({ suppressMilliseconds: false });
   const toIso = toToday.toUTC().toISO({ suppressMilliseconds: false });
@@ -341,7 +345,11 @@ async function calcBuyoutsTodayByOffer({ clientId, apiKey, dateStr }) {
 }
 
 async function calcReturnsTodayByOffer({ clientId, apiKey, dateStr }) {
-  const { since, to } = dayBoundsUtcFromLocal(dateStr);
+  // Важно: "возвраты сегодня" в кабинете часто означает, что возврат ПЕРЕШЁЛ в статус возврата сегодня,
+  // а не то, что он был создан сегодня.
+  // Поэтому берём широкое окно (180 дней) и фильтруем по updated/status_updated дате.
+  const from = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).minus({ days: 180 }).startOf("day").toUTC().toISO({ suppressMilliseconds: false });
+  const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day").toUTC().toISO({ suppressMilliseconds: false });
 
   const byOffer = new Map();
   let totalQty = 0;
@@ -351,7 +359,7 @@ async function calcReturnsTodayByOffer({ clientId, apiKey, dateStr }) {
 
   while (true) {
     const body = {
-      filter: { date_from: since, date_to: to },
+      filter: { date_from: from, date_to: to },
       limit,
       offset,
     };
@@ -361,9 +369,28 @@ async function calcReturnsTodayByOffer({ clientId, apiKey, dateStr }) {
     if (!Array.isArray(items) || items.length === 0) break;
 
     for (const r of items) {
-      // на всякий: проверяем что событие действительно "сегодня"
-      const iso = r?.created_at || r?.returned_at || r?.return_date || null;
+      // что считаем "сегодня": момент обновления/смены статуса возврата
+      const iso =
+        r?.status_updated_at ||
+        r?.updated_at ||
+        r?.last_updated_at ||
+        r?.created_at ||
+        r?.returned_at ||
+        r?.return_date ||
+        null;
+
       if (iso && !isSameDayLocal(iso, dateStr)) continue;
+
+      // фильтр по “возвратным” статусам (как у тебя в описании)
+      const st = String(r?.status || r?.state || "").toLowerCase();
+      const isReturnFlow =
+        st.includes("await") || st.includes("ожида") ||
+        st.includes("warehouse") || st.includes("склад") ||
+        st.includes("seller") || st.includes("вам") ||
+        st.includes("to_ozon") || st.includes("to_seller") ||
+        st.includes("moving") || st.includes("едет");
+
+      if (!isReturnFlow) continue;
 
       if (Array.isArray(r?.products) && r.products.length) {
         for (const pr of r.products) {
@@ -440,6 +467,63 @@ async function calcBalanceToday({ clientId, apiKey, dateStr }) {
   }
 
   throw lastErr || new Error("balance_failed");
+}
+
+// ---------------- Core: balance (cabinet) ----------------
+async function calcBalanceNowCents({ clientId, apiKey, dateStr }) {
+  // В Seller API нет одного “идеального” метода баланса, поэтому делаем 2 попытки:
+  // 1) /v1/finance/mutual-settlement (отчёт взаиморасчётов) — часто содержит итоговую задолженность/баланс.
+  // 2) /v1/finance/cash-flow-statement/list (финансовый отчёт) — как запасной вариант.
+  // Возвращаем копейки. Если не получилось — null (чтобы фронт показывал "—", а не 0).
+  const fromMonth = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("month").toUTC().toISO({ suppressMilliseconds: false });
+  const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day").toUTC().toISO({ suppressMilliseconds: false });
+
+  // 1) mutual-settlement
+  try {
+    const body = { date_from: fromMonth, date_to: to };
+    const data = await ozonPost("/v1/finance/mutual-settlement", { clientId, apiKey, body });
+    const r = data?.result || data;
+
+    const candidates = [
+      r?.summary?.ending_balance,
+      r?.summary?.end_balance,
+      r?.summary?.closing_balance,
+      r?.header?.ending_balance,
+      r?.header?.end_balance,
+      r?.header?.closing_balance,
+      r?.balance,
+      r?.result?.balance,
+    ];
+
+    for (const c of candidates) {
+      const cents = toCents(c);
+      if (cents !== 0) return cents; // если реально есть баланс — возвращаем
+    }
+  } catch (_) {}
+
+  // 2) cash-flow-statement
+  try {
+    const body = { filter: { date_from: fromMonth, date_to: to }, page: 1, page_size: 1000 };
+    const data = await ozonPost("/v1/finance/cash-flow-statement/list", { clientId, apiKey, body });
+    const r = data?.result || data;
+
+    const candidates = [
+      r?.summary?.closing_balance,
+      r?.summary?.end_balance,
+      r?.summary?.ending_balance,
+      r?.header?.closing_balance,
+      r?.header?.end_balance,
+      r?.header?.ending_balance,
+      r?.balance,
+    ];
+
+    for (const c of candidates) {
+      const cents = toCents(c);
+      if (cents !== 0) return cents;
+    }
+  } catch (_) {}
+
+  return null;
 }
 // ====== API: получить ключи из (query → user_id → первый юзер) ======
 function resolveCredsFromRequest(req) {
