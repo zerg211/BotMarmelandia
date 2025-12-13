@@ -18,19 +18,19 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
-// file store (simple)
+// store
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 
-// encryption for Api-Key (optional but recommended)
+// encryption (optional)
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 
-// conversation state
-const pending = new Map(); // userId -> { step: 'clientId'|'apiKey', clientId? }
+// dialog state
+const pending = new Map();
 
-// small in-memory cache to reduce calls
+// cache
 const postingTypeCache = new Map(); // posting_number -> 'fbs'|'fbo'
-const postingAmountCache = new Map(); // posting_number -> { amount, ts }
+const postingAmountCache = new Map(); // posting_number -> { amount, type, ts }
 const POSTING_CACHE_TTL_MS = 60_000;
 
 // ---------------- store helpers ----------------
@@ -175,19 +175,17 @@ function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
 }
 
-function rangeForDate(dateStr /* yyyy-MM-dd */) {
+function rangeForDate(dateStr) {
   const from = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
   const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
   return {
     dateStr,
-    from,
-    to,
-    fromUtcIso: from.toUTC().toISO({ suppressMilliseconds: false }),
-    toUtcIso: to.toUTC().toISO({ suppressMilliseconds: false }),
+    fromUtcIso: from.toUTC().toISO(),
+    toUtcIso: to.toUTC().toISO(),
   };
 }
 
-// Сумма “как рядом с заказом” в ЛК: customer_price * quantity по products
+// сумма “как в ЛК рядом с заказом”: Σ customer_price * quantity
 function calcOrderAmountFromPostingFinancial(financialData) {
   const products = financialData?.products || [];
   let sum = 0;
@@ -200,11 +198,9 @@ function calcOrderAmountFromPostingFinancial(financialData) {
 }
 
 async function getPostingAmountAndType({ clientId, apiKey, postingNumber }) {
-  // cache
   const cached = postingAmountCache.get(postingNumber);
   if (cached && Date.now() - cached.ts < POSTING_CACHE_TTL_MS) return cached;
 
-  // if we know type, try that first
   const knownType = postingTypeCache.get(postingNumber);
 
   const tryFbs = async () => {
@@ -233,24 +229,11 @@ async function getPostingAmountAndType({ clientId, apiKey, postingNumber }) {
 
   let result;
   if (knownType === "fbs") {
-    try {
-      result = await tryFbs();
-    } catch {
-      result = await tryFbo();
-    }
+    try { result = await tryFbs(); } catch { result = await tryFbo(); }
   } else if (knownType === "fbo") {
-    try {
-      result = await tryFbo();
-    } catch {
-      result = await tryFbs();
-    }
+    try { result = await tryFbo(); } catch { result = await tryFbs(); }
   } else {
-    // unknown: try fbs then fbo
-    try {
-      result = await tryFbs();
-    } catch {
-      result = await tryFbo();
-    }
+    try { result = await tryFbs(); } catch { result = await tryFbo(); }
   }
 
   const out = { ...result, ts: Date.now() };
@@ -258,7 +241,6 @@ async function getPostingAmountAndType({ clientId, apiKey, postingNumber }) {
   return out;
 }
 
-// Ограничение параллелизма
 async function mapLimit(items, limit, fn) {
   const res = new Array(items.length);
   let i = 0;
@@ -277,25 +259,12 @@ async function mapLimit(items, limit, fn) {
   return res;
 }
 
-/**
- * Получаем события “за день” из finance transactions:
- * - sales: операции продажи (плюс)
- * - returns/cancels: операции возврат/отмена (минус)
- *
- * Важно: названия operation_type могут различаться, поэтому мы используем
- * “широкое” распознавание по подстрокам и безопасные fallback’и.
- */
-function classifyOperation(opTypeRaw) {
-  const op = String(opTypeRaw || "").toLowerCase();
-
-  // sale
-  if (op.includes("sale") || op.includes("продаж")) return "sale";
-
-  // return/cancel/refund
-  if (op.includes("return") || op.includes("refund") || op.includes("cancel") || op.includes("возврат") || op.includes("отмен"))
+// классификация по operation_type / operation_type_name
+function classifyOperation(opType, opName) {
+  const s = `${opType || ""} ${opName || ""}`.toLowerCase();
+  if (s.includes("sale") || s.includes("продаж")) return "sale";
+  if (s.includes("return") || s.includes("refund") || s.includes("cancel") || s.includes("возврат") || s.includes("отмен"))
     return "return";
-
-  // unknown
   return "other";
 }
 
@@ -304,7 +273,7 @@ async function listFinanceTransactionsForDate({ clientId, apiKey, dateStr }) {
 
   let page = 1;
   const page_size = 1000;
-  const items = [];
+  const ops = [];
 
   while (true) {
     const body = {
@@ -312,105 +281,90 @@ async function listFinanceTransactionsForDate({ clientId, apiKey, dateStr }) {
         date: { from: fromUtcIso, to: toUtcIso },
         operation_type: [],
         posting_number: "",
-        transaction_type: "all",
+        transaction_type: "", // <-- ВАЖНО: не фильтруем тип, чтобы не получить пусто
       },
       page,
       page_size,
     };
 
-    const data = await ozonPost("/v3/finance/transaction/list", {
-      clientId,
-      apiKey,
-      body,
-    });
+    const data = await ozonPost("/v3/finance/transaction/list", { clientId, apiKey, body });
 
     const result = data?.result || {};
-    const chunk = result?.operations || result?.items || [];
-    items.push(...chunk);
+    const chunk = result?.operations || [];
+    ops.push(...chunk);
 
-    // определяем окончание по разным возможным полям
-    const totalPages =
-      Number(result?.page_count) ||
-      Number(result?.total_pages) ||
-      null;
-
-    if (totalPages && page >= totalPages) break;
-
-    const hasNext =
-      result?.has_next === true ||
-      (typeof result?.has_next === "boolean" ? result.has_next : null);
-
-    if (hasNext === false) break;
-
-    // fallback: если вернулось меньше page_size — скорее всего конец
+    const pageCount = Number(result?.page_count || 0);
+    if (pageCount && page >= pageCount) break;
     if (!chunk || chunk.length < page_size) break;
 
     page += 1;
-    if (page > 50) break; // защита
+    if (page > 50) break;
   }
 
-  return items;
+  // DEBUG: чтобы ты видел, что реально приходит
+  if (ops.length) {
+    const sample = ops.slice(0, 5).map(o => ({
+      operation_type: o.operation_type,
+      operation_type_name: o.operation_type_name,
+      posting_number: o?.posting?.posting_number,
+      delivery_schema: o?.posting?.delivery_schema
+    }));
+    console.log("Finance sample:", JSON.stringify(sample));
+  } else {
+    console.log("Finance: 0 operations for date", dateStr);
+  }
+
+  return ops;
 }
 
 async function getDailySalesAndReturns({ clientId, apiKey, dateStr }) {
   const ops = await listFinanceTransactionsForDate({ clientId, apiKey, dateStr });
 
-  // Собираем posting_number по операциям
-  const salesPostingNumbers = new Set();
-  const returnsPostingNumbers = new Set();
+  const salesNumbers = new Set();
+  const returnNumbers = new Set();
 
-  for (const it of ops) {
-    const postingNumber = it.posting_number || it.postingNumber || it.posting || "";
-    if (!postingNumber) continue;
+  for (const o of ops) {
+    // ✅ FIX: posting number inside o.posting.posting_number (как в ответе документации)
+    const num = o?.posting?.posting_number;
+    if (!num) continue;
 
-    const cls = classifyOperation(it.operation_type || it.operationType);
-    if (cls === "sale") salesPostingNumbers.add(postingNumber);
-    else if (cls === "return") returnsPostingNumbers.add(postingNumber);
+    const cls = classifyOperation(o.operation_type, o.operation_type_name);
+    if (cls === "sale") salesNumbers.add(num);
+    else if (cls === "return") returnNumbers.add(num);
   }
 
-  const salesArr = [...salesPostingNumbers];
-  const returnsArr = [...returnsPostingNumbers];
+  const salesArr = [...salesNumbers];
+  const returnsArr = [...returnNumbers];
 
-  // Тянем суммы “как в ЛК” по каждому заказу
-  const salesAmounts = await mapLimit(salesArr, 8, async (num) =>
-    getPostingAmountAndType({ clientId, apiKey, postingNumber: num })
-  );
-  const returnAmounts = await mapLimit(returnsArr, 8, async (num) =>
-    getPostingAmountAndType({ clientId, apiKey, postingNumber: num })
-  );
+  const salesInfo = await mapLimit(salesArr, 8, (num) => getPostingAmountAndType({ clientId, apiKey, postingNumber: num }));
+  const retInfo = await mapLimit(returnsArr, 8, (num) => getPostingAmountAndType({ clientId, apiKey, postingNumber: num }));
 
-  // Разбиваем FBS/FBO
-  let salesFbs = 0, salesFbo = 0, salesSumFbs = 0, salesSumFbo = 0;
-  for (const r of salesAmounts) {
+  let salesFbs = 0, salesFbo = 0, salesSum = 0;
+  for (const r of salesInfo) {
     if (!r || typeof r.amount !== "number") continue;
-    if (r.type === "fbs") { salesFbs += 1; salesSumFbs += r.amount; }
-    else if (r.type === "fbo") { salesFbo += 1; salesSumFbo += r.amount; }
+    salesSum += r.amount;
+    if (r.type === "fbs") salesFbs += 1;
+    else if (r.type === "fbo") salesFbo += 1;
   }
 
-  let retFbs = 0, retFbo = 0, retSumFbs = 0, retSumFbo = 0;
-  for (const r of returnAmounts) {
+  let retFbs = 0, retFbo = 0, retSum = 0;
+  for (const r of retInfo) {
     if (!r || typeof r.amount !== "number") continue;
-    if (r.type === "fbs") { retFbs += 1; retSumFbs += r.amount; }
-    else if (r.type === "fbo") { retFbo += 1; retSumFbo += r.amount; }
+    retSum += r.amount;
+    if (r.type === "fbs") retFbs += 1;
+    else if (r.type === "fbo") retFbo += 1;
   }
 
   return {
     dateStr,
-    // sales
     salesFbs,
     salesFbo,
     salesTotal: salesFbs + salesFbo,
-    salesSumFbs,
-    salesSumFbo,
-    salesSumTotal: salesSumFbs + salesSumFbo,
-
-    // returns/cancels
+    salesSum,
     retFbs,
     retFbo,
     retTotal: retFbs + retFbo,
-    retSumFbs,
-    retSumFbo,
-    retSumTotal: retSumFbs + retSumFbo,
+    retSum,
   };
 }
 
@@ -421,8 +375,7 @@ function moneyRub(x) {
 }
 
 function widgetText(s) {
-  const net = s.salesSumTotal - s.retSumTotal;
-
+  const net = s.salesSum - s.retSum;
   return [
     `📊 <b>События за дату</b>: <b>${s.dateStr}</b> (${SALES_TZ})`,
     ``,
@@ -434,9 +387,9 @@ function widgetText(s) {
     `🔴 Отмен/возвратов (FBO): <b>${s.retFbo}</b>`,
     `🔴 Отмен/возвратов всего: <b>${s.retTotal}</b>`,
     ``,
-    `💰 Сумма продаж (как в ЛК): <b>${moneyRub(s.salesSumTotal)}</b> ₽`,
-    `🔄 Сумма отмен/возвратов: <b>${moneyRub(s.retSumTotal)}</b> ₽`,
-    `📉 Итог (продажи − отмены): <b>${moneyRub(net)}</b> ₽`,
+    `💰 Сумма продаж (как в ЛК): <b>${moneyRub(s.salesSum)}</b> ₽`,
+    `🔄 Сумма отмен/возвратов: <b>${moneyRub(s.retSum)}</b> ₽`,
+    `📉 Итог: <b>${moneyRub(net)}</b> ₽`,
   ].join("\n");
 }
 
@@ -465,37 +418,26 @@ async function showWidget(chatId, userId, dateStr, editMessageId = null) {
     const stats = await getDailySalesAndReturns({ clientId, apiKey, dateStr });
     const text = widgetText(stats);
 
-    if (editMessageId) {
-      await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
-    } else {
-      await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
-    }
+    if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
+    else await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
   } catch (e) {
     const msg =
       `❌ Не смог получить события/суммы за <b>${dateStr}</b>.\n\n` +
-      `Подсказка: проверь Client ID / Api-Key.\n\n` +
       `<code>${String(e.message || e)}</code>`;
-
-    if (editMessageId) {
-      await tgEditMessage(chatId, editMessageId, msg, widgetKeyboard(dateStr));
-    } else {
-      await tgSendMessage(chatId, msg, widgetKeyboard(dateStr));
-    }
+    if (editMessageId) await tgEditMessage(chatId, editMessageId, msg, widgetKeyboard(dateStr));
+    else await tgSendMessage(chatId, msg, widgetKeyboard(dateStr));
   }
 }
 
 // ---------------- webhook ----------------
 app.post("/telegram-webhook", async (req, res) => {
-  // Telegram must get 200 fast
   res.sendStatus(200);
 
   try {
     const update = req.body;
-
     const msg = update?.message;
     const cb = update?.callback_query;
 
-    // callbacks
     if (cb) {
       const chatId = cb.message?.chat?.id;
       const userId = cb.from?.id;
@@ -517,23 +459,13 @@ app.post("/telegram-webhook", async (req, res) => {
         await tgEditMessage(chatId, messageId, "🔑 Ок, заново.\n\nОтправь <b>Client ID</b>.");
         return;
       }
-
       return;
     }
 
-    // messages
     const chatId = msg?.chat?.id;
     const userId = msg?.from?.id;
     const text = msg?.text?.trim();
-
     if (!chatId || !userId || !text) return;
-
-    if (text === "/reset") {
-      deleteUserCreds(userId);
-      pending.set(userId, { step: "clientId" });
-      await tgSendMessage(chatId, "Ок. Отправь <b>Client ID</b>.");
-      return;
-    }
 
     if (text === "/start") {
       const creds = getUserCreds(userId);
@@ -543,11 +475,17 @@ app.post("/telegram-webhook", async (req, res) => {
         return;
       }
       pending.set(userId, { step: "clientId" });
-      await tgSendMessage(chatId, "Привет! Настроим доступ к Ozon.\n\nОтправь <b>Client ID</b>.");
+      await tgSendMessage(chatId, "Отправь <b>Client ID</b>.");
       return;
     }
 
-    // /date YYYY-MM-DD
+    if (text === "/reset") {
+      deleteUserCreds(userId);
+      pending.set(userId, { step: "clientId" });
+      await tgSendMessage(chatId, "Ок. Отправь <b>Client ID</b>.");
+      return;
+    }
+
     if (text.startsWith("/date")) {
       const parts = text.split(/\s+/);
       const dateStr = parts[1];
@@ -559,7 +497,6 @@ app.post("/telegram-webhook", async (req, res) => {
       return;
     }
 
-    // key input flow
     const st = pending.get(userId);
     if (st?.step === "clientId") {
       pending.set(userId, { step: "apiKey", clientId: text });
@@ -567,27 +504,17 @@ app.post("/telegram-webhook", async (req, res) => {
       return;
     }
     if (st?.step === "apiKey") {
-      const clientId = st.clientId;
-      const apiKeyEnc = encrypt(text);
-
-      setUserCreds(userId, { clientId, apiKey: apiKeyEnc, savedAt: Date.now() });
+      setUserCreds(userId, { clientId: st.clientId, apiKey: encrypt(text), savedAt: Date.now() });
       pending.delete(userId);
-
       await tgSendMessage(chatId, "✅ Сохранил. Открываю виджет за сегодня:");
       await showWidget(chatId, userId, todayDateStr());
       return;
     }
 
-    // default help
-    await tgSendMessage(
-      chatId,
-      "Команды:\n/start — настройка и виджет за сегодня\n/date YYYY-MM-DD — статистика за дату\n/reset — заново ввести ключи"
-    );
+    await tgSendMessage(chatId, "Команды:\n/start\n/date YYYY-MM-DD\n/reset");
   } catch (err) {
     console.error("Webhook handler error:", err);
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`✅ Server started on :${PORT}`);
-});
+app.listen(PORT, () => console.log(`✅ Server started on :${PORT}`));
