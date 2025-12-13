@@ -14,7 +14,6 @@
     *{box-sizing:border-box;}
     html, body { height:100%; margin:0; padding:0; overflow:hidden; background:var(--bg); color:var(--text); }
 
-    /* Telegram WebApp высота */
     .app{
       height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100dvh));
       min-height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100dvh));
@@ -62,7 +61,6 @@
       border-radius:14px;padding:10px 12px;display:none;
     }
 
-    /* Модалка ключей */
     .modal { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.55); padding:16px; }
     .modal[hidden]{ display:none; }
     .modalCard{
@@ -153,23 +151,12 @@
         <button class="btn" id="saveKeys">Сохранить</button>
         <button class="btn secondary" id="deleteKeys">Удалить</button>
       </div>
-
-      <div class="keysStatus">
-        Если “Открыть” иногда пусто — нажми «Обновить». Это окно должно работать всегда.
-      </div>
     </div>
   </div>
 
   <script>
-    // Показываем ошибку вместо "ничего не происходит"
-    window.addEventListener("error", (e) => {
-      const msg = (e && e.message) ? e.message : "JS error";
-      document.body.innerHTML = '<pre style="white-space:pre-wrap;padding:16px;color:#fff;background:#000;">' + msg + '</pre>';
-    });
-    window.addEventListener("unhandledrejection", (e) => {
-      const msg = (e && e.reason) ? String(e.reason) : "Unhandled promise rejection";
-      document.body.innerHTML = '<pre style="white-space:pre-wrap;padding:16px;color:#fff;background:#000;">' + msg + '</pre>';
-    });
+    // ✅ ВОТ ТУТ ТВОЙ BACKEND (Railway)
+    const API_BASE = "https://botmarmelandia-production.up.railway.app";
 
     const tg = window.Telegram?.WebApp;
 
@@ -186,7 +173,6 @@
     const cancelsEl = $("cancels");
     const cancelsSumEl = $("cancelsSum");
 
-    // modal
     const keysBtn = $("keysBtn");
     const modal = $("modal");
     const closeModal = $("closeModal");
@@ -214,6 +200,7 @@
       return new Intl.NumberFormat("ru-RU", {minimumFractionDigits:2, maximumFractionDigits:2}).format(rub);
     }
 
+    // ✅ ПОЛНЫЙ ЭКРАН: CSS через tg viewport + tg.expand() + disableVerticalSwipes + requestFullscreen
     function applyFullscreen(){
       if (!tg) return;
       tg.ready();
@@ -221,10 +208,6 @@
       tg.disableVerticalSwipes?.();
       tg.requestFullscreen?.();
     }
-
-    // Важно: если JS не работает, статус не поменяется. Поэтому ставим явный маркер.
-    setStatus("js ok");
-
     applyFullscreen();
     try { tg?.onEvent?.("viewportChanged", applyFullscreen); } catch(e){}
 
@@ -233,7 +216,6 @@
       return initData ? { "X-Tg-Init-Data": initData, "x-telegram-init-data": initData } : {};
     }
 
-    // Modal open/close
     function openModal(){
       modal.hidden = false;
       keysStatus.textContent = "";
@@ -247,6 +229,14 @@
     closeModal.addEventListener("click", close);
     modal.addEventListener("click", (e)=>{ if (e.target === modal) close(); });
 
+    async function apiFetch(path, opts = {}){
+      const url = API_BASE.replace(/\/+$/, "") + path;
+      return fetch(url, {
+        ...opts,
+        credentials: "include",
+      });
+    }
+
     saveKeysBtn.addEventListener("click", async ()=>{
       keysStatus.textContent = "";
       const clientId = clientIdInp.value.trim();
@@ -255,16 +245,19 @@
         keysStatus.textContent = "Заполни Client ID и API Key";
         return;
       }
-      const r = await fetch("/api/keys", {
+
+      const r = await apiFetch("/api/keys", {
         method:"POST",
         headers:{ "Content-Type":"application/json", ...tgHeader() },
         body: JSON.stringify({ clientId, apiKey })
       });
       const j = await r.json().catch(()=>({}));
+
       if (!r.ok || !j.ok){
         keysStatus.textContent = j.error || ("HTTP " + r.status);
         return;
       }
+
       keysStatus.textContent = "Сохранено ✅";
       close();
       await loadDashboard();
@@ -272,12 +265,14 @@
 
     deleteKeysBtn.addEventListener("click", async ()=>{
       keysStatus.textContent = "";
-      const r = await fetch("/api/keys", { method:"DELETE", headers: tgHeader() });
+      const r = await apiFetch("/api/keys", { method:"DELETE", headers: tgHeader() });
       const j = await r.json().catch(()=>({}));
+
       if (!r.ok || !j.ok){
         keysStatus.textContent = j.error || ("HTTP " + r.status);
         return;
       }
+
       clientIdInp.value = "";
       apiKeyInp.value = "";
       keysStatus.textContent = "Удалено ✅";
@@ -285,15 +280,11 @@
     });
 
     async function loadKeys(){
-      const r = await fetch("/api/keys", { headers: tgHeader() });
+      const r = await apiFetch("/api/keys", { headers: tgHeader() });
       const j = await r.json().catch(()=>({}));
 
-      if (r.status === 401){
-        keysStatus.textContent = "Нет доступа (Telegram не передал initData). Открой через кнопку у бота или нажми «Обновить».";
-        return;
-      }
       if (!r.ok){
-        keysStatus.textContent = "Ключи не найдены. Введи Client ID / API Key.";
+        keysStatus.textContent = j.error || ("HTTP " + r.status);
         return;
       }
 
@@ -306,23 +297,9 @@
       showHint("");
       setStatus("обновление…");
 
-      ordersEl.textContent = "—";
-      ordersSumEl.textContent = "—";
-      cancelsEl.textContent = "—";
-      cancelsSumEl.textContent = "—";
-
-      if (!tg?.initData){
-        showHint("Открыто без initData (часто при «Открыть»). Нажми «Обновить» или открой через кнопку у бота.");
-      }
-
-      const r = await fetch("/api/dashboard/today", { headers: tgHeader() });
+      const r = await apiFetch("/api/dashboard/today", { headers: tgHeader() });
       const data = await r.json().catch(()=>({}));
 
-      if (r.status === 401){
-        setStatus("нет доступа", true);
-        showHint("Telegram не передал авторизацию. Открой WebApp через кнопку у бота.");
-        return;
-      }
       if (!r.ok || data.error){
         if (data.error === "no_creds" || data.error === "keys_not_found"){
           setStatus("нужны ключи", true);
@@ -351,33 +328,17 @@
       else refreshIcon.classList.remove("spin");
     }
 
-    // Автопопытки на старте (на мобиле tg.initData иногда появляется не сразу)
-    let tries = 0;
-    async function boot(){
+    refreshBtn.addEventListener("click", async ()=>{
       setLoading(true);
       try { applyFullscreen(); await loadDashboard(); }
       finally { setLoading(false); }
-
-      if (!(tg?.initData || "") && tries < 6){
-        tries += 1;
-        setTimeout(boot, 350);
-      }
-    }
-
-    refreshBtn.addEventListener("click", ()=>{
-      tries = 0;
-      boot();
     });
 
-    document.addEventListener("visibilitychange", ()=>{
-      if (!document.hidden){
-        tries = 0;
-        applyFullscreen();
-        boot();
-      }
-    });
-
-    boot();
+    (async ()=>{
+      setLoading(true);
+      try { await loadDashboard(); }
+      finally { setLoading(false); }
+    })();
   </script>
 </body>
 </html>
