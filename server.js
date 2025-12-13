@@ -458,7 +458,20 @@ async function calcBalanceToday({ clientId, apiKey, dateStr }) {
 
     if (closing !== null && closing !== undefined) {
       const cents = toCents(closing);
-      return { balance_cents: cents, balance_text: centsToRubString(cents) };
+      const salesVal = data?.cashflows?.sales?.amount?.value ?? null;
+      const returnsVal = data?.cashflows?.returns?.amount?.value ?? null;
+
+      const buyouts_sum_cents = salesVal === null ? null : toCents(salesVal);
+      const returns_sum_cents = returnsVal === null ? null : toCents(returnsVal);
+
+      return {
+        balance_cents: cents,
+        balance_text: centsToRubString(cents),
+        buyouts_sum_cents,
+        buyouts_sum_text: buyouts_sum_cents === null ? "—" : centsToRubString(buyouts_sum_cents),
+        returns_sum_cents,
+        returns_sum_text: returns_sum_cents === null ? "—" : centsToRubString(returns_sum_cents),
+      };
     }
   } catch (e) {
     // пойдём дальше (фолбэки)
@@ -638,6 +651,13 @@ async function handleToday(req, res) {
       buyouts_list: buyouts.buyouts_list,
       returns_total_qty: returns.returns_total_qty,
       returns_list: returns.returns_list,
+
+
+      // деньги по факту за сегодня (по /v1/finance/balance) — совпадает с кабинетом
+      buyouts_sum_cents: balance.buyouts_sum_cents ?? null,
+      buyouts_sum_text: balance.buyouts_sum_text ?? "—",
+      returns_sum_cents: balance.returns_sum_cents ?? null,
+      returns_sum_text: balance.returns_sum_text ?? "—",
 
       balance_cents: balance.balance_cents,
       balance_text: balance.balance_text,
