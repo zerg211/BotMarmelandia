@@ -420,7 +420,8 @@
               detailsEl.innerHTML = `<div class="op-sub">Загрузка детализации…</div>`;
 
               try{
-                const dUrl = `/api/balance/sale/detail?clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}&posting_number=${encodeURIComponent(postingNumber)}`;
+                const params = new URLSearchParams({ clientId, apiKey, posting_number: postingNumber });
+                const dUrl = `/api/balance/sale/detail?${params.toString()}`;
                 const rr = await fetch(dUrl);
                 const dj = await rr.json().catch(()=>({}));
                 if (!rr.ok || dj.error) throw new Error(dj.error || ("HTTP " + rr.status));
