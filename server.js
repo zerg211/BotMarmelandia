@@ -161,12 +161,24 @@ function isSameDayLocal(iso, dateStr) {
 // ---------------- money helpers (без float) ----------------
 function toCents(val) {
   if (val === null || val === undefined) return 0;
-  const s = String(val).trim().replace(",", ".");
+  let s = String(val).trim().replace(",", ".");
   if (!s) return 0;
+
+  let sign = 1;
+  if (s.startsWith("-")) {
+    sign = -1;
+    s = s.slice(1);
+  } else if (s.startsWith("+")) {
+    s = s.slice(1);
+  }
+
   const parts = s.split(".");
   const rub = parseInt(parts[0] || "0", 10) || 0;
   const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10) || 0;
-  return rub * 100 + kop;
+  return sign * (rub * 100 + kop);
+}
+function rubToCents(val) {
+  return toCents(val);
 }
 function rubToCents(val) {
   return toCents(val);
@@ -1025,10 +1037,35 @@ app.get("/api/balance/sale/detail", async (req, res) => {
     for (const bucket of serviceBuckets) {
       if (!bucket || typeof bucket !== "object") continue;
       for (const [rawKey, svc] of Object.entries(bucket)) {
+        const keyLc = String(rawKey || "").toLowerCase();
+
+        // Пытаемся забрать net по доставке из payout/amount, но в расходы не кладём
+        if (keyLc.includes("marketplace_service_item_deliv_to_customer")) {
+          const payoutFromSvc = normalizeAmountToCents(
+            svc?.payout ?? svc?.total ?? svc?.amount ?? svc?.value ?? svc
+          );
+          if (netFromSaleCents === null && payoutFromSvc) netFromSaleCents = payoutFromSvc;
+          continue;
+        }
+
         const title = serviceTitle(rawKey);
         const amount = extractServiceAmount(svc);
         if (!amount) continue;
         group.set(title, (group.get(title) || 0) + amount);
+      }
+    }
+
+    // если не нашли net в транзакциях — возьмём из payout услуги доставки
+    if (netFromSaleCents === null) {
+      const deliverySvc =
+        finData?.posting_services?.marketplace_service_item_deliv_to_customer ||
+        finData?.services?.marketplace_service_item_deliv_to_customer ||
+        null;
+      if (deliverySvc) {
+        const payoutFromSvc = normalizeAmountToCents(
+          deliverySvc?.payout ?? deliverySvc?.total ?? deliverySvc?.amount ?? deliverySvc?.value ?? deliverySvc
+        );
+        if (payoutFromSvc) netFromSaleCents = payoutFromSvc;
       }
     }
 
