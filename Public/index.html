@@ -78,6 +78,28 @@
 .mini-list .row{display:flex;justify-content:space-between;gap:10px;}
 .mini-list .k{color:var(--text);font-weight:700;}
 
+
+/* баланс кликабельный */
+.card.clickable{cursor:pointer;}
+.card.clickable:active{transform:scale(.99);}
+
+/* операции по балансу (модалка) */
+.ops-meta{font-size:12px;color:var(--muted);}
+.ops-list{display:flex;flex-direction:column;gap:10px;max-height:60vh;overflow:auto;padding-right:4px;}
+.op{
+  border:1px solid var(--line);border-radius:14px;padding:10px 10px;
+  background:rgba(255,255,255,.03);
+  display:flex;flex-direction:column;gap:6px;
+}
+.op-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;}
+.op-title{font-size:13px;font-weight:800;line-height:1.2;}
+.op-sub{font-size:12px;color:var(--muted);line-height:1.2;}
+.op-amt{font-size:13px;font-weight:900;white-space:nowrap;}
+.op-amt.pos{color:var(--success);}
+.op-amt.neg{color:var(--danger);}
+.op-foot{display:flex;flex-wrap:wrap;gap:8px;}
+.pill{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);}
+
     /* modal */
     .modal-backdrop{
       position:fixed;inset:0;background:rgba(0,0,0,.55);
@@ -140,7 +162,7 @@
   <div class="value small neg" id="returnsSum">—</div>
 </div>
 
-<div class="card">
+<div class="card" id="balanceCard">
   <div class="label">Баланс кабинета <span class="badge">₽</span></div>
   <div class="value small" id="balance">—</div>
   <div class="delta" id="balanceDelta"></div>
@@ -187,6 +209,27 @@
     </div>
   </div>
 
+
+  <!-- balance modal -->
+  <div class="modal-backdrop" id="balModalBg">
+    <div class="modal">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+        <h3 style="margin:0;">Баланс: операции за сегодня</h3>
+        <button class="btn secondary" id="balCloseBtn" style="flex:0 0 auto;">Закрыть</button>
+      </div>
+      <div class="ops-meta" id="balMeta">—</div>
+      <div class="err" id="balErr" style="display:none;"></div>
+      <div class="ops-list" id="balOps">
+        <div class="op">
+          <div class="op-top">
+            <div class="op-title">Загрузка…</div>
+            <div class="op-amt">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     const tg = window.Telegram?.WebApp;
 
@@ -208,6 +251,14 @@
     const refreshIcon = $("refreshIcon");
 
     const modalBg = $("modalBg");
+
+    const balModalBg = $("balModalBg");
+    const balCloseBtn = $("balCloseBtn");
+    const balMeta = $("balMeta");
+    const balErr = $("balErr");
+    const balOps = $("balOps");
+    const balanceCard = $("balanceCard");
+
     const clientIdEl = $("clientId");
     const apiKeyEl = $("apiKey");
     const modalErr = $("modalErr");
@@ -226,6 +277,23 @@
       return new Intl.NumberFormat("ru-RU", {minimumFractionDigits:2, maximumFractionDigits:2}).format(rub);
     }
 
+    function fmtSigned(cents){
+      const n = Number(cents || 0);
+      const sign = n > 0 ? "+" : (n < 0 ? "−" : "");
+      const abs = Math.abs(n);
+      return sign + fmtMoneyFromCents(abs);
+    }
+    function setBalError(msg){
+      if (!msg){
+        balErr.style.display = "none";
+        balErr.textContent = "";
+      } else {
+        balErr.style.display = "block";
+        balErr.textContent = msg;
+      }
+    }
+
+
     function openModal(){
       modalErr.style.display = "none";
       clientIdEl.value = localStorage.getItem("ozon_clientId") || "";
@@ -235,7 +303,77 @@
     }
     function closeModal(){ modalBg.style.display = "none"; }
 
+
+    function openBalModal(){
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
+      if (!clientId || !apiKey){
+        setStatus("нужны ключи", true);
+        openModal();
+        return;
+      }
+
+      balModalBg.style.display = "flex";
+      setBalError("");
+      balMeta.textContent = "Загрузка…";
+      balOps.innerHTML = "";
+      applyFullscreen();
+
+      (async () => {
+        try{
+          const url = `/api/balance/ops/today?clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}`;
+          const r = await fetch(url);
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+
+          balMeta.textContent = data.title || "Сегодня";
+          const ops = Array.isArray(data.ops) ? data.ops : [];
+
+          if (!ops.length){
+            balOps.innerHTML = `<div class="op"><div class="op-top"><div class="op-title">Нет операций за сегодня</div><div class="op-amt">—</div></div></div>`;
+            return;
+          }
+
+          balOps.innerHTML = ops.map((op) => {
+            const amt = Number(op.amount_cents || 0);
+            const cls = amt >= 0 ? "pos" : "neg";
+            const signAmt = fmtSigned(amt);
+            const title = (op.title || "Операция").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+            const sub = (op.subtitle || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+            const posting = op.posting_number ? `<span class="pill">Отправление: ${String(op.posting_number)}</span>` : "";
+            const offer = op.offer_id ? `<span class="pill">Артикул: ${String(op.offer_id)}</span>` : "";
+            return `
+              <div class="op">
+                <div class="op-top">
+                  <div>
+                    <div class="op-title">${title}</div>
+                    ${sub ? `<div class="op-sub">${sub}</div>` : ``}
+                  </div>
+                  <div class="op-amt ${cls}">${signAmt}</div>
+                </div>
+                ${(posting || offer) ? `<div class="op-foot">${posting}${offer}</div>` : ``}
+              </div>
+            `;
+          }).join("");
+        } catch(e){
+          setBalError(String(e.message || e));
+          balMeta.textContent = "Ошибка";
+          balOps.innerHTML = `<div class="op"><div class="op-top"><div class="op-title">Не удалось загрузить операции</div><div class="op-amt">—</div></div></div>`;
+        }
+      })();
+    }
+    function closeBalModal(){ balModalBg.style.display = "none"; }
+
+
     $("keysBtn").addEventListener("click", openModal);
+
+    balCloseBtn.addEventListener("click", closeBalModal);
+    balModalBg.addEventListener("click", (e) => { if (e.target === balModalBg) closeBalModal(); });
+
+    // баланс: открыть операции
+    balanceCard.classList.add("clickable");
+    balanceCard.addEventListener("click", openBalModal);
+
     $("cancelBtn").addEventListener("click", closeModal);
     modalBg.addEventListener("click", (e) => { if (e.target === modalBg) closeModal(); });
 
