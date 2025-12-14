@@ -124,13 +124,15 @@
     .err{font-size:12px;color:var(--danger);display:none;}
     @media (max-width:380px){.value{font-size:24px}.card{min-height:96px}}
   
-    .op-time{font-size:12px;color:var(--muted);margin-top:2px}
-    .op.clickable{cursor:pointer}
-    .op-details{margin-top:10px;border-top:1px solid var(--line);padding-top:10px;display:grid;gap:8px}
-    .op-line{display:flex;justify-content:space-between;gap:10px}
-    .op-line .name{font-size:13px;color:var(--text);opacity:.95}
-    .op-line .meta{font-size:12px;color:var(--muted)}
-    .op-line .amt{font-size:13px;font-weight:800}
+.op.clickable{cursor:pointer;}
+.op-time{font-size:12px;color:var(--muted);margin-top:4px;}
+.op-details{margin-top:10px;border-top:1px solid var(--line);padding-top:10px;display:none;flex-direction:column;gap:6px;}
+.op-line{display:flex;justify-content:space-between;gap:10px;font-size:13px;}
+.op-line .t{color:var(--text);font-weight:700;}
+.op-line .a{font-weight:900;}
+.op-line .a.pos{color:var(--success);}
+.op-line .a.neg{color:var(--danger);}
+.op-note{margin-top:8px;font-size:12px;color:var(--muted);}
 
 </style>
 </head>
@@ -293,20 +295,26 @@
       return sign + fmtMoneyFromCents(abs);
     }
 
-    function fmtOpTime(iso, apiDateStr){
+    function fmtOpWhen(iso, todayLocal){
       if (!iso) return "";
-      try{
-        const dt = new Date(iso);
-        const datePart = new Intl.DateTimeFormat("ru-RU",{timeZone:"Europe/Moscow",year:"numeric",month:"2-digit",day:"2-digit"}).format(dt);
-        const timePart = new Intl.DateTimeFormat("ru-RU",{timeZone:"Europe/Moscow",hour:"2-digit",minute:"2-digit"}).format(dt);
-        // apiDateStr формата YYYY-MM-DD
-        const [y,m,d] = String(apiDateStr||"").split("-");
-        const apiDateRu = (d && m && y) ? `${d}.${m}.${y}` : null;
-        if (apiDateRu && datePart === apiDateRu) return timePart;
-        return (apiDateRu ? datePart : datePart) + " " + timePart;
-      }catch(_){ return ""; }
-    }
+      // iso приходит обычно в UTC
+      const d = new Date(iso);
+      const pad = (x)=>String(x).padStart(2,"0");
+      const hh = pad(d.getHours());
+      const mm = pad(d.getMinutes());
+      const dd = pad(d.getDate());
+      const mo = pad(d.getMonth()+1);
+      const yy = d.getFullYear();
 
+      // todayLocal: "YYYY-MM-DD" (МСК) — сравниваем по локальному отображению
+      const localY = d.getFullYear();
+      const localM = pad(d.getMonth()+1);
+      const localD = pad(d.getDate());
+      const localDateStr = `${localY}-${localM}-${localD}`;
+
+      if (localDateStr === todayLocal) return `${hh}:${mm}`;
+      return `${dd}.${mo}.${yy} ${hh}:${mm}`;
+    }
     function setBalError(msg){
       if (!msg){
         balErr.style.display = "none";
@@ -362,95 +370,77 @@
             const amt = Number(op.amount_cents || 0);
             const cls = amt >= 0 ? "pos" : "neg";
             const signAmt = fmtSigned(amt);
-
-            const rawTitle = op.title || "Операция";
-            const titleEsc = String(rawTitle).replace(/</g,"&lt;").replace(/>/g,"&gt;");
-            const isSale = !!op.is_sale && !!op.posting_number;
-            const title = isSale ? `${titleEsc} <span class="pill">продажа</span>` : titleEsc;
-
+            const title = (op.title || "Операция").replace(/</g,"&lt;").replace(/>/g,"&gt;");
             const sub = (op.subtitle || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+            const whenStr = fmtOpWhen(op.occurred_at, data.date);
             const posting = op.posting_number ? `<span class="pill">Отправление: ${String(op.posting_number)}</span>` : "";
-            const offer = op.offer_id ? `<span class="pill">Артикул: ${String(op.offer_id)}</span>` : "";
-
-            const time = fmtOpTime(op.occurred_at, data.date);
-
+            const clickable = (op.is_sale_delivery && op.posting_number) ? "clickable" : "";
+            const dataPosting = op.posting_number ? `data-posting="${String(op.posting_number).replace(/"/g,'&quot;')}"` : "";
+            const dataSale = op.is_sale_delivery ? `data-sale="1"` : "";
             return `
-              <div class="op ${isSale ? "clickable" : ""}" data-sale="${isSale ? "1" : "0"}" data-posting="${op.posting_number ? String(op.posting_number) : ""}">
+              <div class="op ${clickable}" ${dataPosting} ${dataSale}>
                 <div class="op-top">
                   <div>
                     <div class="op-title">${title}</div>
-                    ${time ? `<div class="op-time">${time}</div>` : ``}
+                    ${whenStr ? `<div class="op-time">${whenStr}</div>` : ``}
                     ${sub ? `<div class="op-sub">${sub}</div>` : ``}
                   </div>
                   <div class="op-amt ${cls}">${signAmt}</div>
                 </div>
-                ${(posting || offer) ? `<div class="op-foot">${posting}${offer}</div>` : ``}
-                <div class="op-details" style="display:none;"></div>
+                ${posting ? `<div class="op-foot">${posting}</div>` : ``}
+                <div class="op-details"></div>
               </div>
             `;
-          }).join("");;
-          // раскрытие детализации только для "продажи"
-          balOps.onclick = async (ev) => {
-            const el = ev.target.closest?.(".op");
-            if (!el) return;
-            if (el.getAttribute("data-sale") !== "1") return;
+          }).join("");
 
-            const posting = el.getAttribute("data-posting");
-            if (!posting) return;
+          // клики: раскрываем ТОЛЬКО "Доставка покупателю" (продажа)
+          balOps.querySelectorAll(".op.clickable").forEach((el) => {
+            el.addEventListener("click", async () => {
+              const postingNumber = el.getAttribute("data-posting");
+              if (!postingNumber) return;
 
-            const detailsBox = el.querySelector(".op-details");
-            if (!detailsBox) return;
+              const detailsEl = el.querySelector(".op-details");
+              if (!detailsEl) return;
 
-            // toggle
-            if (detailsBox.style.display === "grid") {
-              detailsBox.style.display = "none";
-              detailsBox.innerHTML = "";
-              return;
-            }
-
-            detailsBox.style.display = "grid";
-            detailsBox.innerHTML = `<div class="op-line"><div class="name">Загрузка…</div><div class="amt">—</div></div>`;
-
-            try{
-              const url = `/api/balance/op/detail?clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}&posting_number=${encodeURIComponent(posting)}`;
-              const rr = await fetch(url);
-              const dd = await rr.json().catch(() => ({}));
-              if (!rr.ok || dd.error) throw new Error(dd.error || ("HTTP " + rr.status));
-
-              const gross = Number(dd.gross_cents || 0);
-              const lines = Array.isArray(dd.details) ? dd.details : [];
-
-              const html = [];
-
-              for (const ln of lines) {
-                const a = Number(ln.amount_cents || 0);
-                const c = a >= 0 ? "pos" : "neg";
-                const pct = (ln.percent != null) ? ` <span class="meta">(${ln.percent}%)</span>` : "";
-                html.push(
-                  `<div class="op-line">
-                     <div class="name">${String(ln.name || "Операция").replace(/</g,"&lt;").replace(/>/g,"&gt;")}${pct}</div>
-                     <div class="amt ${c}">${fmtSigned(a)}</div>
-                   </div>`
-                );
+              // toggle if already loaded
+              if (detailsEl.getAttribute("data-loaded") === "1") {
+                const isOpen = detailsEl.style.display === "flex";
+                detailsEl.style.display = isOpen ? "none" : "flex";
+                return;
               }
 
-              // отдельная подсказка по "оплате за заказ"
-              if (dd.pay_for_order && Array.isArray(dd.pay_for_order) && dd.pay_for_order.length){
-                const pfo = dd.pay_for_order.reduce((s,x)=>s+Number(x.amount_cents||0),0);
-                const pct = gross>0 ? Math.round((Math.abs(pfo)/gross)*1000)/10 : null;
-                html.push(
-                  `<div class="op-line">
-                     <div class="name">Данный заказ был продан по оплате за заказ${pct!=null?` <span class="meta">(${pct}%)</span>`:""}</div>
-                     <div class="amt neg">${fmtSigned(pfo)}</div>
-                   </div>`
-                );
-              }
+              detailsEl.style.display = "flex";
+              detailsEl.innerHTML = `<div class="op-sub">Загрузка детализации…</div>`;
 
-              detailsBox.innerHTML = html.join("") || `<div class="op-line"><div class="name">Нет детализации</div><div class="amt">—</div></div>`;
-            }catch(e){
-              detailsBox.innerHTML = `<div class="op-line"><div class="name">Не удалось загрузить детализацию</div><div class="amt">—</div></div>`;
-            }
-          };
+              try{
+                const dUrl = `/api/balance/sale/detail?clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}&posting_number=${encodeURIComponent(postingNumber)}`;
+                const rr = await fetch(dUrl);
+                const dj = await rr.json().catch(()=>({}));
+                if (!rr.ok || dj.error) throw new Error(dj.error || ("HTTP " + rr.status));
+
+                const lines = Array.isArray(dj.lines) ? dj.lines : [];
+                const note = dj.note;
+
+                const htmlLines = lines.map((ln) => {
+                  const a = Number(ln.amount_cents || 0);
+                  const c = a >= 0 ? "pos" : "neg";
+                  const pct = (ln.percent !== null && ln.percent !== undefined) ? ` <span style="color:var(--muted);font-weight:700;">(${ln.percent}%)</span>` : "";
+                  return `<div class="op-line">
+                    <div class="t">${String(ln.title || "").replace(/</g,"&lt;").replace(/>/g,"&gt;")}${pct}</div>
+                    <div class="a ${c}">${fmtSigned(a)}</div>
+                  </div>`;
+                }).join("");
+
+                const noteHtml = note ? `<div class="op-note">${String(note.title || "").replace(/</g,"&lt;").replace(/>/g,"&gt;")}: <b>${fmtSigned(Number(note.amount_cents||0))}</b>${(note.percent!==null&&note.percent!==undefined)?` (${note.percent}%)`:``}</div>` : "";
+
+                detailsEl.innerHTML = htmlLines + noteHtml;
+                detailsEl.setAttribute("data-loaded","1");
+              } catch(e){
+                detailsEl.innerHTML = `<div class="op-sub">Не удалось получить детализацию</div>`;
+                detailsEl.setAttribute("data-loaded","1");
+              }
+            });
+          });
 
         } catch(e){
           setBalError(String(e.message || e));
