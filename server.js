@@ -755,6 +755,12 @@ async function fetchFinanceTransactions({ clientId, apiKey, fromUtcIso, toUtcIso
   throw lastErr || new Error("Не удалось получить транзакции");
 }
 
+function isSaleLike(title) {
+  const s = String(title || "").toLowerCase();
+  return (s.includes("достав") && (s.includes("покуп") || s.includes("клиент"))) ||
+         (s.includes("delivery") && (s.includes("customer") || s.includes("buyer")));
+}
+
 function buildOpsRows(transactions) {
   const rows = [];
 
@@ -789,27 +795,32 @@ function buildOpsRows(transactions) {
       t?.products ||
       t?.items ||
       t?.product ||
+      t?.products_info ||
       null;
 
-    // 1) если есть массив products с деталями
+    // 1) если есть products — делаем строки по товарам (это удобнее читать)
     if (Array.isArray(prods) && prods.length) {
       for (const p of prods) {
+        const offer = p?.offer_id || p?.offerId || p?.seller_sku || p?.sku || null;
+        const name = p?.name || p?.product_name || p?.title || "";
+        const qty = Number(p?.quantity || 0) || 0;
+
         const amountCents =
           normalizeAmountToCents(p?.amount) ||
+          normalizeAmountToCents(p?.sum) ||
           normalizeAmountToCents(p?.price) ||
-          normalizeAmountToCents(p?.payout) ||
-          normalizeAmountToCents(t?.amount) ||
           0;
 
         rows.push({
-          id: String(p?.transaction_id || p?.id || t?.transaction_id || t?.id || crypto.randomUUID?.() || Math.random()),
+          id: String(p?.id || t?.transaction_id || t?.id || crypto.randomUUID?.() || Math.random()),
           title: String(title),
-          subtitle: p?.name ? String(p.name) : "",
+          subtitle: name ? (qty > 1 ? `${name} ×${qty}` : String(name)) : "",
           posting_number: posting ? String(posting) : null,
-          offer_id: p?.offer_id ? String(p.offer_id) : (p?.offerId ? String(p.offerId) : null),
+          offer_id: offer ? String(offer) : null,
           amount_cents: amountCents,
           occurred_at: occurredAt,
           ts,
+          is_sale: isSaleLike(title),
         });
       }
       continue;
@@ -831,6 +842,7 @@ function buildOpsRows(transactions) {
       amount_cents: amountCents,
       occurred_at: occurredAt,
       ts,
+      is_sale: isSaleLike(title),
     });
   }
 
@@ -868,63 +880,129 @@ app.get("/api/balance/ops/today", async (req, res) => {
     });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
-  }
-});
-// ====== API: детализация операции по отправлению за сегодня ======
+
+// Детализация только для "продажи" (доставка покупателю): показываем цену продажи и расходы (комиссия/логистика/эквайринг/и т.д.)
 app.get("/api/balance/op/detail", async (req, res) => {
   try {
     const resolved = resolveCredsFromRequest(req);
     if (!resolved) return res.status(400).json({ error: "no_creds" });
 
-    const posting = (req.query.posting_number || "").toString().trim();
+    const posting = String(req.query.posting_number || "").trim();
     if (!posting) return res.status(400).json({ error: "no_posting_number" });
 
-    const dateStr = todayDateStr();
-    const { since, to } = dayBoundsUtcFromLocal(dateStr);
+    // 1) Тянем сам постинг, чтобы достать "цену продажи" (gross) + список товаров
+    const pg = await ozonPost("/v2/posting/fbo/get", {
+      clientId: resolved.clientId,
+      apiKey: resolved.apiKey,
+      body: {
+        posting_number: posting,
+        with: { analytics_data: false, financial_data: true, legal_info: false },
+      },
+    });
+
+    const pRes = pg?.result || pg || {};
+    const products = Array.isArray(pRes.products) ? pRes.products : [];
+
+    const items = products.map(it => {
+      const qty = Number(it.quantity || 0) || 0;
+      const priceCents = normalizeAmountToCents(it.price) || 0;
+      return {
+        offer_id: it.offer_id || null,
+        name: it.name || "",
+        qty,
+        price_cents: priceCents,
+        total_cents: priceCents * (qty || 1),
+      };
+    });
+
+    const gross = items.reduce((s, it) => s + Number(it.total_cents || 0), 0);
+    // Комиссия из financial_data (если Ozon не отдал её в транзакциях)
+    const finProds = Array.isArray(pRes?.financial_data?.products) ? pRes.financial_data.products : [];
+    const commissionFromPosting = finProds.reduce((s, fp) => s + (normalizeAmountToCents(fp?.commission_amount) || 0), 0);
+
+
+    // 2) Тянем финансовые транзакции за "последние 30 дней" и фильтруем по posting_number
+    const today = todayDateStr();
+    const fromLocal = DateTime.fromISO(today, { zone: SALES_TZ }).minus({ days: 30 }).toFormat("yyyy-MM-dd");
+    const { since: since30, to: toNow } = dayBoundsUtcFromLocal(fromLocal);
 
     const tx = await fetchFinanceTransactions({
       clientId: resolved.clientId,
       apiKey: resolved.apiKey,
-      fromUtcIso: since,
-      toUtcIso: to,
+      fromUtcIso: since30,
+      toUtcIso: DateTime.now().toUTC().toISO(),
     });
 
-    const flat = buildOpsRows(tx).filter(r => String(r.posting_number || "") === posting);
+    const relevant = (Array.isArray(tx) ? tx : []).filter(t => {
+      const pn =
+        t?.posting_number ||
+        t?.posting?.posting_number ||
+        t?.posting ||
+        t?.postingNumber ||
+        null;
+      return pn && String(pn) === posting;
+    });
 
-    // gross = сумма всех положительных строк (для процентов)
-    const gross = flat.reduce((s, r) => s + (Number(r.amount_cents) > 0 ? Number(r.amount_cents) : 0), 0);
-    const net = flat.reduce((s, r) => s + Number(r.amount_cents || 0), 0);
-
-    // группируем: если есть subtitle — показываем товар отдельно; иначе по title
+    // Группируем по названию операции (как у Ozon)
     const map = new Map();
-    for (const r of flat) {
-      const key = (r.subtitle ? `товар||${r.subtitle}` : `тип||${r.title}`);
-      const cur = map.get(key) || { name: r.subtitle ? `Товар: ${r.subtitle}` : String(r.title || "Операция"), amount_cents: 0 };
-      cur.amount_cents += Number(r.amount_cents || 0);
-      map.set(key, cur);
+    for (const t of relevant) {
+      const name =
+        t?.operation_type_name ||
+        t?.operation_type ||
+        t?.type_name ||
+        t?.type ||
+        t?.name ||
+        "Операция";
+      const amount = normalizeAmountToCents(t?.amount) || normalizeAmountToCents(t?.sum) || 0;
+      if (!amount) continue;
+      map.set(name, (map.get(name) || 0) + amount);
     }
 
-    let details = Array.from(map.values());
-
-    // сортировка: сначала + (товары), потом минусы (услуги)
-    details.sort((a, b) => Number(b.amount_cents) - Number(a.amount_cents));
-
-    // добавим проценты где уместно
-    details = details.map(d => {
-      const pct = gross > 0 ? Math.round((Math.abs(Number(d.amount_cents || 0)) / gross) * 1000) / 10 : null;
-      return { ...d, percent: pct };
+    // Собираем детали:
+    // первая строка — "Продажа" с суммой gross (чтобы было понятно, из чего вычитаются расходы)
+    const details = [];
+    details.push({
+      kind: "sale",
+      name: items.length === 1 && items[0].name ? `Продажа: ${items[0].name}` : `Продажа (${items.length || 0} товаров)`,
+      amount_cents: gross,
+      percent: null,
     });
+    // если комиссии нет среди транзакций — добавим её из posting.financial_data
+    const hasCommission = Array.from(map.keys()).some(k => String(k).toLowerCase().includes("комисс"));
+    if (!hasCommission && commissionFromPosting) {
+      const pct = gross > 0 ? Math.round((Math.abs(commissionFromPosting) / gross) * 1000) / 10 : null;
+      details.push({ kind: "fee", name: "Комиссия", amount_cents: commissionFromPosting, percent: pct });
+    }
+
+
+    // расходы/начисления Ozon по этому отправлению (как в Ozon)
+    for (const [name, amount] of map.entries()) {
+      // пропускаем, если это сама продажа/доставка покупателю (она часто уже "нетто" и путает)
+      const low = String(name).toLowerCase();
+      if (isSaleLike(name) || low.includes("доставка покупателю")) continue;
+
+      const pct = gross > 0 ? Math.round((Math.abs(amount) / gross) * 1000) / 10 : null;
+      details.push({ kind: "fee", name, amount_cents: amount, percent: pct });
+    }
+
+    // сортируем: сначала минусы (расходы), потом плюсы (компенсации)
+    details.sort((a, b) => Number(a.amount_cents) - Number(b.amount_cents));
+
+    // отдельно "оплата за заказ" (если встретилась) — выводим внизу отдельным блоком
+    const payForOrder = details.filter(d => String(d.name).toLowerCase().includes("оплата за заказ"));
 
     return res.json({
-      date: dateStr,
-      tz: SALES_TZ,
       posting_number: posting,
       gross_cents: gross,
-      net_cents: net,
+      items,
       details,
+      pay_for_order: payForOrder.length ? payForOrder : null,
     });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
   }
 });
 
