@@ -168,6 +168,9 @@ function toCents(val) {
   const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10) || 0;
   return rub * 100 + kop;
 }
+function rubToCents(val) {
+  return toCents(val);
+}
 const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function centsToRubString(cents) {
   return `${rubFmt.format(cents / 100)} ₽`;
@@ -744,6 +747,34 @@ function serviceTitle(rawKey) {
   return cleaned ? cleaned.replace(/_/g, " ").trim() : "Услуга";
 }
 
+function extractServiceAmount(val) {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === "number" || typeof val === "string") return normalizeAmountToCents(val);
+  if (Array.isArray(val)) return val.reduce((s, v) => s + extractServiceAmount(v), 0);
+
+  if (typeof val === "object") {
+    const preferred = ["total", "price", "amount", "value", "payout"];
+    for (const key of preferred) {
+      if (key in val) {
+        const v = extractServiceAmount(val[key]);
+        if (v) return v;
+      }
+    }
+
+    if (Array.isArray(val.items)) {
+      const itemsSum = val.items.reduce((s, v) => s + extractServiceAmount(v), 0);
+      if (itemsSum) return itemsSum;
+    }
+
+    // попытка извлечь из вложенных полей, если нет явных ключей
+    let nestedSum = 0;
+    for (const v of Object.values(val)) nestedSum += extractServiceAmount(v);
+    return nestedSum;
+  }
+
+  return 0;
+}
+
 async function fetchFinanceTransactions({ clientId, apiKey, fromUtcIso, toUtcIso }) {
   // Вытягиваем ВСЕ транзакции за период (постранично), чтобы список операций был полным.
   const bodyBase = {
@@ -826,13 +857,24 @@ function buildOpsRows(transactions) {
       return cands[0] || null;
     })();
 
-    // сортируем по времени операции (UTC), но на фронт отдаём уже в МСК
-    const ts = occurredAt ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).toMillis() : 0;
-    const occurred_at_msk = occurredAt
-      ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).setZone(SALES_TZ).toISO()
-      : null;
+    // сортируем по времени операции, но на фронт отдаём уже в МСК
+    let ts = 0;
+    let occurred_at_msk = null;
+    if (occurredAt) {
+      const dt = DateTime.fromISO(String(occurredAt), { setZone: true });
+      if (dt.isValid) {
+        ts = dt.toMillis();
+        occurred_at_msk = dt.setZone(SALES_TZ).toISO();
+      }
+    }
 
-const titleLc = String(title).toLowerCase();
+    // если нет валидного времени — хотя бы сортируем по id транзакции
+    if (!ts) {
+      const fallback = Number(t?.operation_id || t?.transaction_id || t?.id || 0);
+      if (Number.isFinite(fallback)) ts = fallback;
+    }
+
+    const titleLc = String(title).toLowerCase();
     const isSaleDelivery = titleLc.includes("доставка покупателю");
 
     rows.push({
@@ -979,13 +1021,13 @@ app.get("/api/balance/sale/detail", async (req, res) => {
     }
 
     // Услуги/удержания из financial_data.services (логистика, эквайринг и т.п.)
-    const services = finData?.services || {};
-    for (const [rawKey, svc] of Object.entries(services)) {
-      const title = serviceTitle(rawKey);
-      const amount = normalizeAmountToCents(svc?.price ?? svc?.amount ?? svc?.total);
-      if (!amount) continue;
-      group.set(title, (group.get(title) || 0) + amount);
-    }
+  const services = finData?.services || {};
+  for (const [rawKey, svc] of Object.entries(services)) {
+    const title = serviceTitle(rawKey);
+    const amount = extractServiceAmount(svc);
+    if (!amount) continue;
+    group.set(title, (group.get(title) || 0) + amount);
+  }
 
     // собираем строки
     const lines = [];
