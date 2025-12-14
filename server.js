@@ -774,17 +774,26 @@ function buildOpsRows(transactions) {
       t?.postingNumber ||
       null;
 
+    const occurredAt =
+      t?.operation_date ||
+      t?.date ||
+      t?.created_at ||
+      t?.createdAt ||
+      t?.operationDate ||
+      null;
+
+    const ts = occurredAt ? Date.parse(occurredAt) : 0;
+
     // product lines (если есть)
     const prods =
       t?.products ||
       t?.items ||
       t?.product ||
-      t?.sku ||
       null;
 
     // 1) если есть массив products с деталями
-    if (Array.isArray(t?.products) && t.products.length) {
-      for (const p of t.products) {
+    if (Array.isArray(prods) && prods.length) {
+      for (const p of prods) {
         const amountCents =
           normalizeAmountToCents(p?.amount) ||
           normalizeAmountToCents(p?.price) ||
@@ -793,11 +802,14 @@ function buildOpsRows(transactions) {
           0;
 
         rows.push({
+          id: String(p?.transaction_id || p?.id || t?.transaction_id || t?.id || crypto.randomUUID?.() || Math.random()),
           title: String(title),
           subtitle: p?.name ? String(p.name) : "",
           posting_number: posting ? String(posting) : null,
           offer_id: p?.offer_id ? String(p.offer_id) : (p?.offerId ? String(p.offerId) : null),
           amount_cents: amountCents,
+          occurred_at: occurredAt,
+          ts,
         });
       }
       continue;
@@ -811,21 +823,24 @@ function buildOpsRows(transactions) {
       0;
 
     rows.push({
+      id: String(t?.transaction_id || t?.id || crypto.randomUUID?.() || Math.random()),
       title: String(title),
       subtitle: "",
       posting_number: posting ? String(posting) : null,
       offer_id: null,
       amount_cents: amountCents,
+      occurred_at: occurredAt,
+      ts,
     });
   }
 
   // выкидываем нули
   const cleaned = rows.filter(r => Number(r.amount_cents || 0) !== 0);
 
-  // сортировка: сначала по модулю суммы
-  cleaned.sort((a, b) => Math.abs(Number(b.amount_cents)) - Math.abs(Number(a.amount_cents)));
+  // сортировка: сначала самые свежие
+  cleaned.sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
 
-  return cleaned.slice(0, 200);
+  return cleaned; // все операции
 }
 
 app.get("/api/balance/ops/today", async (req, res) => {
@@ -850,6 +865,63 @@ app.get("/api/balance/ops/today", async (req, res) => {
       tz: SALES_TZ,
       title: `Сегодня ${dateStr} (${SALES_TZ})`,
       ops,
+    });
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message || e) });
+  }
+});
+// ====== API: детализация операции по отправлению за сегодня ======
+app.get("/api/balance/op/detail", async (req, res) => {
+  try {
+    const resolved = resolveCredsFromRequest(req);
+    if (!resolved) return res.status(400).json({ error: "no_creds" });
+
+    const posting = (req.query.posting_number || "").toString().trim();
+    if (!posting) return res.status(400).json({ error: "no_posting_number" });
+
+    const dateStr = todayDateStr();
+    const { since, to } = dayBoundsUtcFromLocal(dateStr);
+
+    const tx = await fetchFinanceTransactions({
+      clientId: resolved.clientId,
+      apiKey: resolved.apiKey,
+      fromUtcIso: since,
+      toUtcIso: to,
+    });
+
+    const flat = buildOpsRows(tx).filter(r => String(r.posting_number || "") === posting);
+
+    // gross = сумма всех положительных строк (для процентов)
+    const gross = flat.reduce((s, r) => s + (Number(r.amount_cents) > 0 ? Number(r.amount_cents) : 0), 0);
+    const net = flat.reduce((s, r) => s + Number(r.amount_cents || 0), 0);
+
+    // группируем: если есть subtitle — показываем товар отдельно; иначе по title
+    const map = new Map();
+    for (const r of flat) {
+      const key = (r.subtitle ? `товар||${r.subtitle}` : `тип||${r.title}`);
+      const cur = map.get(key) || { name: r.subtitle ? `Товар: ${r.subtitle}` : String(r.title || "Операция"), amount_cents: 0 };
+      cur.amount_cents += Number(r.amount_cents || 0);
+      map.set(key, cur);
+    }
+
+    let details = Array.from(map.values());
+
+    // сортировка: сначала + (товары), потом минусы (услуги)
+    details.sort((a, b) => Number(b.amount_cents) - Number(a.amount_cents));
+
+    // добавим проценты где уместно
+    details = details.map(d => {
+      const pct = gross > 0 ? Math.round((Math.abs(Number(d.amount_cents || 0)) / gross) * 1000) / 10 : null;
+      return { ...d, percent: pct };
+    });
+
+    return res.json({
+      date: dateStr,
+      tz: SALES_TZ,
+      posting_number: posting,
+      gross_cents: gross,
+      net_cents: net,
+      details,
     });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
