@@ -51,6 +51,11 @@
     .value.small{font-size:22px;}
     .value.pos{color:var(--success);}
     .value.neg{color:var(--danger);}
+
+    /* баланс: динамика к началу дня */
+    .delta{font-size:12px;color:var(--muted);line-height:1.2;margin-top:-6px;}
+    .delta.pos{color:var(--success);}
+    .delta.neg{color:var(--danger);}
     .footer{
       margin-top:auto;display:flex;justify-content:space-between;align-items:center;gap:12px;
       color:var(--muted);font-size:12px;
@@ -138,6 +143,7 @@
 <div class="card">
   <div class="label">Баланс кабинета <span class="badge">₽</span></div>
   <div class="value small" id="balance">—</div>
+  <div class="delta" id="balanceDelta"></div>
 </div>
 
     </div>
@@ -305,6 +311,31 @@
         else if (data.balance_cents !== null && data.balance_cents !== undefined) $("balance").textContent = fmtMoneyFromCents(data.balance_cents);
         else $("balance").textContent = "—";
 
+        // динамика баланса за день (closing - opening)
+        try {
+          const deltaEl = $("balanceDelta");
+          if (deltaEl) {
+            const opening = (data.balance_opening ?? data.balance_opening_cents ?? null);
+            const closing = (data.balance_closing ?? data.balance_cents ?? data.balance_closing_cents ?? null);
+            const hasBoth = opening !== null && opening !== undefined && closing !== null && closing !== undefined;
+            if (!hasBoth) {
+              deltaEl.textContent = "";
+              deltaEl.className = "delta";
+            } else {
+              const delta = Number(closing) - Number(opening);
+              if (!Number.isFinite(delta) || delta === 0) {
+                deltaEl.textContent = "";
+                deltaEl.className = "delta";
+              } else {
+                const abs = Math.abs(delta);
+                const sign = delta > 0 ? "+" : "-";
+                deltaEl.textContent = `${sign}${fmtMoneyFromCents(abs)} сегодня`;
+                deltaEl.className = `delta ${delta > 0 ? "pos" : "neg"}`;
+              }
+            }
+          }
+        } catch (_) {}
+
 
 // Выкупы / Возвраты (по offer_id)
 const topN = (arr, n=5) => Array.isArray(arr) ? arr.slice(0, n) : [];
@@ -326,6 +357,8 @@ const renderList = (el, arr) => {
 try{
   $("buyoutsSum").textContent = "—";
   $("returnsSum").textContent = "—";
+  const bd = $("balanceDelta");
+  if (bd) { bd.textContent = ""; bd.className = "delta"; }
   
   
 }catch(_){}
