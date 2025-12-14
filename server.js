@@ -784,13 +784,13 @@ function extractServiceAmount(val) {
   return 0;
 }
 
-async function fetchFinanceTransactions({ clientId, apiKey, fromUtcIso, toUtcIso }) {
+async function fetchFinanceTransactions({ clientId, apiKey, fromUtcIso, toUtcIso, postingNumber = "" }) {
   // Вытягиваем ВСЕ транзакции за период (постранично), чтобы список операций был полным.
   const bodyBase = {
     filter: {
       date: { from: fromUtcIso, to: toUtcIso },
       operation_type: [],
-      posting_number: "",
+      posting_number: postingNumber || "",
       transaction_type: "all",
     },
     page: 1,
@@ -950,7 +950,7 @@ app.get("/api/balance/sale/detail", async (req, res) => {
       body: {
         posting_number: posting,
         translit: true,
-        with: { analytics_data: false, financial_data: true, legal_info: false },
+        with: { analytics_data: true, financial_data: true, legal_info: false },
       },
     });
 
@@ -970,11 +970,19 @@ app.get("/api/balance/sale/detail", async (req, res) => {
 
     const gross = items.reduce((s, it) => s + Number(it.total_cents || 0), 0);
 
-    // 2) Тянем транзакции по этому отправлению за последние 30 дней и собираем услуги/расходы
-    const today = todayDateStr();
-    // Берём все транзакции за последние 30 дней: от старта дня 30 дней назад до конца текущего дня
-    const fromLocal = DateTime.fromISO(today, { zone: SALES_TZ }).minus({ days: 30 }).startOf("day");
-    const toLocal = DateTime.fromISO(today, { zone: SALES_TZ }).endOf("day");
+    // 2) Тянем транзакции по этому отправлению и собираем услуги/расходы
+    // Отталкиваемся от даты доставки/создания конкретного постинга и берём узкое окно,
+    // чтобы не тащить все транзакции за месяц и не упираться в лимиты API.
+    const deliveredIso = pickDeliveredIso(pRes);
+    const createdIso = pRes?.created_at || pRes?.in_process_at || null;
+    const anchorIso = deliveredIso || createdIso || todayDateStr();
+
+    let anchor = DateTime.fromISO(anchorIso, { setZone: true });
+    if (!anchor.isValid) anchor = DateTime.fromFormat(todayDateStr(), "yyyy-LL-dd", { zone: SALES_TZ });
+
+    // берём 15 дней до и после якорной даты
+    const fromLocal = anchor.minus({ days: 15 }).startOf("day");
+    const toLocal = anchor.plus({ days: 15 }).endOf("day");
     const since = fromLocal.toUTC().toISO({ suppressMilliseconds: false });
     const to = toLocal.toUTC().toISO({ suppressMilliseconds: false });
 
@@ -984,6 +992,7 @@ app.get("/api/balance/sale/detail", async (req, res) => {
       apiKey: resolved.apiKey,
       fromUtcIso: since,
       toUtcIso: to,
+      postingNumber: posting,
     });
 
     // фильтруем по posting_number
