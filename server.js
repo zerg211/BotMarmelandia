@@ -180,9 +180,6 @@ function toCents(val) {
 function rubToCents(val) {
   return toCents(val);
 }
-function rubToCents(val) {
-  return toCents(val);
-}
 const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function centsToRubString(cents) {
   return `${rubFmt.format(cents / 100)} ₽`;
@@ -975,8 +972,11 @@ app.get("/api/balance/sale/detail", async (req, res) => {
 
     // 2) Тянем транзакции по этому отправлению за последние 30 дней и собираем услуги/расходы
     const today = todayDateStr();
-    const fromLocal = DateTime.fromISO(today, { zone: SALES_TZ }).minus({ days: 30 }).toFormat("yyyy-MM-dd");
-    const { since, to } = dayBoundsUtcFromLocal(fromLocal);
+    // Берём все транзакции за последние 30 дней: от старта дня 30 дней назад до конца текущего дня
+    const fromLocal = DateTime.fromISO(today, { zone: SALES_TZ }).minus({ days: 30 }).startOf("day");
+    const toLocal = DateTime.fromISO(today, { zone: SALES_TZ }).endOf("day");
+    const since = fromLocal.toUTC().toISO({ suppressMilliseconds: false });
+    const to = toLocal.toUTC().toISO({ suppressMilliseconds: false });
 
     // Постранично (на всякий случай)
     const allTx = await fetchFinanceTransactions({
