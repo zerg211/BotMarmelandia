@@ -168,6 +168,8 @@ function toCents(val) {
   const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10) || 0;
   return rub * 100 + kop;
 }
+// alias, оставляем для читаемости в местах, где приходят рубли
+const rubToCents = toCents;
 const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function centsToRubString(cents) {
   return `${rubFmt.format(cents / 100)} ₽`;
@@ -804,13 +806,17 @@ function buildOpsRows(transactions) {
       return cands[0] || null;
     })();
 
-    // сортируем по времени операции (UTC), но на фронт отдаём уже в МСК
-    const ts = occurredAt ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).toMillis() : 0;
-    const occurred_at_msk = occurredAt
-      ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).setZone(SALES_TZ).toISO()
+    // сортируем по времени операции (UTC), но на фронт отдаём уже в МСК;
+    // если дата пришла без часового пояса — считаем, что она в SALES_TZ
+    const occurredAtStr = occurredAt ? String(occurredAt) : null;
+    const hasZoneInfo = occurredAtStr ? /(?:Z|[+-]\d{2}:?\d{2})$/i.test(occurredAtStr) : false;
+    const dt = occurredAt
+      ? DateTime.fromISO(occurredAtStr, hasZoneInfo ? { setZone: true } : { zone: SALES_TZ })
       : null;
+    const ts = dt?.isValid ? dt.toMillis() : 0;
+    const occurred_at_msk = dt?.isValid ? dt.setZone(SALES_TZ).toISO() : null;
 
-const titleLc = String(title).toLowerCase();
+    const titleLc = String(title).toLowerCase();
     const isSaleDelivery = titleLc.includes("доставка покупателю");
 
     rows.push({
