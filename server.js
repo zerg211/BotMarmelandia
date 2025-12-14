@@ -696,6 +696,167 @@ app.get("/api/dashboard/today", handleToday);
 app.get("/api/today", handleToday);
 app.get("/api/stats/today", handleToday);
 
+// ---------------- balance operations (Mini App) ----------------
+function extractTransactionsList(data){
+  const r = data?.result ?? data;
+  const candidates = [
+    r?.operations, r?.transactions, r?.items, r?.rows, r?.list, r?.result
+  ];
+  for (const c of candidates){
+    if (Array.isArray(c)) return c;
+  }
+  // иногда result может быть объектом с полем "operations"
+  if (Array.isArray(data?.result?.operations)) return data.result.operations;
+  return [];
+}
+
+function normalizeAmountToCents(v){
+  if (v === null || v === undefined) return 0;
+  if (typeof v === "number") return Math.round(v * 100);
+  if (typeof v === "string") return toCents(v);
+  if (typeof v === "object"){
+    // {value: 123.45, currency_code:"RUB"} или {value:"123.45"}
+    if ("value" in v) return normalizeAmountToCents(v.value);
+    if ("amount" in v) return normalizeAmountToCents(v.amount);
+  }
+  return 0;
+}
+
+async function fetchFinanceTransactions({ clientId, apiKey, fromUtcIso, toUtcIso }) {
+  // 1) основной формат (как в большинстве примеров Ozon)
+  const tryBodies = [
+    {
+      filter: {
+        date: { from: fromUtcIso, to: toUtcIso },
+        operation_type: [],
+        posting_number: "",
+        transaction_type: "all",
+      },
+      page: 1,
+      page_size: 500,
+    },
+    // 2) альтернативный формат
+    {
+      filter: { date_from: fromUtcIso, date_to: toUtcIso },
+      page: 1,
+      page_size: 500,
+    },
+  ];
+
+  let lastErr = null;
+  for (const body of tryBodies) {
+    try {
+      const data = await ozonPost("/v3/finance/transaction/list", { clientId, apiKey, body });
+      return extractTransactionsList(data);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("Не удалось получить транзакции");
+}
+
+function buildOpsRows(transactions) {
+  const rows = [];
+
+  for (const t of transactions) {
+    const title =
+      t?.operation_type_name ||
+      t?.operation_type ||
+      t?.type_name ||
+      t?.type ||
+      t?.name ||
+      "Операция";
+
+    const posting =
+      t?.posting_number ||
+      t?.posting?.posting_number ||
+      t?.posting ||
+      t?.postingNumber ||
+      null;
+
+    // product lines (если есть)
+    const prods =
+      t?.products ||
+      t?.items ||
+      t?.product ||
+      t?.sku ||
+      null;
+
+    // 1) если есть массив products с деталями
+    if (Array.isArray(t?.products) && t.products.length) {
+      for (const p of t.products) {
+        const amountCents =
+          normalizeAmountToCents(p?.amount) ||
+          normalizeAmountToCents(p?.price) ||
+          normalizeAmountToCents(p?.payout) ||
+          normalizeAmountToCents(t?.amount) ||
+          0;
+
+        rows.push({
+          title: String(title),
+          subtitle: p?.name ? String(p.name) : "",
+          posting_number: posting ? String(posting) : null,
+          offer_id: p?.offer_id ? String(p.offer_id) : (p?.offerId ? String(p.offerId) : null),
+          amount_cents: amountCents,
+        });
+      }
+      continue;
+    }
+
+    // 2) если нет products — одной строкой
+    const amountCents =
+      normalizeAmountToCents(t?.amount) ||
+      normalizeAmountToCents(t?.sum) ||
+      normalizeAmountToCents(t?.price) ||
+      0;
+
+    rows.push({
+      title: String(title),
+      subtitle: "",
+      posting_number: posting ? String(posting) : null,
+      offer_id: null,
+      amount_cents: amountCents,
+    });
+  }
+
+  // выкидываем нули
+  const cleaned = rows.filter(r => Number(r.amount_cents || 0) !== 0);
+
+  // сортировка: сначала по модулю суммы
+  cleaned.sort((a, b) => Math.abs(Number(b.amount_cents)) - Math.abs(Number(a.amount_cents)));
+
+  return cleaned.slice(0, 200);
+}
+
+app.get("/api/balance/ops/today", async (req, res) => {
+  try {
+    const resolved = resolveCredsFromRequest(req);
+    if (!resolved) return res.status(400).json({ error: "no_creds" });
+
+    const dateStr = todayDateStr();
+    const { since, to } = dayBoundsUtcFromLocal(dateStr);
+
+    const tx = await fetchFinanceTransactions({
+      clientId: resolved.clientId,
+      apiKey: resolved.apiKey,
+      fromUtcIso: since,
+      toUtcIso: to,
+    });
+
+    const ops = buildOpsRows(tx);
+
+    return res.json({
+      date: dateStr,
+      tz: SALES_TZ,
+      title: `Сегодня ${dateStr} (${SALES_TZ})`,
+      ops,
+    });
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+
 // ---------------- widget (чат) ----------------
 function widgetText(s) {
   return [
