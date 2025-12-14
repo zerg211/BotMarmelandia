@@ -8,7 +8,7 @@
   <style>
     :root{
       --bg:#0B0F14; --card:#121923; --text:#EAF0FF; --muted:#93A4C7;
-      --accent:#4DA3FF; --danger:#FF5A6A; --line: rgba(255,255,255,.08);
+      --accent:#4DA3FF; --danger:#FF5A6A; --success:#3CCB7F; --line: rgba(255,255,255,.08);
 
       /* ✅ ВЕРХНИЙ "ФУТЕР" (опустить контент ниже шапки Telegram) */
       --top-gap: 44px;            /* если мало/много — меняй только это */
@@ -49,6 +49,8 @@
     .label{font-size:12px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;gap:8px;}
     .value{font-size:28px;font-weight:900;letter-spacing:.2px;}
     .value.small{font-size:22px;}
+    .value.pos{color:var(--success);}
+    .value.neg{color:var(--danger);}
     .footer{
       margin-top:auto;display:flex;justify-content:space-between;align-items:center;gap:12px;
       color:var(--muted);font-size:12px;
@@ -126,13 +128,11 @@
 
 <div class="card">
   <div class="label">Выкупы сегодня <span class="badge">₽</span></div>
-  <div class="value" id="buyoutsQty">—</div>
-  <div class="mini-list" id="buyoutsList"></div>
+  <div class="value small pos" id="buyoutsSum">—</div>
 </div>
 <div class="card">
   <div class="label">Возвраты сегодня <span class="badge danger">₽</span></div>
-  <div class="value" id="returnsQty">—</div>
-  <div class="mini-list" id="returnsList"></div>
+  <div class="value small neg" id="returnsSum">—</div>
 </div>
 
 <div class="card">
@@ -274,26 +274,48 @@
         $("cancels").textContent = data.cancels ?? data.cancelsCount ?? "—";
         $("cancelsSum").textContent = fmtMoneyFromCents(data.cancels_sum ?? data.cancelsAmount);
 
-        // новые виджеты
-        $("buyoutsQty").textContent = data.buyouts_sum_text ?? (data.buyouts_sum_cents!=null?fmtMoneyFromCents(data.buyouts_sum_cents):"—");
-        $("returnsQty").textContent = data.returns_sum_text ?? (data.returns_sum_cents!=null?fmtMoneyFromCents(data.returns_sum_cents):"—");
+        // выкупы / возвраты (по деньгам из finance/balance)
+        const buyoutsCents = (data.buyouts_sum_cents ?? data.buyouts_sum ?? null);
+        const returnsCents = (data.returns_sum_cents ?? data.returns_sum ?? null);
 
-        function renderTop5(list){
-          if (!Array.isArray(list) || list.length === 0) return "";
-          return list.slice(0,5).map(x => {
-            const id = String(x.offer_id ?? "");
-            const qty = String(x.qty ?? 0);
-            return `<div class="row"><span>${id}</span><b>${qty} шт</b></div>`;
-          }).join("");
+        // Выкупы: всегда + и зелёным
+        if (buyoutsCents !== null && buyoutsCents !== undefined) {
+          const abs = Math.abs(Number(buyoutsCents) || 0);
+          $("buyoutsSum").textContent = "+" + fmtMoneyFromCents(abs);
+        } else if (data.buyouts_sum_text) {
+          const t = String(data.buyouts_sum_text);
+          $("buyoutsSum").textContent = t.startsWith("+") ? t : ("+" + t.replace("−","").replace("-",""));
+        } else {
+          $("buyoutsSum").textContent = "—";
         }
-        $("buyoutsList").innerHTML = "";
-        $("returnsList").innerHTML = "";
 
-        // баланс (если смогли получить)
+        // Возвраты: всегда - и красным
+        if (returnsCents !== null && returnsCents !== undefined) {
+          const abs = Math.abs(Number(returnsCents) || 0);
+          $("returnsSum").textContent = "-" + fmtMoneyFromCents(abs);
+        } else if (data.returns_sum_text) {
+          const t = String(data.returns_sum_text);
+          $("returnsSum").textContent = (t.startsWith("-") || t.startsWith("−")) ? t : ("-" + t);
+        } else {
+          $("returnsSum").textContent = "—";
+        }
+
+// баланс (если смогли получить)
         if (data.balance_text && data.balance_text !== "—") $("balance").textContent = data.balance_text;
         else if (data.balance_cents !== null && data.balance_cents !== undefined) $("balance").textContent = fmtMoneyFromCents(data.balance_cents);
         else $("balance").textContent = "—";
 
+
+// Выкупы / Возвраты (по offer_id)
+const topN = (arr, n=5) => Array.isArray(arr) ? arr.slice(0, n) : [];
+const renderList = (el, arr) => {
+  if (!el) return;
+  const rows = topN(arr, 5);
+  if (!rows.length) { el.textContent = ""; return; }
+  el.innerHTML = rows.map(x => (
+    `<div class="row"><span class="k">${String(x.offer_id)}</span><span>${Number(x.qty||0)}</span></div>`
+  )).join("");
+};
 
 
         setLastUpdated(data.updated_at);
@@ -302,10 +324,10 @@
         setStatus("ошибка Ozon API", true);
 
 try{
-  $("buyoutsQty").textContent = "—";
-  $("returnsQty").textContent = "—";
-  $("buyoutsList").textContent = "";
-  $("returnsList").textContent = "";
+  $("buyoutsSum").textContent = "—";
+  $("returnsSum").textContent = "—";
+  
+  
 }catch(_){}
       } finally{
         refreshIcon.classList.remove("spin");
