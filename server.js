@@ -1,3 +1,4 @@
+// superwork variant applied to replace outdated server.js
 import express from "express";
 import fs from "fs";
 import path from "path";
