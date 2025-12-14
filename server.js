@@ -168,6 +168,9 @@ function toCents(val) {
   const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10) || 0;
   return rub * 100 + kop;
 }
+function rubToCents(val) {
+  return toCents(val);
+}
 const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function centsToRubString(cents) {
   return `${rubFmt.format(cents / 100)} ₽`;
@@ -826,13 +829,24 @@ function buildOpsRows(transactions) {
       return cands[0] || null;
     })();
 
-    // сортируем по времени операции (UTC), но на фронт отдаём уже в МСК
-    const ts = occurredAt ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).toMillis() : 0;
-    const occurred_at_msk = occurredAt
-      ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).setZone(SALES_TZ).toISO()
-      : null;
+    // сортируем по времени операции, но на фронт отдаём уже в МСК
+    let ts = 0;
+    let occurred_at_msk = null;
+    if (occurredAt) {
+      const dt = DateTime.fromISO(String(occurredAt), { setZone: true });
+      if (dt.isValid) {
+        ts = dt.toMillis();
+        occurred_at_msk = dt.setZone(SALES_TZ).toISO();
+      }
+    }
 
-const titleLc = String(title).toLowerCase();
+    // если нет валидного времени — хотя бы сортируем по id транзакции
+    if (!ts) {
+      const fallback = Number(t?.operation_id || t?.transaction_id || t?.id || 0);
+      if (Number.isFinite(fallback)) ts = fallback;
+    }
+
+    const titleLc = String(title).toLowerCase();
     const isSaleDelivery = titleLc.includes("доставка покупателю");
 
     rows.push({
