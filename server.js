@@ -1020,14 +1020,17 @@ app.get("/api/balance/sale/detail", async (req, res) => {
       group.set("Комиссия", (group.get("Комиссия") || 0) + commissionFromPosting);
     }
 
-    // Услуги/удержания из financial_data.services (логистика, эквайринг и т.п.)
-  const services = finData?.services || {};
-  for (const [rawKey, svc] of Object.entries(services)) {
-    const title = serviceTitle(rawKey);
-    const amount = extractServiceAmount(svc);
-    if (!amount) continue;
-    group.set(title, (group.get(title) || 0) + amount);
-  }
+    // Услуги/удержания из financial_data (логистика, эквайринг и т.п.)
+    const serviceBuckets = [finData?.services, finData?.posting_services, finData?.additional_services];
+    for (const bucket of serviceBuckets) {
+      if (!bucket || typeof bucket !== "object") continue;
+      for (const [rawKey, svc] of Object.entries(bucket)) {
+        const title = serviceTitle(rawKey);
+        const amount = extractServiceAmount(svc);
+        if (!amount) continue;
+        group.set(title, (group.get(title) || 0) + amount);
+      }
+    }
 
     // собираем строки
     const lines = [];
