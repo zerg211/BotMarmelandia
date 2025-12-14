@@ -161,12 +161,24 @@ function isSameDayLocal(iso, dateStr) {
 // ---------------- money helpers (без float) ----------------
 function toCents(val) {
   if (val === null || val === undefined) return 0;
-  const s = String(val).trim().replace(",", ".");
+  let s = String(val).trim().replace(",", ".");
   if (!s) return 0;
+
+  let sign = 1;
+  if (s.startsWith("-")) {
+    sign = -1;
+    s = s.slice(1);
+  } else if (s.startsWith("+")) {
+    s = s.slice(1);
+  }
+
   const parts = s.split(".");
   const rub = parseInt(parts[0] || "0", 10) || 0;
   const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10) || 0;
-  return rub * 100 + kop;
+  return sign * (rub * 100 + kop);
+}
+function rubToCents(val) {
+  return toCents(val);
 }
 const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function centsToRubString(cents) {
@@ -744,6 +756,34 @@ function serviceTitle(rawKey) {
   return cleaned ? cleaned.replace(/_/g, " ").trim() : "Услуга";
 }
 
+function extractServiceAmount(val) {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === "number" || typeof val === "string") return normalizeAmountToCents(val);
+  if (Array.isArray(val)) return val.reduce((s, v) => s + extractServiceAmount(v), 0);
+
+  if (typeof val === "object") {
+    const preferred = ["total", "price", "amount", "value", "payout"];
+    for (const key of preferred) {
+      if (key in val) {
+        const v = extractServiceAmount(val[key]);
+        if (v) return v;
+      }
+    }
+
+    if (Array.isArray(val.items)) {
+      const itemsSum = val.items.reduce((s, v) => s + extractServiceAmount(v), 0);
+      if (itemsSum) return itemsSum;
+    }
+
+    // попытка извлечь из вложенных полей, если нет явных ключей
+    let nestedSum = 0;
+    for (const v of Object.values(val)) nestedSum += extractServiceAmount(v);
+    return nestedSum;
+  }
+
+  return 0;
+}
+
 async function fetchFinanceTransactions({ clientId, apiKey, fromUtcIso, toUtcIso }) {
   // Вытягиваем ВСЕ транзакции за период (постранично), чтобы список операций был полным.
   const bodyBase = {
@@ -826,13 +866,24 @@ function buildOpsRows(transactions) {
       return cands[0] || null;
     })();
 
-    // сортируем по времени операции (UTC), но на фронт отдаём уже в МСК
-    const ts = occurredAt ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).toMillis() : 0;
-    const occurred_at_msk = occurredAt
-      ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).setZone(SALES_TZ).toISO()
-      : null;
+    // сортируем по времени операции, но на фронт отдаём уже в МСК
+    let ts = 0;
+    let occurred_at_msk = null;
+    if (occurredAt) {
+      const dt = DateTime.fromISO(String(occurredAt), { setZone: true });
+      if (dt.isValid) {
+        ts = dt.toMillis();
+        occurred_at_msk = dt.setZone(SALES_TZ).toISO();
+      }
+    }
 
-const titleLc = String(title).toLowerCase();
+    // если нет валидного времени — хотя бы сортируем по id транзакции
+    if (!ts) {
+      const fallback = Number(t?.operation_id || t?.transaction_id || t?.id || 0);
+      if (Number.isFinite(fallback)) ts = fallback;
+    }
+
+    const titleLc = String(title).toLowerCase();
     const isSaleDelivery = titleLc.includes("доставка покупателю");
 
     rows.push({
@@ -921,8 +972,11 @@ app.get("/api/balance/sale/detail", async (req, res) => {
 
     // 2) Тянем транзакции по этому отправлению за последние 30 дней и собираем услуги/расходы
     const today = todayDateStr();
-    const fromLocal = DateTime.fromISO(today, { zone: SALES_TZ }).minus({ days: 30 }).toFormat("yyyy-MM-dd");
-    const { since, to } = dayBoundsUtcFromLocal(fromLocal);
+    // Берём все транзакции за последние 30 дней: от старта дня 30 дней назад до конца текущего дня
+    const fromLocal = DateTime.fromISO(today, { zone: SALES_TZ }).minus({ days: 30 }).startOf("day");
+    const toLocal = DateTime.fromISO(today, { zone: SALES_TZ }).endOf("day");
+    const since = fromLocal.toUTC().toISO({ suppressMilliseconds: false });
+    const to = toLocal.toUTC().toISO({ suppressMilliseconds: false });
 
     // Постранично (на всякий случай)
     const allTx = await fetchFinanceTransactions({
@@ -978,13 +1032,41 @@ app.get("/api/balance/sale/detail", async (req, res) => {
       group.set("Комиссия", (group.get("Комиссия") || 0) + commissionFromPosting);
     }
 
-    // Услуги/удержания из financial_data.services (логистика, эквайринг и т.п.)
-    const services = finData?.services || {};
-    for (const [rawKey, svc] of Object.entries(services)) {
-      const title = serviceTitle(rawKey);
-      const amount = normalizeAmountToCents(svc?.price ?? svc?.amount ?? svc?.total);
-      if (!amount) continue;
-      group.set(title, (group.get(title) || 0) + amount);
+    // Услуги/удержания из financial_data (логистика, эквайринг и т.п.)
+    const serviceBuckets = [finData?.services, finData?.posting_services, finData?.additional_services];
+    for (const bucket of serviceBuckets) {
+      if (!bucket || typeof bucket !== "object") continue;
+      for (const [rawKey, svc] of Object.entries(bucket)) {
+        const keyLc = String(rawKey || "").toLowerCase();
+
+        // Пытаемся забрать net по доставке из payout/amount, но в расходы не кладём
+        if (keyLc.includes("marketplace_service_item_deliv_to_customer")) {
+          const payoutFromSvc = normalizeAmountToCents(
+            svc?.payout ?? svc?.total ?? svc?.amount ?? svc?.value ?? svc
+          );
+          if (netFromSaleCents === null && payoutFromSvc) netFromSaleCents = payoutFromSvc;
+          continue;
+        }
+
+        const title = serviceTitle(rawKey);
+        const amount = extractServiceAmount(svc);
+        if (!amount) continue;
+        group.set(title, (group.get(title) || 0) + amount);
+      }
+    }
+
+    // если не нашли net в транзакциях — возьмём из payout услуги доставки
+    if (netFromSaleCents === null) {
+      const deliverySvc =
+        finData?.posting_services?.marketplace_service_item_deliv_to_customer ||
+        finData?.services?.marketplace_service_item_deliv_to_customer ||
+        null;
+      if (deliverySvc) {
+        const payoutFromSvc = normalizeAmountToCents(
+          deliverySvc?.payout ?? deliverySvc?.total ?? deliverySvc?.amount ?? deliverySvc?.value ?? deliverySvc
+        );
+        if (payoutFromSvc) netFromSaleCents = payoutFromSvc;
+      }
     }
 
     // собираем строки
