@@ -1,1123 +1,607 @@
-import express from "express";
-import fs from "fs";
-import path from "path";
-import crypto from "crypto";
-import { DateTime } from "luxon";
-import { fileURLToPath } from "url";
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Моя аналитика</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root{
+      --bg:#0B0F14; --card:#121923; --text:#EAF0FF; --muted:#93A4C7;
+      --accent:#4DA3FF; --danger:#FF5A6A; --success:#3CCB7F; --line: rgba(255,255,255,.08);
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const app = express();
-app.use(express.json());
-
-// ====== MINI APP (страница + статика из /Public) ======
-app.use("/public", express.static(path.join(__dirname, "Public")));
-
-// если кто-то открывает кривой путь вида "/https://....." — редиректим на главную
-app.get(/^\/https?:\/\//, (req, res) => res.redirect(302, "/"));
-
-// главная Mini App
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "Public", "index.html"));
-});
-app.get("/index.html", (req, res) => {
-  res.sendFile(path.join(__dirname, "Public", "index.html"));
-});
-
-app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
-
-const PORT = process.env.PORT || 8080;
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
-
-// “Сегодня” считаем по МСК (или поменяй через ENV SALES_TZ)
-const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
-
-const DATA_DIR = process.env.DATA_DIR || ".";
-const STORE_PATH = path.join(DATA_DIR, "store.json");
-const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
-const pending = new Map();
-
-// ---------------- store helpers ----------------
-function loadStore() {
-  try {
-    if (!fs.existsSync(STORE_PATH)) return { users: {} };
-    return JSON.parse(fs.readFileSync(STORE_PATH, "utf-8"));
-  } catch {
-    return { users: {} };
-  }
-}
-function saveStore(store) {
-  fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2), "utf-8");
-}
-function getUserCreds(userId) {
-  const store = loadStore();
-  return store.users?.[String(userId)] || null;
-}
-function setUserCreds(userId, creds) {
-  const store = loadStore();
-  store.users = store.users || {};
-  store.users[String(userId)] = creds;
-  saveStore(store);
-}
-function deleteUserCreds(userId) {
-  const store = loadStore();
-  if (store.users) delete store.users[String(userId)];
-  saveStore(store);
-}
-
-// ---------------- crypto helpers ----------------
-function encrypt(text) {
-  if (!ENCRYPTION_KEY_B64) return { mode: "plain", value: text };
-  const key = Buffer.from(ENCRYPTION_KEY_B64, "base64");
-  if (key.length !== 32) return { mode: "plain", value: text };
-
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-  const enc = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return {
-    mode: "aes-256-gcm",
-    iv: iv.toString("base64"),
-    tag: tag.toString("base64"),
-    value: enc.toString("base64"),
-  };
-}
-function decrypt(obj) {
-  if (!obj) return null;
-  if (obj.mode === "plain") return obj.value;
-
-  const key = Buffer.from(ENCRYPTION_KEY_B64 || "", "base64");
-  const iv = Buffer.from(obj.iv, "base64");
-  const tag = Buffer.from(obj.tag, "base64");
-  const data = Buffer.from(obj.value, "base64");
-
-  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
-  decipher.setAuthTag(tag);
-  const dec = Buffer.concat([decipher.update(data), decipher.final()]);
-  return dec.toString("utf8");
-}
-
-// ---------------- telegram helpers ----------------
-async function tgSendMessage(chatId, text, opts = {}) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-  const payload = { chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true, ...opts };
-  const resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-  const data = await resp.json().catch(() => null);
-  if (!data?.ok) console.error("❌ sendMessage failed:", data);
-  return data;
-}
-async function tgEditMessage(chatId, messageId, text, opts = {}) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`;
-  const payload = { chat_id: chatId, message_id: messageId, text, parse_mode: "HTML", disable_web_page_preview: true, ...opts };
-  const resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-  const data = await resp.json().catch(() => null);
-  if (!data?.ok) {
-    const descr = String(data?.description || "");
-    if (!descr.includes("message is not modified")) console.error("❌ editMessageText failed:", data);
-  }
-  return data;
-}
-async function tgAnswerCallback(callbackQueryId) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`;
-  await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: callbackQueryId }) });
-}
-
-// ---------------- ozon helpers ----------------
-async function ozonPost(pathname, { clientId, apiKey, body }) {
-  const resp = await fetch(`${OZON_API_BASE}${pathname}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Client-Id": String(clientId), "Api-Key": String(apiKey) },
-    body: JSON.stringify(body),
-  });
-
-  const data = await resp.json().catch(() => null);
-  if (!resp.ok) {
-    const msg = data?.message || data?.error || JSON.stringify(data);
-    throw new Error(`Ozon API ${pathname} (${resp.status}): ${msg}`);
-  }
-  return data;
-}
-
-// ---------------- date helpers ----------------
-function todayDateStr() {
-  return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
-}
-function dayBoundsUtcFromLocal(dateStr) {
-  const fromLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
-  const toLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
-  return {
-    since: fromLocal.toUTC().toISO({ suppressMilliseconds: false }),
-    to: toLocal.toUTC().toISO({ suppressMilliseconds: false }),
-  };
-}
-function isSameDayLocal(iso, dateStr) {
-  if (!iso) return false;
-  const d = DateTime.fromISO(iso, { setZone: true }).setZone(SALES_TZ);
-  return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
-}
-
-// ---------------- money helpers (без float) ----------------
-function toCents(val) {
-  if (val === null || val === undefined) return 0;
-  const s = String(val).trim().replace(",", ".");
-  if (!s) return 0;
-  const parts = s.split(".");
-  const rub = parseInt(parts[0] || "0", 10) || 0;
-  const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10) || 0;
-  return rub * 100 + kop;
-}
-const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-function centsToRubString(cents) {
-  return `${rubFmt.format(cents / 100)} ₽`;
-}
-
-function postingAmountCents(posting) {
-  const qtyBySku = new Map();
-  for (const pr of posting?.products || []) {
-    qtyBySku.set(String(pr.sku), Number(pr.quantity || 0));
-  }
-
-  const finProds = posting?.financial_data?.products || [];
-  if (Array.isArray(finProds) && finProds.length > 0) {
-    let sum = 0;
-    for (const fp of finProds) {
-      const id = String(fp.product_id);
-      const qty = qtyBySku.get(id) ?? 1;
-      sum += toCents(fp.price) * qty;
+      /* ✅ ВЕРХНИЙ "ФУТЕР" (опустить контент ниже шапки Telegram) */
+      --top-gap: 44px;            /* если мало/много — меняй только это */
     }
-    if (sum > 0) return sum;
-  }
+    *{box-sizing:border-box;}
 
-  let sum2 = 0;
-  for (const pr of posting?.products || []) {
-    sum2 += toCents(pr.price) * Number(pr.quantity || 0);
-  }
-  return sum2;
-}
-
-// ---------------- Core: FBO fetch + stats ----------------
-function extractPostings(data) {
-  if (Array.isArray(data?.result)) return { postings: data.result, hasNext: false };
-  const r = data?.result || {};
-  if (Array.isArray(r?.postings)) return { postings: r.postings, hasNext: Boolean(r.has_next) };
-  if (Array.isArray(data?.postings)) return { postings: data.postings, hasNext: Boolean(data?.has_next) };
-  return { postings: [], hasNext: false };
-}
-
-async function fetchFboAllForDay({ clientId, apiKey, dateStr }) {
-  const { since, to } = dayBoundsUtcFromLocal(dateStr);
-
-  let offset = 0;
-  const limit = 1000;
-  const all = [];
-
-  while (true) {
-    const body = {
-      dir: "ASC",
-      filter: { since, to, status: "" },
-      limit,
-      offset,
-      translit: true,
-      with: { analytics_data: true, financial_data: true, legal_info: false },
-    };
-
-    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
-    const { postings, hasNext } = extractPostings(data);
-
-    all.push(...postings);
-    if (!hasNext) break;
-
-    offset += limit;
-    if (offset > 200000) break;
-  }
-
-  return all;
-}
-
-async function calcTodayStats({ clientId, apiKey, dateStr }) {
-  const postings = await fetchFboAllForDay({ clientId, apiKey, dateStr });
-
-  let ordersCount = 0;
-  let ordersAmount = 0;
-
-  let cancelsCount = 0;
-  let cancelsAmount = 0;
-
-  for (const p of postings) {
-    if (!isSameDayLocal(p?.created_at, dateStr)) continue;
-
-    const amt = postingAmountCents(p);
-
-    ordersCount += 1;
-    ordersAmount += amt;
-
-    if (String(p?.status || "").toLowerCase() === "cancelled") {
-      cancelsCount += 1;
-      cancelsAmount += amt;
-    }
-  }
-
-  return { dateStr, ordersCount, ordersAmount, cancelsCount, cancelsAmount };
-}
-
-
-// ---------------- Core: buyouts (delivered today) + returns (today) ----------------
-async function fetchFboAllForPeriod({ clientId, apiKey, sinceIso, toIso }) {
-  let offset = 0;
-  const limit = 1000;
-  const all = [];
-
-  while (true) {
-    const body = {
-      dir: "ASC",
-      filter: { since: sinceIso, to: toIso, status: "delivered" },
-      limit,
-      offset,
-      translit: true,
-      with: { analytics_data: true, financial_data: false, legal_info: false },
-    };
-
-    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
-    const { postings, hasNext } = extractPostings(data);
-
-    all.push(...postings);
-    if (!hasNext) break;
-
-    offset += limit;
-    if (offset > 200000) break;
-  }
-
-  return all;
-}
-
-function pickDeliveredIso(posting) {
-  // Считаем момент "выкупа" как момент смены статуса на DELIVERED (обычно это status_updated_at).
-  // Поля в разных версиях API могут отличаться — пробуем максимально широко.
-  return (
-    posting?.status_updated_at ||
-    posting?.delivered_at ||
-    posting?.analytics_data?.delivered_at ||
-    posting?.analytics_data?.delivering_date ||
-    posting?.analytics_data?.delivery_date ||
-    posting?.analytics_data?.shipment_date ||
-    posting?.delivering_date ||
-    posting?.delivery_date ||
-    null
-  );
-}
-
-async function calcBuyoutsTodayByOffer({ clientId, apiKey, dateStr }) {
-  // "Выкуплено сегодня" = отправления, у которых СТАТУС сменился на DELIVERED сегодня (по МСК).
-  // Важно: /v2/posting/fbo/list фильтрует по created_at, поэтому берём широкий диапазон по созданию
-  // и уже в коде отбираем по статусным датам.
-  const day = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ });
-  const sinceCreated = day.minus({ days: 30 }).startOf("day").toUTC().toISO({ suppressMilliseconds: false });
-  const toCreated = day.endOf("day").toUTC().toISO({ suppressMilliseconds: false });
-
-  let offset = 0;
-  const limit = 1000;
-
-  const byOffer = new Map();
-  let totalQty = 0;
-
-  while (true) {
-    const body = {
-      dir: "ASC",
-      filter: { since: sinceCreated, to: toCreated, status: "" },
-      limit,
-      offset,
-      translit: true,
-      with: { analytics_data: true, financial_data: false, legal_info: false },
-    };
-
-    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
-    const { postings, hasNext } = extractPostings(data);
-
-    for (const p of postings) {
-      // берём момент смены статуса на delivered
-      const deliveredIso = pickDeliveredIso(p);
-      if (!isSameDayLocal(deliveredIso, dateStr)) continue;
-      if (String(p?.status || "").toLowerCase() !== "delivered") continue;
-
-      for (const pr of p?.products || []) {
-        const offerId = pr?.offer_id != null ? String(pr.offer_id) : null;
-        const qty = Number(pr?.quantity || 0) || 0;
-        if (!offerId || qty <= 0) continue;
-
-        totalQty += qty;
-        byOffer.set(offerId, (byOffer.get(offerId) || 0) + qty);
-      }
+    html, body { height: 100%; overflow: hidden; }
+    body{
+      margin:0;background:var(--bg);color:var(--text);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
     }
 
-    if (!hasNext) break;
-    offset += limit;
-    if (offset > 200000) break;
-  }
+    .app{
+      height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100dvh));
+      min-height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100dvh));
 
-  const list = Array.from(byOffer.entries())
-    .map(([offer_id, qty]) => ({ offer_id, qty }))
-    .sort((a, b) => b.qty - a.qty);
+      /* ✅ добавили top-gap */
+      padding:
+        calc(var(--top-gap) + env(safe-area-inset-top) + 16px)
+        calc(16px + env(safe-area-inset-right))
+        calc(16px + env(safe-area-inset-bottom))
+        calc(16px + env(safe-area-inset-left));
 
-  return { buyouts_total_qty: totalQty, buyouts_list: list };
+      display:flex;flex-direction:column;gap:14px;
+    }
+
+    .top{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;}
+    .title{font-size:20px;font-weight:900;letter-spacing:.2px;}
+    .sub{font-size:12px;color:var(--muted);}
+    .badge{font-size:11px;padding:4px 8px;border-radius:999px;background:rgba(77,163,255,.15);color:var(--accent);white-space:nowrap;}
+    .badge.danger{background:rgba(255,90,106,.15);color:var(--danger);}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}
+    .card{
+      background:var(--card);border-radius:16px;padding:14px;
+      box-shadow:0 8px 24px rgba(0,0,0,.25);
+      display:flex;flex-direction:column;gap:10px;min-height:110px;border:1px solid var(--line);
+    }
+    .label{font-size:12px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;gap:8px;}
+    .value{font-size:28px;font-weight:900;letter-spacing:.2px;}
+    .value.small{font-size:22px;}
+    .value.pos{color:var(--success);}
+    .value.neg{color:var(--danger);}
+
+    /* баланс: динамика к началу дня */
+    .delta{font-size:12px;color:var(--muted);line-height:1.2;margin-top:-6px;}
+    .delta.pos{color:var(--success);}
+    .delta.neg{color:var(--danger);}
+    .footer{
+      margin-top:auto;display:flex;justify-content:space-between;align-items:center;gap:12px;
+      color:var(--muted);font-size:12px;
+    }
+    .btn{
+      border:1px solid var(--line);background:rgba(77,163,255,.18);color:var(--text);
+      padding:10px 12px;border-radius:14px;font-weight:800;cursor:pointer;
+      display:flex;align-items:center;gap:8px;
+    }
+    .btn.secondary{background:rgba(255,255,255,.06);}
+    .btn:active{transform:scale(.99);}
+    .spin{animation:spin .8s linear infinite;}
+    @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+
+
+.mini-list{
+  font-size:12px;color:var(--muted);line-height:1.35;
+  max-height:72px;overflow:auto;padding-right:4px;
 }
+.mini-list .row{display:flex;justify-content:space-between;gap:10px;}
+.mini-list .k{color:var(--text);font-weight:700;}
 
-async function calcReturnsTodayByOffer({ clientId, apiKey, dateStr }) {
-  // Возвраты сегодня: /v1/returns/list требует filter.status, но "all" у некоторых аккаунтов не работает.
-  // Поэтому передаём status = "" (как "все"), и берём широкий период, затем фильтруем по дате обновления.
-  const day = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ });
-  const fromStr = day.minus({ days: 30 }).toFormat("yyyy-LL-dd");
-  const toStr = day.toFormat("yyyy-LL-dd");
 
-  const byOffer = new Map();
-  let totalQty = 0;
+/* баланс кликабельный */
+.card.clickable{cursor:pointer;}
+.card.clickable:active{transform:scale(.99);}
 
-  let offset = 0;
-  const limit = 1000;
+/* операции по балансу (модалка) */
+.ops-meta{font-size:12px;color:var(--muted);}
+.ops-list{display:flex;flex-direction:column;gap:10px;max-height:60vh;overflow:auto;padding-right:4px;}
+.op{
+  border:1px solid var(--line);border-radius:14px;padding:10px 10px;
+  background:rgba(255,255,255,.03);
+  display:flex;flex-direction:column;gap:6px;
+}
+.op-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;}
+.op-title{font-size:13px;font-weight:800;line-height:1.2;}
+.op-sub{font-size:12px;color:var(--muted);line-height:1.2;}
+.op-amt{font-size:13px;font-weight:900;white-space:nowrap;}
+.op-amt.pos{color:var(--success);}
+.op-amt.neg{color:var(--danger);}
+.op-foot{display:flex;flex-wrap:wrap;gap:8px;}
+.pill{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);}
 
-  while (true) {
-    const body = {
-      filter: { date_from: fromStr, date_to: toStr, status: "" },
-      limit,
-      offset,
-    };
+    /* modal */
+    .modal-backdrop{
+      position:fixed;inset:0;background:rgba(0,0,0,.55);
+      display:none;align-items:center;justify-content:center;padding:16px;
+    }
+    .modal{
+      width:min(520px,100%);
+      background:var(--card);border:1px solid var(--line);
+      border-radius:18px;box-shadow:0 18px 60px rgba(0,0,0,.5);
+      padding:16px;display:flex;flex-direction:column;gap:12px;
+    }
+    .modal h3{margin:0;font-size:16px;}
+    .field{display:flex;flex-direction:column;gap:6px;}
+    .field label{font-size:12px;color:var(--muted);}
+    .field input{
+      width:100%;padding:12px 12px;border-radius:12px;
+      border:1px solid var(--line);background:rgba(255,255,255,.04);
+      color:var(--text);outline:none;
+    }
+    .row{display:flex;gap:10px;flex-wrap:wrap;}
+    .row .btn{flex:1;}
+    .err{font-size:12px;color:var(--danger);display:none;}
+    @media (max-width:380px){.value{font-size:24px}.card{min-height:96px}}
+  
+.op.clickable{cursor:pointer;}
+.op-time{font-size:12px;color:var(--muted);margin-top:4px;}
+.op-details{margin-top:10px;border-top:1px solid var(--line);padding-top:10px;display:none;flex-direction:column;gap:6px;}
+.op-line{display:flex;justify-content:space-between;gap:10px;font-size:13px;}
+.op-line .t{color:var(--text);font-weight:700;}
+.op-line .a{font-weight:900;}
+.op-line .a.pos{color:var(--success);}
+.op-line .a.neg{color:var(--danger);}
+.op-note{margin-top:8px;font-size:12px;color:var(--muted);}
 
-    const data = await ozonPost("/v1/returns/list", { clientId, apiKey, body });
+</style>
+</head>
+<body>
+  <div class="app">
+    <div class="top">
+      <div>
+        <div class="title" id="title">Моя аналитика</div>
+        <div class="sub" id="subtitle">FBO · Сегодня · Europe/Moscow</div>
+      </div>
+      <div class="badge" id="status">готово</div>
+    </div>
 
-    const root = data?.result ?? data ?? {};
-    const items =
-      root?.returns ||
-      root?.items ||
-      root?.result ||
-      root ||
-      [];
+    <div class="grid">
+      <div class="card">
+        <div class="label">Заказы <span class="badge">шт</span></div>
+        <div class="value" id="orders">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Сумма заказов <span class="badge">₽</span></div>
+        <div class="value small" id="ordersSum">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Отмены <span class="badge danger">шт</span></div>
+        <div class="value" id="cancels">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Сумма отмен <span class="badge danger">₽</span></div>
+        <div class="value small" id="cancelsSum">—</div>
+      </div>
 
-    const arr = Array.isArray(items) ? items : [];
-    if (arr.length === 0) break;
+<div class="card">
+  <div class="label">Выкупы сегодня <span class="badge">₽</span></div>
+  <div class="value small pos" id="buyoutsSum">—</div>
+</div>
+<div class="card">
+  <div class="label">Возвраты сегодня <span class="badge danger">₽</span></div>
+  <div class="value small neg" id="returnsSum">—</div>
+</div>
 
-    for (const r of arr) {
-      // дата изменения статуса/обновления
-      const iso =
-        r?.updated_at ||
-        r?.status_updated_at ||
-        r?.last_updated_at ||
-        r?.last_changed_at ||
-        r?.created_at ||
-        null;
+<div class="card" id="balanceCard">
+  <div class="label">Баланс кабинета <span class="badge">₽</span></div>
+  <div class="value small" id="balance">—</div>
+  <div class="delta" id="balanceDelta"></div>
+</div>
 
-      if (!isSameDayLocal(iso, dateStr)) continue;
+    </div>
 
-      const prods = Array.isArray(r?.products) ? r.products : [];
-      if (prods.length) {
-        for (const pr of prods) {
-          const offerId = pr?.offer_id != null ? String(pr.offer_id) : null;
-          const qty = Number(pr?.quantity || 0) || 0;
-          if (!offerId || qty <= 0) continue;
+    <div class="footer">
+      <div id="updatedAt">Последнее обновление: —</div>
+      <div class="row" style="justify-content:flex-end;">
+        <button class="btn secondary" id="keysBtn">🔑 Ключи</button>
+        <button class="btn" id="refreshBtn">
+          <svg id="refreshIcon" width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path d="M21 3v7h-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          Обновить
+        </button>
+      </div>
+    </div>
+  </div>
 
-          totalQty += qty;
-          byOffer.set(offerId, (byOffer.get(offerId) || 0) + qty);
-        }
+  <!-- modal -->
+  <div class="modal-backdrop" id="modalBg">
+    <div class="modal">
+      <h3>Ключи Ozon Seller</h3>
+
+      <div class="field">
+        <label>Client ID</label>
+        <input id="clientId" placeholder="например 2396143" />
+      </div>
+
+      <div class="field">
+        <label>Api-Key</label>
+        <input id="apiKey" placeholder="например 6157f0ba-..." />
+      </div>
+
+      <div class="err" id="modalErr">Ошибка</div>
+
+      <div class="row">
+        <button class="btn secondary" id="cancelBtn">Закрыть</button>
+        <button class="btn" id="saveBtn">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- balance modal -->
+  <div class="modal-backdrop" id="balModalBg">
+    <div class="modal">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+        <h3 style="margin:0;">Баланс: операции за сегодня</h3>
+        <button class="btn secondary" id="balCloseBtn" style="flex:0 0 auto;">Закрыть</button>
+      </div>
+      <div class="ops-meta" id="balMeta">—</div>
+      <div class="err" id="balErr" style="display:none;"></div>
+      <div class="ops-list" id="balOps">
+        <div class="op">
+          <div class="op-top">
+            <div class="op-title">Загрузка…</div>
+            <div class="op-amt">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+
+    function applyFullscreen(){
+      if (!tg) return;
+      tg.ready();
+      tg.expand();
+      tg.disableVerticalSwipes?.();
+      tg.requestFullscreen?.();
+    }
+    applyFullscreen();
+    try { tg?.onEvent?.("viewportChanged", applyFullscreen); } catch(e) {}
+
+    const $ = (id) => document.getElementById(id);
+
+    const statusEl = $("status");
+    const updatedAtEl = $("updatedAt");
+    const refreshBtn = $("refreshBtn");
+    const refreshIcon = $("refreshIcon");
+
+    const modalBg = $("modalBg");
+
+    const balModalBg = $("balModalBg");
+    const balCloseBtn = $("balCloseBtn");
+    const balMeta = $("balMeta");
+    const balErr = $("balErr");
+    const balOps = $("balOps");
+    const balanceCard = $("balanceCard");
+
+    const clientIdEl = $("clientId");
+    const apiKeyEl = $("apiKey");
+    const modalErr = $("modalErr");
+
+    function setStatus(text, danger=false){
+      statusEl.textContent = text;
+      statusEl.className = "badge" + (danger ? " danger" : "");
+    }
+    function setLastUpdated(iso){
+      const d = iso ? new Date(iso) : new Date();
+      updatedAtEl.textContent = "Последнее обновление: " + d.toLocaleString("ru-RU");
+    }
+    function fmtMoneyFromCents(cents){
+      if (cents === null || cents === undefined) return "—";
+      const rub = (Number(cents) / 100);
+      return new Intl.NumberFormat("ru-RU", {minimumFractionDigits:2, maximumFractionDigits:2}).format(rub);
+    }
+
+    function fmtSigned(cents){
+      const n = Number(cents || 0);
+      const sign = n > 0 ? "+" : (n < 0 ? "−" : "");
+      const abs = Math.abs(n);
+      return sign + fmtMoneyFromCents(abs);
+    }
+
+    function fmtOpWhen(iso, todayLocal){
+      if (!iso) return "";
+      // всегда показываем время в Europe/Moscow, независимо от таймзоны устройства
+      const d = new Date(iso);
+
+      const parts = new Intl.DateTimeFormat("ru-RU", {
+        timeZone: "Europe/Moscow",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).formatToParts(d);
+
+      const get = (t)=>parts.find(p=>p.type===t)?.value || "";
+      const dd = get("day");
+      const mo = get("month");
+      const yy = get("year");
+      const hh = get("hour");
+      const mm = get("minute");
+
+      const mskDateStr = `${yy}-${mo}-${dd}`;
+
+      if (mskDateStr === todayLocal) return `${hh}:${mm}`;
+      return `${dd}.${mo}.${yy} ${hh}:${mm}`;
+    }
+    function setBalError(msg){
+      if (!msg){
+        balErr.style.display = "none";
+        balErr.textContent = "";
       } else {
-        // fallback если products нет
-        const offerId = r?.offer_id != null ? String(r.offer_id) : null;
-        const qty = Number(r?.quantity || 0) || 0;
-        if (!offerId || qty <= 0) continue;
-
-        totalQty += qty;
-        byOffer.set(offerId, (byOffer.get(offerId) || 0) + qty);
+        balErr.style.display = "block";
+        balErr.textContent = msg;
       }
     }
 
-    offset += limit;
-    if (arr.length < limit) break;
-  }
 
-  const list = Array.from(byOffer.entries())
-    .map(([offer_id, qty]) => ({ offer_id, qty }))
-    .sort((a, b) => b.qty - a.qty);
-
-  return { returns_total_qty: totalQty, returns_list: list };
-}
-
-
-
-// ---------------- Core: balance (today) ----------------
-async function calcBalanceToday({ clientId, apiKey, dateStr }) {
-  // Самый прямой метод (у тебя он работает): /v1/finance/balance
-  // Запрос должен быть в формате YYYY-MM-DD
-  try {
-    const data = await ozonPost("/v1/finance/balance", {
-      clientId,
-      apiKey,
-      body: { date_from: dateStr, date_to: dateStr },
-    });
-
-    const total = data?.total || data?.result?.total;
-    const opening = total?.opening_balance?.value ?? total?.opening_balance ?? null;
-    const closing = total?.closing_balance?.value ?? total?.closing_balance ?? null;
-
-    if (closing !== null && closing !== undefined) {
-      const cents = toCents(closing);
-      const salesVal = data?.cashflows?.sales?.amount?.value ?? null;
-      const returnsVal = data?.cashflows?.returns?.amount?.value ?? null;
-
-      const buyouts_sum_cents = salesVal === null ? null : toCents(salesVal);
-      const returns_sum_cents = returnsVal === null ? null : toCents(returnsVal);
-
-      return {
-        // совместимость: balance_* = closing
-        balance_cents: cents,
-        balance_text: centsToRubString(cents),
-
-        // для динамики: opening/closing отдельно
-        balance_opening_cents: opening === null || opening === undefined ? null : toCents(opening),
-        balance_opening_text: (opening === null || opening === undefined) ? "—" : centsToRubString(toCents(opening)),
-        balance_closing_cents: cents,
-        balance_closing_text: centsToRubString(cents),
-
-        buyouts_sum_cents,
-        buyouts_sum_text: buyouts_sum_cents === null ? "—" : centsToRubString(buyouts_sum_cents),
-        returns_sum_cents,
-        returns_sum_text: returns_sum_cents === null ? "—" : centsToRubString(returns_sum_cents),
-      };
+    function openModal(){
+      modalErr.style.display = "none";
+      clientIdEl.value = localStorage.getItem("ozon_clientId") || "";
+      apiKeyEl.value = localStorage.getItem("ozon_apiKey") || "";
+      modalBg.style.display = "flex";
+      applyFullscreen();
     }
-  } catch (e) {
-    // пойдём дальше (фолбэки)
-  }
-
-  // Фолбэк 1: некоторые аккаунты имеют /v2/finance/balance
-  try {
-    const data = await ozonPost("/v2/finance/balance", {
-      clientId,
-      apiKey,
-      body: { date_from: dateStr, date_to: dateStr },
-    });
-
-    const root = data?.result ?? data ?? {};
-    const total = root?.total ?? root;
-    const closing = total?.closing_balance?.value ?? total?.closing_balance ?? root?.balance ?? null;
-
-    if (closing !== null && closing !== undefined) {
-      const cents = toCents(closing);
-      return { balance_cents: cents, balance_text: centsToRubString(cents) };
-    }
-  } catch (e) {}
-
-  // Фолбэк 2: cash-flow (может быть неактуален по балансу, но лучше чем ничего)
-  const { since, to } = dayBoundsUtcFromLocal(dateStr);
-  try {
-    const data = await ozonPost("/v1/finance/cash-flow-statement/list", {
-      clientId,
-      apiKey,
-      body: { filter: { date_from: since, date_to: to } },
-    });
-    const r = data?.result ?? data ?? {};
-    const balance =
-      r?.summary?.closing_balance ??
-      r?.summary?.end_balance ??
-      r?.header?.closing_balance ??
-      r?.header?.end_balance ??
-      null;
-
-    if (balance !== null && balance !== undefined) {
-      const cents = toCents(balance);
-      return { balance_cents: cents, balance_text: centsToRubString(cents) };
-    }
-  } catch (e) {}
-
-  return { balance_cents: null, balance_text: "—" };
-}
-
-// ---------------- Core: balance (cabinet) ----------------
-async function calcBalanceNowCents({ clientId, apiKey, dateStr }) {
-  // В Seller API нет одного “идеального” метода баланса, поэтому делаем 2 попытки:
-  // 1) /v1/finance/mutual-settlement (отчёт взаиморасчётов) — часто содержит итоговую задолженность/баланс.
-  // 2) /v1/finance/cash-flow-statement/list (финансовый отчёт) — как запасной вариант.
-  // Возвращаем копейки. Если не получилось — null (чтобы фронт показывал "—", а не 0).
-  const fromMonth = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("month").toUTC().toISO({ suppressMilliseconds: false });
-  const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day").toUTC().toISO({ suppressMilliseconds: false });
-
-  // 1) mutual-settlement
-  try {
-    const body = { date_from: fromMonth, date_to: to };
-    const data = await ozonPost("/v1/finance/mutual-settlement", { clientId, apiKey, body });
-    const r = data?.result || data;
-
-    const candidates = [
-      r?.summary?.ending_balance,
-      r?.summary?.end_balance,
-      r?.summary?.closing_balance,
-      r?.header?.ending_balance,
-      r?.header?.end_balance,
-      r?.header?.closing_balance,
-      r?.balance,
-      r?.result?.balance,
-    ];
-
-    for (const c of candidates) {
-      const cents = toCents(c);
-      if (cents !== 0) return cents; // если реально есть баланс — возвращаем
-    }
-  } catch (_) {}
-
-  // 2) cash-flow-statement
-  try {
-    const body = { filter: { date_from: fromMonth, date_to: to }, page: 1, page_size: 1000 };
-    const data = await ozonPost("/v1/finance/cash-flow-statement/list", { clientId, apiKey, body });
-    const r = data?.result || data;
-
-    const candidates = [
-      r?.summary?.closing_balance,
-      r?.summary?.end_balance,
-      r?.summary?.ending_balance,
-      r?.header?.closing_balance,
-      r?.header?.end_balance,
-      r?.header?.ending_balance,
-      r?.balance,
-    ];
-
-    for (const c of candidates) {
-      const cents = toCents(c);
-      if (cents !== 0) return cents;
-    }
-  } catch (_) {}
-
-  return null;
-}
-// ====== API: получить ключи из (query → user_id → первый юзер) ======
-function resolveCredsFromRequest(req) {
-  const qClient = req.query.clientId || req.query.client_id;
-  const qKey = req.query.apiKey || req.query.api_key;
-
-  // 1) Если MiniApp передал ключи прямо в запросе
-  if (qClient && qKey) {
-    return { clientId: String(qClient), apiKey: String(qKey), source: "query" };
-  }
-
-  // 2) Если передан user_id (telegram id)
-  const qUserId = req.query.user_id || req.query.userId;
-  if (qUserId) {
-    const creds = getUserCreds(String(qUserId));
-    if (creds?.clientId && creds?.apiKey) {
-      return { clientId: creds.clientId, apiKey: decrypt(creds.apiKey), source: "user_id" };
-    }
-  }
-
-  // 3) Иначе — первый пользователь в store.json
-  const store = loadStore();
-  const firstUserId = Object.keys(store.users || {})[0];
-  if (firstUserId) {
-    const creds = getUserCreds(firstUserId);
-    if (creds?.clientId && creds?.apiKey) {
-      return { clientId: creds.clientId, apiKey: decrypt(creds.apiKey), source: "first_user" };
-    }
-  }
-
-  return null;
-}
-
-async function handleToday(req, res) {
-  try {
-    const resolved = resolveCredsFromRequest(req);
-    if (!resolved) return res.status(400).json({ error: "no_creds" });
-
-    const dateStr = todayDateStr();
-    const s = await calcTodayStats({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr });
-
-    const [buyoutsR, balanceR] = await Promise.allSettled([
-      calcBuyoutsTodayByOffer({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
-      calcBalanceToday({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
-    ]);
-
-    // Возвраты по offer_id за «сегодня» через posting/substatus Ozon корректно не отдаёт (нет даты события).
-    // Поэтому по артикулам не считаем, а показываем только сумму возвратов из finance/balance.
-    const returnsData = { returns_total_qty: 0, returns_list: [] };
-
-    const buyouts = buyoutsR.status === "fulfilled" ? buyoutsR.value : { buyouts_total_qty: 0, buyouts_list: [] };
-    const balance = balanceR.status === "fulfilled" ? balanceR.value : { balance_cents: null, balance_text: "—" };
-
-    return res.json({
-      title: `FBO: за сегодня ${s.dateStr} (${SALES_TZ})`,
-      tz: SALES_TZ,
-      date: s.dateStr,
-
-      // для совместимости — и так и так
-      orders: s.ordersCount,
-      ordersCount: s.ordersCount,
-
-      orders_sum: s.ordersAmount,          // копейки
-      ordersAmount: s.ordersAmount,        // копейки
-      orders_sum_text: centsToRubString(s.ordersAmount),
-
-      cancels: s.cancelsCount,
-      cancelsCount: s.cancelsCount,
-
-      cancels_sum: s.cancelsAmount,        // копейки
-      cancelsAmount: s.cancelsAmount,      // копейки
-      cancels_sum_text: centsToRubString(s.cancelsAmount),
-
-      // новые виджеты
-      buyouts_total_qty: buyouts.buyouts_total_qty,
-      buyouts_list: buyouts.buyouts_list,
-      returns_total_qty: returnsData.returns_total_qty,
-      returns_list: returnsData.returns_list,
-
-
-      // деньги по факту за сегодня (по /v1/finance/balance) — совпадает с кабинетом
-      buyouts_sum_cents: balance.buyouts_sum_cents ?? null,
-      buyouts_sum_text: balance.buyouts_sum_text ?? "—",
-      returns_sum_cents: balance.returns_sum_cents ?? null,
-      returns_sum_text: balance.returns_sum_text ?? "—",
-
-      balance_cents: balance.balance_cents,
-      balance_text: balance.balance_text,
-      balance_opening_cents: balance.balance_opening_cents ?? null,
-      balance_opening_text: balance.balance_opening_text ?? "—",
-      balance_closing_cents: balance.balance_closing_cents ?? balance.balance_cents ?? null,
-      balance_closing_text: balance.balance_closing_text ?? balance.balance_text ?? "—",
-
-      widgets_errors: {
-        buyouts: buyoutsR.status === "rejected" ? String(buyoutsR.reason?.message || buyoutsR.reason) : null,
-        returns: null,
-        balance: balanceR.status === "rejected" ? String(balanceR.reason?.message || balanceR.reason) : null,
-      },
-
-      updated_at: DateTime.now().setZone(SALES_TZ).toISO(),
-      source: resolved.source
-    });
-  } catch (e) {
-    return res.status(500).json({ error: String(e.message || e) });
-  }
-}
-
-// ТРИ URL (на случай, что фронт зовёт другой путь)
-app.get("/api/dashboard/today", handleToday);
-app.get("/api/today", handleToday);
-app.get("/api/stats/today", handleToday);
-
-// ---------------- balance operations (Mini App) ----------------
-function extractTransactionsList(data){
-  const r = data?.result ?? data;
-  const candidates = [
-    r?.operations, r?.transactions, r?.items, r?.rows, r?.list, r?.result
-  ];
-  for (const c of candidates){
-    if (Array.isArray(c)) return c;
-  }
-  // иногда result может быть объектом с полем "operations"
-  if (Array.isArray(data?.result?.operations)) return data.result.operations;
-  return [];
-}
-
-function normalizeAmountToCents(v){
-  if (v === null || v === undefined) return 0;
-  if (typeof v === "number") return Math.round(v * 100);
-  if (typeof v === "string") return toCents(v);
-  if (typeof v === "object"){
-    // {value: 123.45, currency_code:"RUB"} или {value:"123.45"}
-    if ("value" in v) return normalizeAmountToCents(v.value);
-    if ("amount" in v) return normalizeAmountToCents(v.amount);
-  }
-  return 0;
-}
-
-async function fetchFinanceTransactions({ clientId, apiKey, fromUtcIso, toUtcIso }) {
-  // Вытягиваем ВСЕ транзакции за период (постранично), чтобы список операций был полным.
-  const bodyBase = {
-    filter: {
-      date: { from: fromUtcIso, to: toUtcIso },
-      operation_type: [],
-      posting_number: "",
-      transaction_type: "all",
-    },
-    page: 1,
-    page_size: 500,
-  };
-
-  let page = 1;
-  let pageCount = 1;
-  const all = [];
-
-  while (page <= pageCount) {
-    const body = { ...bodyBase, page };
-    const data = await ozonPost("/v3/finance/transaction/list", { clientId, apiKey, body });
-
-    const items = extractTransactionsList(data);
-    if (Array.isArray(items) && items.length) all.push(...items);
-
-    const pc = data?.result?.page_count ?? data?.page_count ?? data?.result?.pages ?? null;
-    if (typeof pc === "number" && pc > 0) pageCount = pc;
-
-    // если page_count не отдали — выходим по факту пустой страницы
-    if ((!pc || pc < 1) && (!items || items.length === 0)) break;
-
-    page += 1;
-    if (page > 200) break; // защита
-  }
-
-  return all;
-}
-
-function buildOpsRows(transactions) {
-  const rows = [];
-
-  for (const t of transactions) {
-    const title =
-      t?.operation_type_name ||
-      t?.operation_type ||
-      t?.type_name ||
-      t?.type ||
-      t?.name ||
-      "Операция";
-
-    // posting_number иногда приходит объектом
-    let postingVal =
-      t?.posting_number ||
-      t?.posting?.posting_number ||
-      t?.posting;
-
-    if (postingVal && typeof postingVal === "object") {
-      postingVal = postingVal.posting_number || postingVal.postingNumber || postingVal.number || null;
-    }
-
-    const amountCents = normalizeAmountToCents(
-      t?.amount ?? t?.accrual ?? t?.price ?? t?.sum ?? t?.total ?? t?.value ?? t?.payout
-    );
-
-    // время операции (если Ozon отдал)
-    const occurredAt = (()=>{
-      const cands = [
-        t?.operation_date_time,
-        t?.operation_datetime,
-        t?.occurred_at,
-        t?.created_at,
-        t?.moment,
-        t?.operation_date,
-        t?.date,
-      ].filter(Boolean).map(v=>String(v));
-
-      // сначала ищем ISO со временем (есть 'T')
-      for (const s of cands) if (s.includes("T")) return s;
-
-      // иначе возвращаем хоть дату (будет 00:00)
-      return cands[0] || null;
-    })();
-
-    // сортируем по времени операции (UTC), но на фронт отдаём уже в МСК
-    const ts = occurredAt ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).toMillis() : 0;
-    const occurred_at_msk = occurredAt
-      ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).setZone(SALES_TZ).toISO()
-      : null;
-
-const titleLc = String(title).toLowerCase();
-    const isSaleDelivery = titleLc.includes("доставка покупателю");
-
-    rows.push({
-      id: String(t?.operation_id || t?.transaction_id || t?.id || crypto.randomUUID()),
-      title: String(title),
-      subtitle: "",
-      posting_number: postingVal ? String(postingVal) : null,
-      offer_id: null,
-      amount_cents: amountCents,
-      occurred_at: occurred_at_msk,
-      ts,
-      is_sale_delivery: isSaleDelivery,
-    });
-  }
-
-  const cleaned = rows.filter(r => Number(r.amount_cents || 0) !== 0);
-
-  // сортировка: сначала самые свежие
-  cleaned.sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
-
-  return cleaned; // все операции (без лимита)
-}
-
-app.get("/api/balance/ops/today", async (req, res) => {
-  try {
-    const resolved = resolveCredsFromRequest(req);
-    if (!resolved) return res.status(400).json({ error: "no_creds" });
-
-    const dateStr = todayDateStr();
-    const { since, to } = dayBoundsUtcFromLocal(dateStr);
-
-    const tx = await fetchFinanceTransactions({
-      clientId: resolved.clientId,
-      apiKey: resolved.apiKey,
-      fromUtcIso: since,
-      toUtcIso: to,
-    });
-
-    const ops = buildOpsRows(tx);
-
-    return res.json({
-      date: dateStr,
-      tz: SALES_TZ,
-      title: `Сегодня ${dateStr} (${SALES_TZ})`,
-      ops,
-    });
-  } catch (e) {
-    return res.status(500).json({ error: String(e.message || e) });
-  }
-});
-
-app.get("/api/balance/sale/detail", async (req, res) => {
-  try {
-    const resolved = resolveCredsFromRequest(req);
-    if (!resolved) return res.status(400).json({ error: "no_creds" });
-
-    const posting = String(req.query.posting_number || "").trim();
-    if (!posting) return res.status(400).json({ error: "no_posting_number" });
-
-    // 1) Берем постинг: получаем "полную сумму продажи" (gross) по товарам
-    const pg = await ozonPost("/v2/posting/fbo/get", {
-      clientId: resolved.clientId,
-      apiKey: resolved.apiKey,
-      body: {
-        posting_number: posting,
-        translit: true,
-        with: { analytics_data: false, financial_data: true, legal_info: false },
-      },
-    });
-
-    const pRes = pg?.result || pg;
-    const products = Array.isArray(pRes?.products) ? pRes.products : [];
-    const items = products.map((p) => {
-      const qty = Number(p?.quantity || 0) || 0;
-      const price = Number(p?.price || 0) || 0;
-      return {
-        offer_id: p?.offer_id || null,
-        name: p?.name || null,
-        qty,
-        price_cents: rubToCents(price),
-        total_cents: rubToCents(price) * (qty || 1),
-      };
-    });
-
-    const gross = items.reduce((s, it) => s + Number(it.total_cents || 0), 0);
-
-    // 2) Тянем транзакции по этому отправлению за последние 30 дней и собираем услуги/расходы
-    const today = todayDateStr();
-    const fromLocal = DateTime.fromISO(today, { zone: SALES_TZ }).minus({ days: 30 }).toFormat("yyyy-MM-dd");
-    const { since, to } = dayBoundsUtcFromLocal(fromLocal);
-
-    // Постранично (на всякий случай)
-    const allTx = await fetchFinanceTransactions({
-      clientId: resolved.clientId,
-      apiKey: resolved.apiKey,
-      fromUtcIso: since,
-      toUtcIso: to,
-    });
-
-    // фильтруем по posting_number
-    const tx = allTx.filter((t) => {
-      const pn =
-        t?.posting_number ||
-        t?.posting?.posting_number ||
-        t?.posting;
-      if (!pn) return false;
-      if (typeof pn === "object") return String(pn.posting_number || "") === posting;
-      return String(pn) === posting;
-    });
-
-    // группируем расходы/услуги по названию операции
-    const group = new Map(); // name -> cents
-    for (const t of tx) {
-      const name =
-        t?.operation_type_name ||
-        t?.operation_type ||
-        t?.type_name ||
-        t?.type ||
-        t?.name ||
-        "Операция";
-      const cents = normalizeAmountToCents(
-        t?.amount ?? t?.accrual ?? t?.price ?? t?.sum ?? t?.total ?? t?.value ?? t?.payout
-      );
-      if (!cents) continue;
-
-      const nameLc = String(name).toLowerCase();
-
-      // пропускаем саму "доставку покупателю" (это net-начисление, которое ты видишь в списке)
-      if (nameLc.includes("доставка покупателю")) continue;
-
-      group.set(String(name), (group.get(String(name)) || 0) + cents);
-    }
-
-    // Комиссия из financial_data постинга (если вдруг нет в транзакциях)
-    const finProds = Array.isArray(pRes?.financial_data?.products) ? pRes.financial_data.products : [];
-    const commissionFromPosting = finProds.reduce((s, fp) => s + (normalizeAmountToCents(fp?.commission_amount) || 0), 0);
-    if (commissionFromPosting && ![...group.keys()].some(k => k.toLowerCase().includes("комис"))) {
-      group.set("Комиссия", (group.get("Комиссия") || 0) + commissionFromPosting);
-    }
-
-    // собираем строки
-    const lines = [];
-
-    // верхняя строка: gross продажа (полная)
-    lines.push({
-      title: "Продажа",
-      amount_cents: gross,
-      percent: gross > 0 ? 100 : null,
-      kind: "gross",
-    });
-
-    // услуги/расходы
-    const feeLines = Array.from(group.entries())
-      .map(([title, amount_cents]) => {
-        const pct = gross ? Math.round((Math.abs(amount_cents) / gross) * 1000) / 10 : null;
-        return { title, amount_cents, percent: pct, kind: "fee" };
-      })
-      .filter(l => Number(l.amount_cents || 0) !== 0)
-      .sort((a, b) => Math.abs(Number(b.amount_cents)) - Math.abs(Number(a.amount_cents)));
-
-    lines.push(...feeLines);
-
-    // отдельная подсказка "Оплата за заказ"
-    const payForOrderLine = feeLines.find(l => String(l.title).toLowerCase().includes("оплата за заказ"));
-    const note = payForOrderLine
-      ? {
-          title: "Данный заказ был продан по оплате за заказ",
-          amount_cents: payForOrderLine.amount_cents,
-          percent: payForOrderLine.percent,
-          kind: "note",
+    function closeModal(){ modalBg.style.display = "none"; }
+
+
+    function openBalModal(){
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
+      if (!clientId || !apiKey){
+        setStatus("нужны ключи", true);
+        openModal();
+        return;
+      }
+
+      balModalBg.style.display = "flex";
+      setBalError("");
+      balMeta.textContent = "Загрузка…";
+      balOps.innerHTML = "";
+      applyFullscreen();
+
+      (async () => {
+        try{
+          const url = `/api/balance/ops/today?clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}`;
+          const r = await fetch(url);
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+
+          balMeta.textContent = data.title || "Сегодня";
+          const ops = Array.isArray(data.ops) ? data.ops : [];
+
+          if (!ops.length){
+            balOps.innerHTML = `<div class="op"><div class="op-top"><div class="op-title">Нет операций за сегодня</div><div class="op-amt">—</div></div></div>`;
+            return;
+          }
+
+          balOps.innerHTML = ops.map((op) => {
+            const amt = Number(op.amount_cents || 0);
+            const cls = amt >= 0 ? "pos" : "neg";
+            const signAmt = fmtSigned(amt);
+            const title = (op.title || "Операция").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+            const sub = (op.subtitle || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+            const whenStr = fmtOpWhen(op.occurred_at, data.date);
+            const posting = op.posting_number ? `<span class="pill">Отправление: ${String(op.posting_number)}</span>` : "";
+            const clickable = (op.is_sale_delivery && op.posting_number) ? "clickable" : "";
+            const dataPosting = op.posting_number ? `data-posting="${String(op.posting_number).replace(/"/g,'&quot;')}"` : "";
+            const dataSale = op.is_sale_delivery ? `data-sale="1"` : "";
+            return `
+              <div class="op ${clickable}" ${dataPosting} ${dataSale}>
+                <div class="op-top">
+                  <div>
+                    <div class="op-title">${title}</div>
+                    ${whenStr ? `<div class="op-time">${whenStr}</div>` : ``}
+                    ${sub ? `<div class="op-sub">${sub}</div>` : ``}
+                  </div>
+                  <div class="op-amt ${cls}">${signAmt}</div>
+                </div>
+                ${posting ? `<div class="op-foot">${posting}</div>` : ``}
+                <div class="op-details"></div>
+              </div>
+            `;
+          }).join("");
+
+          // клики: раскрываем ТОЛЬКО "Доставка покупателю" (продажа)
+          balOps.querySelectorAll(".op.clickable").forEach((el) => {
+            el.addEventListener("click", async () => {
+              const postingNumber = el.getAttribute("data-posting");
+              if (!postingNumber) return;
+
+              const detailsEl = el.querySelector(".op-details");
+              if (!detailsEl) return;
+
+              // toggle if already loaded
+              if (detailsEl.getAttribute("data-loaded") === "1") {
+                const isOpen = detailsEl.style.display === "flex";
+                detailsEl.style.display = isOpen ? "none" : "flex";
+                return;
+              }
+
+              detailsEl.style.display = "flex";
+              detailsEl.innerHTML = `<div class="op-sub">Загрузка детализации…</div>`;
+
+              try{
+                const dUrl = `/api/balance/sale/detail?clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}&posting_number=${encodeURIComponent(postingNumber)}`;
+                const rr = await fetch(dUrl);
+                const dj = await rr.json().catch(()=>({}));
+                if (!rr.ok || dj.error) throw new Error(dj.error || ("HTTP " + rr.status));
+
+                const lines = Array.isArray(dj.lines) ? dj.lines : [];
+                const note = dj.note;
+
+                const htmlLines = lines.map((ln) => {
+                  const a = Number(ln.amount_cents || 0);
+                  const c = a >= 0 ? "pos" : "neg";
+                  const pct = (ln.percent !== null && ln.percent !== undefined) ? ` <span style="color:var(--muted);font-weight:700;">(${ln.percent}%)</span>` : "";
+                  return `<div class="op-line">
+                    <div class="t">${String(ln.title || "").replace(/</g,"&lt;").replace(/>/g,"&gt;")}${pct}</div>
+                    <div class="a ${c}">${fmtSigned(a)}</div>
+                  </div>`;
+                }).join("");
+
+                const noteHtml = note ? `<div class="op-note">${String(note.title || "").replace(/</g,"&lt;").replace(/>/g,"&gt;")}: <b>${fmtSigned(Number(note.amount_cents||0))}</b>${(note.percent!==null&&note.percent!==undefined)?` (${note.percent}%)`:``}</div>` : "";
+
+                detailsEl.innerHTML = htmlLines + noteHtml;
+                detailsEl.setAttribute("data-loaded","1");
+              } catch(e){
+                detailsEl.innerHTML = `<div class="op-sub">Не удалось получить детализацию</div>`;
+                detailsEl.setAttribute("data-loaded","1");
+              }
+            });
+          });
+
+        } catch(e){
+          setBalError(String(e.message || e));
+          balMeta.textContent = "Ошибка";
+          balOps.innerHTML = `<div class="op"><div class="op-top"><div class="op-title">Не удалось загрузить операции</div><div class="op-amt">—</div></div></div>`;
         }
-      : null;
+      })();
+    }
+    function closeBalModal(){ balModalBg.style.display = "none"; }
 
-    res.json({
-      posting_number: posting,
-      items,
-      gross_cents: gross,
-      lines,
-      note,
+
+    $("keysBtn").addEventListener("click", openModal);
+
+    balCloseBtn.addEventListener("click", closeBalModal);
+    balModalBg.addEventListener("click", (e) => { if (e.target === balModalBg) closeBalModal(); });
+
+    // баланс: открыть операции
+    balanceCard.classList.add("clickable");
+    balanceCard.addEventListener("click", openBalModal);
+
+    $("cancelBtn").addEventListener("click", closeModal);
+    modalBg.addEventListener("click", (e) => { if (e.target === modalBg) closeModal(); });
+
+    $("saveBtn").addEventListener("click", async () => {
+      const clientId = clientIdEl.value.trim();
+      const apiKey = apiKeyEl.value.trim();
+      if (!clientId || !apiKey) {
+        modalErr.textContent = "Заполни Client ID и Api-Key";
+        modalErr.style.display = "block";
+        return;
+      }
+      localStorage.setItem("ozon_clientId", clientId);
+      localStorage.setItem("ozon_apiKey", apiKey);
+      closeModal();
+      await load();
     });
-  } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
-  }
-});
 
+    async function load(){
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
 
-// ---------------- widget (чат) ----------------
-function widgetText(s) {
-  return [
-    `📅 <b>FBO: за сегодня</b> <b>${s.dateStr}</b> (${SALES_TZ})`,
-    ``,
-    `📦 Заказы: <b>${s.ordersCount}</b>`,
-    `💰 Сумма заказов: <b>${centsToRubString(s.ordersAmount)}</b>`,
-    ``,
-    `❌ Отмены: <b>${s.cancelsCount}</b>`,
-    `💸 Сумма отмен: <b>${centsToRubString(s.cancelsAmount)}</b>`,
-  ].join("\n");
-}
-
-function widgetKeyboard(dateStr) {
-  return {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "🔄 Обновить", callback_data: `refresh:${dateStr}` }],
-        [{ text: "🔑 Сменить ключи", callback_data: "reset_keys" }],
-      ],
-    },
-  };
-}
-
-async function showWidget(chatId, userId, dateStr, editMessageId = null) {
-  const creds = getUserCreds(userId);
-  if (!creds?.clientId || !creds?.apiKey) {
-    await tgSendMessage(chatId, "❗ Ключи Ozon не настроены. Напиши /start.");
-    return;
-  }
-
-  const apiKey = decrypt(creds.apiKey);
-  const clientId = creds.clientId;
-
-  try {
-    const s = await calcTodayStats({ clientId, apiKey, dateStr });
-    const text = widgetText(s);
-    if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
-    else await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
-  } catch (e) {
-    const msg = `❌ Не смог получить данные за <b>${dateStr}</b>.\n\n<code>${String(e.message || e)}</code>`;
-    if (editMessageId) await tgEditMessage(chatId, editMessageId, msg, widgetKeyboard(dateStr));
-    else await tgSendMessage(chatId, msg, widgetKeyboard(dateStr));
-  }
-}
-
-// ---------------- webhook ----------------
-app.post("/telegram-webhook", async (req, res) => {
-  res.sendStatus(200);
-
-  try {
-    const update = req.body;
-    const msg = update?.message;
-    const cb = update?.callback_query;
-
-    if (cb) {
-      const chatId = cb.message?.chat?.id;
-      const userId = cb.from?.id;
-      const messageId = cb.message?.message_id;
-      const data = cb.data;
-
-      await tgAnswerCallback(cb.id);
-      if (!chatId || !userId) return;
-
-      if (data?.startsWith("refresh:")) {
-        const dateStr = data.split(":")[1] || todayDateStr();
-        await showWidget(chatId, userId, dateStr, messageId);
+      if (!clientId || !apiKey){
+        setStatus("нужны ключи", true);
+        openModal();
         return;
       }
 
-      if (data === "reset_keys") {
-        deleteUserCreds(userId);
-        pending.set(userId, { step: "clientId" });
-        await tgEditMessage(chatId, messageId, "🔑 Ок, заново.\n\nОтправь <b>Client ID</b>.");
-        return;
+      try{
+        refreshBtn.disabled = true;
+        refreshIcon.classList.add("spin");
+        setStatus("обновление…");
+
+        const url = `/api/dashboard/today?clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}`;
+        const r = await fetch(url);
+        const data = await r.json();
+        if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+
+        if (data.title) $("subtitle").textContent = data.title;
+
+        $("orders").textContent = data.orders ?? data.ordersCount ?? "—";
+        $("ordersSum").textContent = fmtMoneyFromCents(data.orders_sum ?? data.ordersAmount);
+        $("cancels").textContent = data.cancels ?? data.cancelsCount ?? "—";
+        $("cancelsSum").textContent = fmtMoneyFromCents(data.cancels_sum ?? data.cancelsAmount);
+
+        // выкупы / возвраты (по деньгам из finance/balance)
+        const buyoutsCents = (data.buyouts_sum_cents ?? data.buyouts_sum ?? null);
+        const returnsCents = (data.returns_sum_cents ?? data.returns_sum ?? null);
+
+        // Выкупы: всегда + и зелёным
+        if (buyoutsCents !== null && buyoutsCents !== undefined) {
+          const abs = Math.abs(Number(buyoutsCents) || 0);
+          $("buyoutsSum").textContent = "+" + fmtMoneyFromCents(abs);
+        } else if (data.buyouts_sum_text) {
+          const t = String(data.buyouts_sum_text);
+          $("buyoutsSum").textContent = t.startsWith("+") ? t : ("+" + t.replace("−","").replace("-",""));
+        } else {
+          $("buyoutsSum").textContent = "—";
+        }
+
+        // Возвраты: всегда - и красным
+        if (returnsCents !== null && returnsCents !== undefined) {
+          const abs = Math.abs(Number(returnsCents) || 0);
+          $("returnsSum").textContent = "-" + fmtMoneyFromCents(abs);
+        } else if (data.returns_sum_text) {
+          const t = String(data.returns_sum_text);
+          $("returnsSum").textContent = (t.startsWith("-") || t.startsWith("−")) ? t : ("-" + t);
+        } else {
+          $("returnsSum").textContent = "—";
+        }
+
+// баланс (если смогли получить)
+        if (data.balance_text && data.balance_text !== "—") $("balance").textContent = data.balance_text;
+        else if (data.balance_cents !== null && data.balance_cents !== undefined) $("balance").textContent = fmtMoneyFromCents(data.balance_cents);
+        else $("balance").textContent = "—";
+
+        // динамика баланса за день (closing - opening)
+        try {
+          const deltaEl = $("balanceDelta");
+          if (deltaEl) {
+            const opening = (data.balance_opening ?? data.balance_opening_cents ?? null);
+            const closing = (data.balance_closing ?? data.balance_cents ?? data.balance_closing_cents ?? null);
+            const hasBoth = opening !== null && opening !== undefined && closing !== null && closing !== undefined;
+            if (!hasBoth) {
+              deltaEl.textContent = "";
+              deltaEl.className = "delta";
+            } else {
+              const delta = Number(closing) - Number(opening);
+              if (!Number.isFinite(delta) || delta === 0) {
+                deltaEl.textContent = "";
+                deltaEl.className = "delta";
+              } else {
+                const abs = Math.abs(delta);
+                const sign = delta > 0 ? "+" : "-";
+                deltaEl.textContent = `${sign}${fmtMoneyFromCents(abs)} сегодня`;
+                deltaEl.className = `delta ${delta > 0 ? "pos" : "neg"}`;
+              }
+            }
+          }
+        } catch (_) {}
+
+
+// Выкупы / Возвраты (по offer_id)
+const topN = (arr, n=5) => Array.isArray(arr) ? arr.slice(0, n) : [];
+const renderList = (el, arr) => {
+  if (!el) return;
+  const rows = topN(arr, 5);
+  if (!rows.length) { el.textContent = ""; return; }
+  el.innerHTML = rows.map(x => (
+    `<div class="row"><span class="k">${String(x.offer_id)}</span><span>${Number(x.qty||0)}</span></div>`
+  )).join("");
+};
+
+
+        setLastUpdated(data.updated_at);
+        setStatus("актуально");
+      } catch(e){
+        setStatus("ошибка Ozon API", true);
+
+try{
+  $("buyoutsSum").textContent = "—";
+  $("returnsSum").textContent = "—";
+  const bd = $("balanceDelta");
+  if (bd) { bd.textContent = ""; bd.className = "delta"; }
+  
+  
+}catch(_){}
+      } finally{
+        refreshIcon.classList.remove("spin");
+        refreshBtn.disabled = false;
       }
-      return;
     }
 
-    const chatId = msg?.chat?.id;
-    const userId = msg?.from?.id;
-    const text = msg?.text?.trim();
-    if (!chatId || !userId || !text) return;
-
-    if (text === "/start") {
-      const creds = getUserCreds(userId);
-      if (creds?.clientId && creds?.apiKey) {
-        await tgSendMessage(chatId, "✅ Ключи уже сохранены. Показываю статистику за сегодня:");
-        await showWidget(chatId, userId, todayDateStr());
-        return;
-      }
-      pending.set(userId, { step: "clientId" });
-      await tgSendMessage(chatId, "Отправь <b>Client ID</b>.");
-      return;
-    }
-
-    if (text === "/reset") {
-      deleteUserCreds(userId);
-      pending.set(userId, { step: "clientId" });
-      await tgSendMessage(chatId, "Ок. Отправь <b>Client ID</b>.");
-      return;
-    }
-
-    const st = pending.get(userId);
-    if (st?.step === "clientId") {
-      pending.set(userId, { step: "apiKey", clientId: text });
-      await tgSendMessage(chatId, "Теперь отправь <b>Api-Key</b>.");
-      return;
-    }
-    if (st?.step === "apiKey") {
-      setUserCreds(userId, { clientId: st.clientId, apiKey: encrypt(text), savedAt: Date.now() });
-      pending.delete(userId);
-      await tgSendMessage(chatId, "✅ Сохранил. Открываю статистику за сегодня:");
-      await showWidget(chatId, userId, todayDateStr());
-      return;
-    }
-
-    await tgSendMessage(chatId, "Команды:\n/start\n/reset");
-  } catch (err) {
-    console.error("Webhook handler error:", err);
-  }
-});
-
-app.listen(PORT, () => console.log(`✅ Server started on :${PORT}`));
+    refreshBtn.addEventListener("click", () => { applyFullscreen(); load(); });
+    load();
+  </script>
+</body>
+</html>
