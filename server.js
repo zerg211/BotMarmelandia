@@ -454,6 +454,7 @@ async function calcBalanceToday({ clientId, apiKey, dateStr }) {
     });
 
     const total = data?.total || data?.result?.total;
+    const opening = total?.opening_balance?.value ?? total?.opening_balance ?? null;
     const closing = total?.closing_balance?.value ?? total?.closing_balance ?? null;
 
     if (closing !== null && closing !== undefined) {
@@ -465,8 +466,16 @@ async function calcBalanceToday({ clientId, apiKey, dateStr }) {
       const returns_sum_cents = returnsVal === null ? null : toCents(returnsVal);
 
       return {
+        // совместимость: balance_* = closing
         balance_cents: cents,
         balance_text: centsToRubString(cents),
+
+        // для динамики: opening/closing отдельно
+        balance_opening_cents: opening === null || opening === undefined ? null : toCents(opening),
+        balance_opening_text: (opening === null || opening === undefined) ? "—" : centsToRubString(toCents(opening)),
+        balance_closing_cents: cents,
+        balance_closing_text: centsToRubString(cents),
+
         buyouts_sum_cents,
         buyouts_sum_text: buyouts_sum_cents === null ? "—" : centsToRubString(buyouts_sum_cents),
         returns_sum_cents,
@@ -663,6 +672,10 @@ async function handleToday(req, res) {
 
       balance_cents: balance.balance_cents,
       balance_text: balance.balance_text,
+      balance_opening_cents: balance.balance_opening_cents ?? null,
+      balance_opening_text: balance.balance_opening_text ?? "—",
+      balance_closing_cents: balance.balance_closing_cents ?? balance.balance_cents ?? null,
+      balance_closing_text: balance.balance_closing_text ?? balance.balance_text ?? "—",
 
       widgets_errors: {
         buyouts: buyoutsR.status === "rejected" ? String(buyoutsR.reason?.message || buyoutsR.reason) : null,
