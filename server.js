@@ -1,10 +1,3 @@
- (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
-diff --git a/server.js b/server.js
-index 851c14e7b96681230185f4c747fa0faa211c3e5f..d2dfdef2256e517786e078938dbe303f9bf9f010 100644
---- a/server.js
-+++ b/server.js
-@@ -1,26 +1,25 @@
--// superwork variant applied to replace outdated server.js
  import express from "express";
  import fs from "fs";
  import path from "path";
