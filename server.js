@@ -509,6 +509,28 @@ function normalizeAmountToCents(v){
   return 0;
 }
 
+function serviceTitle(rawKey) {
+  const map = {
+    marketplace_service_item_fulfillment: "Логистика",
+    marketplace_service_item_pickup: "Логистика",
+    marketplace_service_item_dropoff_pvz: "Логистика",
+    marketplace_service_item_dropoff_ff: "Логистика",
+    marketplace_service_item_direct_flow_trans: "Логистика",
+    marketplace_service_item_deliv_to_customer: "Логистика",
+    marketplace_service_payment_processing: "Эквайринг",
+    marketplace_service_item_return_flow: "Возврат",
+    marketplace_service_item_return_after_deliv_to_customer: "Возврат после доставки",
+    marketplace_service_item_dropoff_sc: "Доставка на сортировочный центр",
+    marketplace_service_item_customer_pickup: "Самовывоз покупателем",
+    marketplace_service_item_defect_commission: "Комиссия за брак",
+    marketplace_service_item_return_not_deliv_to_customer: "Невыкуп",
+  };
+
+  if (map[rawKey]) return map[rawKey];
+  const cleaned = String(rawKey || "").replace(/marketplace_service_/g, "").replace(/item_/g, "");
+  return cleaned ? cleaned.replace(/_/g, " ").trim() : "Услуга";
+}
+
 async function fetchFinanceTransactions({ clientId, apiKey, fromUtcIso, toUtcIso }) {
   // Вытягиваем ВСЕ транзакции за период (постранично), чтобы список операций был полным.
   const bodyBase = {
@@ -736,10 +758,20 @@ app.get("/api/balance/sale/detail", async (req, res) => {
     }
 
     // Комиссия из financial_data постинга (если вдруг нет в транзакциях)
-    const finProds = Array.isArray(pRes?.financial_data?.products) ? pRes.financial_data.products : [];
+    const finData = pRes?.financial_data || {};
+    const finProds = Array.isArray(finData?.products) ? finData.products : [];
     const commissionFromPosting = finProds.reduce((s, fp) => s + (normalizeAmountToCents(fp?.commission_amount) || 0), 0);
     if (commissionFromPosting && ![...group.keys()].some(k => k.toLowerCase().includes("комис"))) {
       group.set("Комиссия", (group.get("Комиссия") || 0) + commissionFromPosting);
+    }
+
+    // Услуги/удержания из financial_data.services (логистика, эквайринг и т.п.)
+    const services = finData?.services || {};
+    for (const [rawKey, svc] of Object.entries(services)) {
+      const title = serviceTitle(rawKey);
+      const amount = normalizeAmountToCents(svc?.price ?? svc?.amount ?? svc?.total);
+      if (!amount) continue;
+      group.set(title, (group.get(title) || 0) + amount);
     }
 
     // собираем строки
