@@ -786,19 +786,31 @@ function buildOpsRows(transactions) {
     );
 
     // время операции (если Ozon отдал)
-    const occurredAt =
-      t?.operation_date ||
-      t?.operation_date_time ||
-      t?.created_at ||
-      t?.date ||
-      t?.moment ||
-      t?.occurred_at ||
-      t?.operation_datetime ||
-      null;
+    const occurredAt = (()=>{
+      const cands = [
+        t?.operation_date_time,
+        t?.operation_datetime,
+        t?.occurred_at,
+        t?.created_at,
+        t?.moment,
+        t?.operation_date,
+        t?.date,
+      ].filter(Boolean).map(v=>String(v));
 
+      // сначала ищем ISO со временем (есть 'T')
+      for (const s of cands) if (s.includes("T")) return s;
+
+      // иначе возвращаем хоть дату (будет 00:00)
+      return cands[0] || null;
+    })();
+
+    // сортируем по времени операции (UTC), но на фронт отдаём уже в МСК
     const ts = occurredAt ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).toMillis() : 0;
+    const occurred_at_msk = occurredAt
+      ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).setZone(SALES_TZ).toISO()
+      : null;
 
-    const titleLc = String(title).toLowerCase();
+const titleLc = String(title).toLowerCase();
     const isSaleDelivery = titleLc.includes("доставка покупателю");
 
     rows.push({
@@ -808,7 +820,7 @@ function buildOpsRows(transactions) {
       posting_number: postingVal ? String(postingVal) : null,
       offer_id: null,
       amount_cents: amountCents,
-      occurred_at: occurredAt,
+      occurred_at: occurred_at_msk,
       ts,
       is_sale_delivery: isSaleDelivery,
     });
