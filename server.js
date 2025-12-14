@@ -747,6 +747,34 @@ function serviceTitle(rawKey) {
   return cleaned ? cleaned.replace(/_/g, " ").trim() : "Услуга";
 }
 
+function extractServiceAmount(val) {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === "number" || typeof val === "string") return normalizeAmountToCents(val);
+  if (Array.isArray(val)) return val.reduce((s, v) => s + extractServiceAmount(v), 0);
+
+  if (typeof val === "object") {
+    const preferred = ["total", "price", "amount", "value", "payout"];
+    for (const key of preferred) {
+      if (key in val) {
+        const v = extractServiceAmount(val[key]);
+        if (v) return v;
+      }
+    }
+
+    if (Array.isArray(val.items)) {
+      const itemsSum = val.items.reduce((s, v) => s + extractServiceAmount(v), 0);
+      if (itemsSum) return itemsSum;
+    }
+
+    // попытка извлечь из вложенных полей, если нет явных ключей
+    let nestedSum = 0;
+    for (const v of Object.values(val)) nestedSum += extractServiceAmount(v);
+    return nestedSum;
+  }
+
+  return 0;
+}
+
 async function fetchFinanceTransactions({ clientId, apiKey, fromUtcIso, toUtcIso }) {
   // Вытягиваем ВСЕ транзакции за период (постранично), чтобы список операций был полным.
   const bodyBase = {
@@ -993,13 +1021,13 @@ app.get("/api/balance/sale/detail", async (req, res) => {
     }
 
     // Услуги/удержания из financial_data.services (логистика, эквайринг и т.п.)
-    const services = finData?.services || {};
-    for (const [rawKey, svc] of Object.entries(services)) {
-      const title = serviceTitle(rawKey);
-      const amount = normalizeAmountToCents(svc?.price ?? svc?.amount ?? svc?.total);
-      if (!amount) continue;
-      group.set(title, (group.get(title) || 0) + amount);
-    }
+  const services = finData?.services || {};
+  for (const [rawKey, svc] of Object.entries(services)) {
+    const title = serviceTitle(rawKey);
+    const amount = extractServiceAmount(svc);
+    if (!amount) continue;
+    group.set(title, (group.get(title) || 0) + amount);
+  }
 
     // собираем строки
     const lines = [];
