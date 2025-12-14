@@ -98,13 +98,6 @@
 .op-amt.pos{color:var(--success);}
 .op-amt.neg{color:var(--danger);}
 .op-foot{display:flex;flex-wrap:wrap;gap:8px;}
-.op-details{margin-top:10px;border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:8px;}
-.drow{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;}
-.dname{font-size:12px;color:var(--muted);line-height:1.2}
-.damt{font-size:12px;font-weight:800;white-space:nowrap}
-.damt.pos{color:var(--success);}
-.damt.neg{color:var(--danger);}
-.dpct{opacity:.75;margin-left:6px;font-weight:700;font-size:11px}
 .pill{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);}
 
     /* modal */
@@ -130,7 +123,16 @@
     .row .btn{flex:1;}
     .err{font-size:12px;color:var(--danger);display:none;}
     @media (max-width:380px){.value{font-size:24px}.card{min-height:96px}}
-  </style>
+  
+    .op-time{font-size:12px;color:var(--muted);margin-top:2px}
+    .op.clickable{cursor:pointer}
+    .op-details{margin-top:10px;border-top:1px solid var(--line);padding-top:10px;display:grid;gap:8px}
+    .op-line{display:flex;justify-content:space-between;gap:10px}
+    .op-line .name{font-size:13px;color:var(--text);opacity:.95}
+    .op-line .meta{font-size:12px;color:var(--muted)}
+    .op-line .amt{font-size:13px;font-weight:800}
+
+</style>
 </head>
 <body>
   <div class="app">
@@ -290,6 +292,21 @@
       const abs = Math.abs(n);
       return sign + fmtMoneyFromCents(abs);
     }
+
+    function fmtOpTime(iso, apiDateStr){
+      if (!iso) return "";
+      try{
+        const dt = new Date(iso);
+        const datePart = new Intl.DateTimeFormat("ru-RU",{timeZone:"Europe/Moscow",year:"numeric",month:"2-digit",day:"2-digit"}).format(dt);
+        const timePart = new Intl.DateTimeFormat("ru-RU",{timeZone:"Europe/Moscow",hour:"2-digit",minute:"2-digit"}).format(dt);
+        // apiDateStr формата YYYY-MM-DD
+        const [y,m,d] = String(apiDateStr||"").split("-");
+        const apiDateRu = (d && m && y) ? `${d}.${m}.${y}` : null;
+        if (apiDateRu && datePart === apiDateRu) return timePart;
+        return (apiDateRu ? datePart : datePart) + " " + timePart;
+      }catch(_){ return ""; }
+    }
+
     function setBalError(msg){
       if (!msg){
         balErr.style.display = "none";
@@ -345,73 +362,95 @@
             const amt = Number(op.amount_cents || 0);
             const cls = amt >= 0 ? "pos" : "neg";
             const signAmt = fmtSigned(amt);
-            const title = (op.title || "Операция").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+            const rawTitle = op.title || "Операция";
+            const titleEsc = String(rawTitle).replace(/</g,"&lt;").replace(/>/g,"&gt;");
+            const isSale = !!op.is_sale && !!op.posting_number;
+            const title = isSale ? `${titleEsc} <span class="pill">продажа</span>` : titleEsc;
+
             const sub = (op.subtitle || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
             const posting = op.posting_number ? `<span class="pill">Отправление: ${String(op.posting_number)}</span>` : "";
             const offer = op.offer_id ? `<span class="pill">Артикул: ${String(op.offer_id)}</span>` : "";
+
+            const time = fmtOpTime(op.occurred_at, data.date);
+
             return `
-              <div class="op" ${op.posting_number ? `data-posting="${String(op.posting_number).replace(/"/g,"&quot;")}"` : ``}>
+              <div class="op ${isSale ? "clickable" : ""}" data-sale="${isSale ? "1" : "0"}" data-posting="${op.posting_number ? String(op.posting_number) : ""}">
                 <div class="op-top">
                   <div>
                     <div class="op-title">${title}</div>
+                    ${time ? `<div class="op-time">${time}</div>` : ``}
                     ${sub ? `<div class="op-sub">${sub}</div>` : ``}
                   </div>
                   <div class="op-amt ${cls}">${signAmt}</div>
                 </div>
                 ${(posting || offer) ? `<div class="op-foot">${posting}${offer}</div>` : ``}
-                ${op.posting_number ? `<div class="op-details" style="display:none"></div>` : ``}
+                <div class="op-details" style="display:none;"></div>
               </div>
             `;
-          }).join("");
-// клик по операции -> показать детализацию (по отправлению)
-          if (!balOps._bound){
-            balOps._bound = true;
-            balOps.addEventListener("click", async (ev) => {
-              const opEl = ev.target.closest(".op[data-posting]");
-              if (!opEl) return;
-              const postingNum = opEl.getAttribute("data-posting");
-              const detailsEl = opEl.querySelector(".op-details");
-              if (!detailsEl) return;
+          }).join("");;
+          // раскрытие детализации только для "продажи"
+          balOps.onclick = async (ev) => {
+            const el = ev.target.closest?.(".op");
+            if (!el) return;
+            if (el.getAttribute("data-sale") !== "1") return;
 
-              // toggle
-              if (detailsEl.style.display === "block"){
-                detailsEl.style.display = "none";
-                detailsEl.innerHTML = "";
-                return;
+            const posting = el.getAttribute("data-posting");
+            if (!posting) return;
+
+            const detailsBox = el.querySelector(".op-details");
+            if (!detailsBox) return;
+
+            // toggle
+            if (detailsBox.style.display === "grid") {
+              detailsBox.style.display = "none";
+              detailsBox.innerHTML = "";
+              return;
+            }
+
+            detailsBox.style.display = "grid";
+            detailsBox.innerHTML = `<div class="op-line"><div class="name">Загрузка…</div><div class="amt">—</div></div>`;
+
+            try{
+              const url = `/api/balance/op/detail?clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}&posting_number=${encodeURIComponent(posting)}`;
+              const rr = await fetch(url);
+              const dd = await rr.json().catch(() => ({}));
+              if (!rr.ok || dd.error) throw new Error(dd.error || ("HTTP " + rr.status));
+
+              const gross = Number(dd.gross_cents || 0);
+              const lines = Array.isArray(dd.details) ? dd.details : [];
+
+              const html = [];
+
+              for (const ln of lines) {
+                const a = Number(ln.amount_cents || 0);
+                const c = a >= 0 ? "pos" : "neg";
+                const pct = (ln.percent != null) ? ` <span class="meta">(${ln.percent}%)</span>` : "";
+                html.push(
+                  `<div class="op-line">
+                     <div class="name">${String(ln.name || "Операция").replace(/</g,"&lt;").replace(/>/g,"&gt;")}${pct}</div>
+                     <div class="amt ${c}">${fmtSigned(a)}</div>
+                   </div>`
+                );
               }
 
-              detailsEl.style.display = "block";
-              detailsEl.innerHTML = `<div class="dname">Загрузка детализации…</div>`;
-
-              try{
-                const url2 = `/api/balance/op/detail?posting_number=${encodeURIComponent(postingNum)}&clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}`;
-                const r2 = await fetch(url2);
-                const d2 = await r2.json().catch(()=>({}));
-                if (!r2.ok || d2.error) throw new Error(d2.error || ("HTTP " + r2.status));
-
-                const details = Array.isArray(d2.details) ? d2.details : [];
-                if (!details.length){
-                  detailsEl.innerHTML = `<div class="dname">Нет детализации</div>`;
-                  return;
-                }
-
-                detailsEl.innerHTML = details.map(row => {
-                  const amt = Number(row.amount_cents || 0);
-                  const cls = amt >= 0 ? "pos" : "neg";
-                  const pct = (row.percent != null) ? `<span class="dpct">${row.percent}%</span>` : "";
-                  const name = String(row.name || "Операция").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-                  return `
-                    <div class="drow">
-                      <div class="dname">${name}</div>
-                      <div class="damt ${cls}">${fmtSigned(amt)}${pct}</div>
-                    </div>
-                  `;
-                }).join("");
-              } catch(e){
-                detailsEl.innerHTML = `<div class="dname">Ошибка детализации: ${String(e.message||e).replace(/</g,"&lt;")}</div>`;
+              // отдельная подсказка по "оплате за заказ"
+              if (dd.pay_for_order && Array.isArray(dd.pay_for_order) && dd.pay_for_order.length){
+                const pfo = dd.pay_for_order.reduce((s,x)=>s+Number(x.amount_cents||0),0);
+                const pct = gross>0 ? Math.round((Math.abs(pfo)/gross)*1000)/10 : null;
+                html.push(
+                  `<div class="op-line">
+                     <div class="name">Данный заказ был продан по оплате за заказ${pct!=null?` <span class="meta">(${pct}%)</span>`:""}</div>
+                     <div class="amt neg">${fmtSigned(pfo)}</div>
+                   </div>`
+                );
               }
-            });
-          }
+
+              detailsBox.innerHTML = html.join("") || `<div class="op-line"><div class="name">Нет детализации</div><div class="amt">—</div></div>`;
+            }catch(e){
+              detailsBox.innerHTML = `<div class="op-line"><div class="name">Не удалось загрузить детализацию</div><div class="amt">—</div></div>`;
+            }
+          };
 
         } catch(e){
           setBalError(String(e.message || e));
