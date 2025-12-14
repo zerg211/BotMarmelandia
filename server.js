@@ -180,6 +180,9 @@ function toCents(val) {
 function rubToCents(val) {
   return toCents(val);
 }
+function rubToCents(val) {
+  return toCents(val);
+}
 const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function centsToRubString(cents) {
   return `${rubFmt.format(cents / 100)} ₽`;
