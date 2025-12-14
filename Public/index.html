@@ -297,22 +297,29 @@
 
     function fmtOpWhen(iso, todayLocal){
       if (!iso) return "";
-      // iso приходит обычно в UTC
+      // всегда показываем время в Europe/Moscow, независимо от таймзоны устройства
       const d = new Date(iso);
-      const pad = (x)=>String(x).padStart(2,"0");
-      const hh = pad(d.getHours());
-      const mm = pad(d.getMinutes());
-      const dd = pad(d.getDate());
-      const mo = pad(d.getMonth()+1);
-      const yy = d.getFullYear();
 
-      // todayLocal: "YYYY-MM-DD" (МСК) — сравниваем по локальному отображению
-      const localY = d.getFullYear();
-      const localM = pad(d.getMonth()+1);
-      const localD = pad(d.getDate());
-      const localDateStr = `${localY}-${localM}-${localD}`;
+      const parts = new Intl.DateTimeFormat("ru-RU", {
+        timeZone: "Europe/Moscow",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).formatToParts(d);
 
-      if (localDateStr === todayLocal) return `${hh}:${mm}`;
+      const get = (t)=>parts.find(p=>p.type===t)?.value || "";
+      const dd = get("day");
+      const mo = get("month");
+      const yy = get("year");
+      const hh = get("hour");
+      const mm = get("minute");
+
+      const mskDateStr = `${yy}-${mo}-${dd}`;
+
+      if (mskDateStr === todayLocal) return `${hh}:${mm}`;
       return `${dd}.${mo}.${yy} ${hh}:${mm}`;
     }
     function setBalError(msg){
