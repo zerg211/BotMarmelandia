@@ -134,6 +134,25 @@
 .op-line .a.neg{color:var(--danger);}
 .op-note{margin-top:8px;font-size:12px;color:var(--muted);}
 
+    /* ozon calc */
+    .section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;}
+    .title.sm{font-size:18px;}
+    .calc{display:flex;flex-direction:column;gap:12px;}
+    .calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;}
+    .calc-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:10px;}
+    .calc .field-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+    .calc label{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:6px;}
+    .calc input{width:100%;margin-top:6px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);outline:none;}
+    .calc input:focus{border-color:rgba(77,163,255,.6);}
+    .calc-hint{font-size:12px;color:var(--muted);line-height:1.4;}
+    .calc-summary{display:flex;flex-direction:column;gap:10px;}
+    .calc-metric{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid var(--line);}
+    .calc-metric .k{color:var(--muted);font-size:12px;}
+    .calc-metric .v{font-weight:900;}
+    .calc-metric .v.pos{color:var(--success);}
+    .calc-metric .v.neg{color:var(--danger);}
+    .calc-badge{font-size:11px;padding:3px 8px;border-radius:999px;background:rgba(77,163,255,.14);color:var(--accent);}
+
 </style>
 </head>
 <body>
@@ -179,6 +198,71 @@
   <div class="delta" id="balanceDelta"></div>
 </div>
 
+    </div>
+
+    <div class="calc">
+      <div class="section-head">
+        <div>
+          <div class="title sm">Калькулятор Ozon</div>
+          <div class="sub">Быстрый расчёт маржинальности как на ecomunit</div>
+        </div>
+        <span class="calc-badge">⚡ новое</span>
+      </div>
+
+      <div class="calc-grid">
+        <div class="calc-card">
+          <div class="field-row">
+            <label>Цена продажи, ₽<input id="calcPrice" type="number" inputmode="decimal" placeholder="1499" /></label>
+            <label>Себестоимость, ₽<input id="calcCost" type="number" inputmode="decimal" placeholder="650" /></label>
+          </div>
+          <div class="field-row">
+            <label>Скидка, %<input id="calcDiscount" type="number" inputmode="decimal" placeholder="10" value="0" /></label>
+            <label>Комиссия Ozon, %<input id="calcCommission" type="number" inputmode="decimal" placeholder="15" value="15" /></label>
+          </div>
+          <div class="field-row">
+            <label>Логистика за единицу, ₽<input id="calcLogistics" type="number" inputmode="decimal" placeholder="120" value="0" /></label>
+            <label>Реклама, % от цены<input id="calcAds" type="number" inputmode="decimal" placeholder="8" value="0" /></label>
+          </div>
+          <div class="field-row">
+            <label>Прочие расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
+            <label>НДС, % (если есть)<input id="calcVat" type="number" inputmode="decimal" placeholder="0" value="0" /></label>
+          </div>
+          <div class="calc-hint">Введите параметры карточки товара и сразу увидите прибыль, маржу и точку безубыточности.</div>
+        </div>
+
+        <div class="calc-card">
+          <div class="calc-summary">
+            <div class="calc-metric">
+              <div class="k">Цена со скидкой</div>
+              <div class="v" id="calcNetPrice">—</div>
+            </div>
+            <div class="calc-metric">
+              <div class="k">Комиссия маркетплейса</div>
+              <div class="v" id="calcCommissionAmt">—</div>
+            </div>
+            <div class="calc-metric">
+              <div class="k">Реклама</div>
+              <div class="v" id="calcAdsAmt">—</div>
+            </div>
+            <div class="calc-metric">
+              <div class="k">Итого расходы</div>
+              <div class="v" id="calcCosts">—</div>
+            </div>
+            <div class="calc-metric">
+              <div class="k">Прибыль с единицы</div>
+              <div class="v" id="calcProfit">—</div>
+            </div>
+            <div class="calc-metric">
+              <div class="k">Маржа</div>
+              <div class="v" id="calcMargin">—</div>
+            </div>
+            <div class="calc-metric">
+              <div class="k">Точка безубыточности</div>
+              <div class="v" id="calcBreakeven">—</div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="footer">
@@ -274,6 +358,28 @@
     const apiKeyEl = $("apiKey");
     const modalErr = $("modalErr");
 
+    const calcInputs = {
+      price: $("calcPrice"),
+      cost: $("calcCost"),
+      discount: $("calcDiscount"),
+      commission: $("calcCommission"),
+      logistics: $("calcLogistics"),
+      ads: $("calcAds"),
+      other: $("calcOther"),
+      vat: $("calcVat"),
+    };
+    const calcOutputs = {
+      netPrice: $("calcNetPrice"),
+      commissionAmt: $("calcCommissionAmt"),
+      adsAmt: $("calcAdsAmt"),
+      costs: $("calcCosts"),
+      profit: $("calcProfit"),
+      margin: $("calcMargin"),
+      breakeven: $("calcBreakeven"),
+    };
+
+    const rubFormatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
     function setStatus(text, danger=false){
       statusEl.textContent = text;
       statusEl.className = "badge" + (danger ? " danger" : "");
@@ -294,6 +400,71 @@
       const abs = Math.abs(n);
       return sign + fmtMoneyFromCents(abs);
     }
+
+    function fmtRub(val){
+      return `${rubFormatter.format(val)} ₽`;
+    }
+
+    function parseNumber(input){
+      if (!input) return 0;
+      const raw = String(input.value || input.placeholder || "0").replace(",", ".");
+      const num = Number(raw);
+      return Number.isFinite(num) ? num : 0;
+    }
+
+    function setCalcValue(el, value, { isPercent = false } = {}){
+      if (!el) return;
+      const cls = value > 0 ? "pos" : (value < 0 ? "neg" : "");
+      el.className = `v ${cls}`.trim();
+      if (value === null || value === undefined || !Number.isFinite(value)) {
+        el.textContent = "—";
+        return;
+      }
+      if (isPercent) {
+        el.textContent = `${value.toFixed(1)} %`;
+      } else {
+        el.textContent = fmtRub(value);
+      }
+    }
+
+    function updateCalc(){
+      const price = Math.max(0, parseNumber(calcInputs.price));
+      const discount = Math.max(0, parseNumber(calcInputs.discount));
+      const cost = Math.max(0, parseNumber(calcInputs.cost));
+      const commissionPct = Math.max(0, parseNumber(calcInputs.commission));
+      const logistics = Math.max(0, parseNumber(calcInputs.logistics));
+      const adsPct = Math.max(0, parseNumber(calcInputs.ads));
+      const other = Math.max(0, parseNumber(calcInputs.other));
+      const vatPct = Math.max(0, parseNumber(calcInputs.vat));
+
+      const discountFactor = Math.max(0, 1 - discount / 100);
+      const netPrice = price * discountFactor;
+      const commissionAmt = netPrice * (commissionPct / 100);
+      const adsAmt = netPrice * (adsPct / 100);
+      const vatAmt = netPrice * (vatPct / 100);
+
+      const totalCosts = cost + logistics + other + commissionAmt + adsAmt + vatAmt;
+      const profit = netPrice - totalCosts;
+      const marginPct = netPrice > 0 ? (profit / netPrice) * 100 : 0;
+
+      const variablePct = (commissionPct + adsPct + vatPct) / 100;
+      const fixedCosts = cost + logistics + other;
+      const breakevenNet = (1 - variablePct) > 0 ? fixedCosts / (1 - variablePct) : null;
+      const breakevenPrice = (breakevenNet !== null && discountFactor > 0) ? (breakevenNet / discountFactor) : null;
+
+      setCalcValue(calcOutputs.netPrice, netPrice);
+      setCalcValue(calcOutputs.commissionAmt, commissionAmt);
+      setCalcValue(calcOutputs.adsAmt, adsAmt);
+      setCalcValue(calcOutputs.costs, totalCosts);
+      setCalcValue(calcOutputs.profit, profit);
+      setCalcValue(calcOutputs.margin, marginPct, { isPercent: true });
+      setCalcValue(calcOutputs.breakeven, breakevenPrice);
+    }
+
+    Object.values(calcInputs).forEach((el) => {
+      el?.addEventListener("input", updateCalc);
+    });
+    updateCalc();
 
     function fmtOpWhen(iso, todayLocal){
       if (!iso) return "";
