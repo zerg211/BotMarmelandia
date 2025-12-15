@@ -596,14 +596,16 @@
       categoriesLoading = true;
       const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
       const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
-      if (!clientId || !apiKey) {
-        categoryHintEl.textContent = "Добавьте Client ID и Api-Key, чтобы подтянуть категории из кабинета.";
-        categoriesLoading = false;
-        return;
-      }
+      const hasLocalCreds = !!(clientId && apiKey);
       try {
-        categoryHintEl.textContent = "Тянем категории из Ozon API...";
-        const resp = await fetch("/api/ozon/categories", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId, apiKey }) });
+        categoryHintEl.textContent = hasLocalCreds
+          ? "Тянем категории из Ozon API..."
+          : "Пробуем подтянуть категории с сервера (если ключи сохранены).";
+        const resp = await fetch("/api/ozon/categories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: hasLocalCreds ? JSON.stringify({ clientId, apiKey }) : undefined,
+        });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data?.error || resp.status);
         categories = (data?.categories || []).map((c) => ({
@@ -676,16 +678,17 @@
     }
 
     async function fetchCommissionFromApi(price){
+      if (!selectedCategory?.category_id) return;
       const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
       const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
-      if (!clientId || !apiKey || !selectedCategory?.category_id) return;
       const now = Date.now();
       if (now - commissionFetchTs < 800) return; // троттлим
       commissionFetchTs = now;
       try {
         categoryHintEl.textContent = "Запрашиваем реальную комиссию...";
         const payload = { items: [{ price, category_id: Number(selectedCategory.category_id), delivery_schema: fulfillmentMode.toUpperCase() }] };
-        const resp = await fetch("/api/ozon/commission", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId, apiKey, payload }) });
+        const body = clientId && apiKey ? { clientId, apiKey, payload } : { payload };
+        const resp = await fetch("/api/ozon/commission", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data?.error || resp.status);
         const item = data?.result?.items?.[0] || data?.result?.result?.items?.[0] || null;
@@ -736,7 +739,6 @@
     async function fetchLogisticsFromApi({ price, volumeLiters, weightKg, svdValue, buyoutPct }){
       const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
       const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
-      if (!clientId || !apiKey) return;
       const now = Date.now();
       if (now - logisticsFetchTs < 800) return;
       logisticsFetchTs = now;
@@ -754,7 +756,8 @@
           delivery_time: svdValue,
           buyout_percent: buyoutPct,
         };
-        const resp = await fetch("/api/ozon/logistics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId, apiKey, payload }) });
+        const body = clientId && apiKey ? { clientId, apiKey, payload } : { payload };
+        const resp = await fetch("/api/ozon/logistics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data?.error || resp.status);
         const res = data?.result?.delivery || data?.result || data;
