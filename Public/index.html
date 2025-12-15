@@ -574,40 +574,37 @@
           commission: {},
         }));
         categoriesLoadedFrom = data?.source || "Ozon API";
-        buildCategoryList();
+        setCategoryOptions(matchCategories(calcInputs.category?.value || ""));
         categoryHintEl.textContent = `Категории подтянуты из ${categoriesLoadedFrom} (${categories.length} шт.)`;
       } catch (e){
         categoryHintEl.textContent = `Не удалось загрузить категории из Ozon API: ${e.message || e}`;
       }
     }
 
-    function buildCategoryList(){
+    function setCategoryOptions(list){
       if (!categoryListEl) return;
-      categoryListEl.innerHTML = categories.map((c) => `<option value="${c.name}"></option>`).join("");
+      categoryListEl.innerHTML = (list || []).map((c) => `<option value="${c.name}"></option>`).join("");
     }
 
-    function pickCategory(query){
+    function matchCategories(query, limit = 12){
       const q = norm(query);
-      if (!q) return null;
-      let best = null;
-      let bestScore = 0;
+      if (!q || q.length < 2) return [];
       const tokens = q.split(/\s+/).filter(Boolean);
+      const scored = [];
       categories.forEach((c) => {
         const candidates = [c.name, ...(c.keywords || [])].map(norm);
         let score = 0;
         candidates.forEach((cand) => {
-          if (cand === q) score = Math.max(score, 5);
-          else if (cand.includes(q) || q.includes(cand)) score = Math.max(score, 4);
-          else tokens.forEach((t) => {
-            if (t.length > 2 && cand.includes(t)) score = Math.max(score, 3);
+          if (cand === q) score = Math.max(score, 120);
+          else if (cand.startsWith(q)) score = Math.max(score, 100);
+          else if (cand.includes(q)) score = Math.max(score, 80);
+          tokens.forEach((t) => {
+            if (t.length > 2 && cand.includes(t)) score = Math.max(score, 60);
           });
         });
-        if (score > bestScore) {
-          bestScore = score;
-          best = c;
-        }
+        if (score > 0) scored.push({ cat: c, score });
       });
-      return bestScore ? best : null;
+      return scored.sort((a, b) => b.score - a.score).slice(0, limit).map((s) => s.cat);
     }
 
     let fulfillmentMode = "fbo";
@@ -750,7 +747,6 @@
     function applyCategory(cat){
       selectedCategory = cat;
       if (cat){
-        calcInputs.category.value = cat.name;
         const rate = commissionForMode(cat);
         if (rate !== null){
           calcInputs.commission.value = rate;
@@ -764,8 +760,28 @@
     }
 
     function handleCategoryInput(){
-      const cat = pickCategory(calcInputs.category.value);
-      applyCategory(cat);
+      const query = calcInputs.category?.value || "";
+      if (!query.trim()){
+        selectedCategory = null;
+        setCategoryOptions([]);
+        categoryHintEl.textContent = "Начните вводить категорию так, как в кабинете Ozon.";
+        updateCalc();
+        return;
+      }
+
+      const matches = matchCategories(query, 20);
+      setCategoryOptions(matches);
+
+      const exact = matches.find((m) => norm(m.name) === norm(query));
+      if (exact){
+        applyCategory(exact);
+        fetchCommissionFromApi(parseNumber(calcInputs.price));
+      } else {
+        selectedCategory = null;
+        categoryHintEl.textContent = matches.length
+          ? `Подходящие категории: ${matches.slice(0,3).map((m)=>m.name).join(" · ")}`
+          : "Не нашли категорию в каталоге Ozon. Продолжайте печатать или уточните подкатегорию.";
+      }
       updateCalc();
     }
 
@@ -877,12 +893,13 @@
     dimsTab?.addEventListener("click", () => setLogisticsMode("dims"));
     volumeTab?.addEventListener("click", () => setLogisticsMode("volume"));
 
-    buildCategoryList();
+    setCategoryOptions([]);
     fetchCategoriesFromApi();
     setFulfillment("fbo");
     setLogisticsMode("dims");
     svdValueEl.textContent = calcInputs.svd?.value || "0";
     updateModeMeta();
+    calcInputs.category?.addEventListener("focus", () => { if (!categories.length) fetchCategoriesFromApi(); });
     handleCategoryInput();
     updateCalc();
 
