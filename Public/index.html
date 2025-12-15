@@ -562,7 +562,8 @@
     }
 
     let categories = [];
-    let categoriesLoading = false;
+    let categoriesBootLoading = false;
+    let categorySearchLoading = false;
     let commissionDirty = false;
     let categorySuggestTimer = null;
 
@@ -595,8 +596,8 @@
     let logisticsFetchTs = 0;
 
     async function fetchCategoriesFromApi(){
-      if (categoriesLoading) return;
-      categoriesLoading = true;
+      if (categoriesBootLoading) return;
+      categoriesBootLoading = true;
       const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
       const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
       const hasLocalCreds = !!(clientId && apiKey);
@@ -626,19 +627,23 @@
         categoryHintEl.textContent = `Не удалось загрузить категории из Ozon API: ${msg}`;
         setCategoryError(msg === "no_creds" ? "Нет доступа к каталогу Ozon: добавьте Client ID и Api-Key." : `Ошибка загрузки: ${msg}`);
       } finally {
-        categoriesLoading = false;
+        categoriesBootLoading = false;
       }
     }
 
     async function fetchCategorySuggestions(query){
-      if (categoriesLoading) return;
+      if (categorySearchLoading) {
+        clearTimeout(categorySuggestTimer);
+        categorySuggestTimer = setTimeout(() => fetchCategorySuggestions(query), 200);
+        return;
+      }
       const q = norm(query);
       if (!q || q.length < 2){
         renderCategorySuggest([]);
         return;
       }
 
-      categoriesLoading = true;
+      categorySearchLoading = true;
       const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
       const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
       const hasLocalCreds = !!(clientId && apiKey);
@@ -670,7 +675,7 @@
         setCategoryError(msg === "no_creds" ? "Нет доступа к каталогу Ozon: добавьте Client ID и Api-Key." : `Ошибка поиска: ${msg}`);
         renderCategorySuggest([]);
       } finally {
-        categoriesLoading = false;
+        categorySearchLoading = false;
       }
     }
 
