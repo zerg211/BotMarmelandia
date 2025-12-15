@@ -562,6 +562,7 @@
     let categories = [];
     let categoriesLoading = false;
     let commissionDirty = false;
+    let categorySuggestTimer = null;
 
     const fulfillmentBase = {
       fbo: [
@@ -599,8 +600,8 @@
       const hasLocalCreds = !!(clientId && apiKey);
       try {
         categoryHintEl.textContent = hasLocalCreds
-          ? "Тянем категории из Ozon API..."
-          : "Пробуем подтянуть категории с сервера (если ключи сохранены).";
+          ? "Подтягиваем список категорий Ozon..."
+          : "Пробуем загрузить категории с сервера (если ключи сохранены).";
         const resp = await fetch("/api/ozon/categories", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -616,10 +617,52 @@
           commission: {},
         }));
         categoriesLoadedFrom = data?.source || "Ozon API";
-        setCategoryOptions(matchCategories(calcInputs.category?.value || ""));
+        setCategoryOptions(categories.slice(0, 10));
         categoryHintEl.textContent = `Категории подтянуты из ${categoriesLoadedFrom} (${categories.length} шт.)`;
       } catch (e){
         categoryHintEl.textContent = `Не удалось загрузить категории из Ozon API: ${e.message || e}`;
+      } finally {
+        categoriesLoading = false;
+      }
+    }
+
+    async function fetchCategorySuggestions(query){
+      if (categoriesLoading) return;
+      const q = norm(query);
+      if (!q || q.length < 2){
+        renderCategorySuggest([]);
+        return;
+      }
+
+      categoriesLoading = true;
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
+      const hasLocalCreds = !!(clientId && apiKey);
+      try {
+        categoryHintEl.textContent = "Ищем категорию в каталоге Ozon...";
+        const body = hasLocalCreds ? { clientId, apiKey, query: q, limit: 20 } : { query: q, limit: 20 };
+        const resp = await fetch("/api/ozon/categories/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data?.error || resp.status);
+        categories = (data?.categories || []).map((c) => ({
+          name: c.path || c.name,
+          path: c.path || c.name,
+          category_id: c.category_id,
+          keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
+          commission: c.commission || {},
+        }));
+        categoriesLoadedFrom = data?.source || "Ozon API";
+        setCategoryOptions(categories);
+        categoryHintEl.textContent = categories.length
+          ? `Нашли ${categories.length} вариантов (источник: ${categoriesLoadedFrom}).`
+          : "Не нашли категорию в каталоге Ozon. Продолжайте печатать или уточните подкатегорию.";
+      } catch (e){
+        categoryHintEl.textContent = `Не удалось найти категории через Ozon API: ${e.message || e}`;
+        renderCategorySuggest([]);
       } finally {
         categoriesLoading = false;
       }
@@ -643,28 +686,6 @@
         return `<div class="typeahead-item" data-id="${c.category_id}"><div>${c.name}</div>${meta}</div>`;
       }).join("");
       categorySuggestEl.style.display = "block";
-    }
-
-    function matchCategories(query, limit = 12){
-      const q = norm(query);
-      if (!q || q.length < 2) return [];
-      if (!categories.length) return [];
-      const tokens = q.split(/\s+/).filter(Boolean);
-      const scored = [];
-      categories.forEach((c) => {
-        const candidates = [c.name, ...(c.keywords || [])].map(norm);
-        let score = 0;
-        candidates.forEach((cand) => {
-          if (cand === q) score = Math.max(score, 120);
-          else if (cand.startsWith(q)) score = Math.max(score, 100);
-          else if (cand.includes(q)) score = Math.max(score, 80);
-          tokens.forEach((t) => {
-            if (t.length > 2 && cand.includes(t)) score = Math.max(score, 60);
-          });
-        });
-        if (score > 0) scored.push({ cat: c, score });
-      });
-      return scored.sort((a, b) => b.score - a.score).slice(0, limit).map((s) => s.cat);
     }
 
     let fulfillmentMode = "fbo";
@@ -836,8 +857,6 @@
 
     function handleCategoryInput(){
       const query = calcInputs.category?.value || "";
-      if (!categories.length) fetchCategoriesFromApi();
-
       if (!query.trim()){
         selectedCategory = null;
         setCategoryOptions([]);
@@ -848,20 +867,9 @@
         return;
       }
 
-      const matches = matchCategories(query, 20);
-      setCategoryOptions(matches);
-
-      const exact = matches.find((m) => norm(m.name) === norm(query));
-      if (exact){
-        chooseCategory(exact);
-        return;
-      }
-
       selectedCategory = null;
-      categoryHintEl.textContent = matches.length
-        ? `Подходящие категории: ${matches.slice(0,5).map((m)=>m.name).join(" · ")}`
-        : (categories.length ? "Не нашли категорию в каталоге Ozon. Продолжайте печатать или уточните подкатегорию." : "Подтяните категории из Ozon через ключи в меню 🔑.");
-      updateCalc();
+      clearTimeout(categorySuggestTimer);
+      categorySuggestTimer = setTimeout(() => fetchCategorySuggestions(query), 200);
     }
 
     function setFulfillment(mode){
