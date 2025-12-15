@@ -30,6 +30,9 @@ app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
+const OZON_CATEGORY_TREE_PATH = process.env.OZON_CATEGORY_TREE_PATH || "/v1/description-category/tree";
+const OZON_COMMISSION_PATH = process.env.OZON_COMMISSION_PATH || "/v1/product/calc/commission";
+const OZON_LOGISTICS_PATH = process.env.OZON_LOGISTICS_PATH || "/v1/product/calc/fbs";
 
 // “Сегодня” считаем по МСК (или поменяй через ENV SALES_TZ)
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
@@ -138,6 +141,28 @@ async function ozonPost(pathname, { clientId, apiKey, body }) {
     throw new Error(`Ozon API ${pathname} (${resp.status}): ${msg}`);
   }
   return data;
+}
+
+function flattenCategoryTree(tree, acc = []) {
+  if (!tree) return acc;
+  if (Array.isArray(tree)) {
+    tree.forEach((node) => flattenCategoryTree(node, acc));
+    return acc;
+  }
+
+  const current = {
+    category_id: tree.category_id || tree.id,
+    name: tree.title || tree.name,
+    path: tree.path || tree.path_name,
+    children: tree.children || tree.childrens || [],
+  };
+
+  if (current.category_id && current.name) {
+    acc.push(current);
+  }
+
+  flattenCategoryTree(current.children, acc);
+  return acc;
 }
 
 // ---------------- date helpers ----------------
@@ -628,6 +653,56 @@ function resolveCredsFromRequest(req) {
 
   return null;
 }
+
+app.post("/api/ozon/categories", async (req, res) => {
+  try {
+    const clientId = req.body?.clientId || req.query.clientId;
+    const apiKey = req.body?.apiKey || req.query.apiKey;
+    if (!clientId || !apiKey) return res.status(400).json({ error: "no_creds" });
+
+    const body = req.body?.payload || { language: "RU" };
+    const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId, apiKey, body });
+    const tree = data?.result?.categories || data?.result?.items || data?.result || data;
+    const flat = flattenCategoryTree(tree, []);
+    return res.json({
+      source: OZON_CATEGORY_TREE_PATH,
+      total: flat.length,
+      categories: flat,
+    });
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/api/ozon/commission", async (req, res) => {
+  try {
+    const clientId = req.body?.clientId || req.query.clientId;
+    const apiKey = req.body?.apiKey || req.query.apiKey;
+    if (!clientId || !apiKey) return res.status(400).json({ error: "no_creds" });
+    const payload = req.body?.payload;
+    if (!payload) return res.status(400).json({ error: "no_payload" });
+
+    const data = await ozonPost(OZON_COMMISSION_PATH, { clientId, apiKey, body: payload });
+    return res.json({ source: OZON_COMMISSION_PATH, result: data?.result || data });
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/api/ozon/logistics", async (req, res) => {
+  try {
+    const clientId = req.body?.clientId || req.query.clientId;
+    const apiKey = req.body?.apiKey || req.query.apiKey;
+    if (!clientId || !apiKey) return res.status(400).json({ error: "no_creds" });
+    const payload = req.body?.payload;
+    if (!payload) return res.status(400).json({ error: "no_payload" });
+
+    const data = await ozonPost(OZON_LOGISTICS_PATH, { clientId, apiKey, body: payload });
+    return res.json({ source: OZON_LOGISTICS_PATH, result: data?.result || data });
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message || e) });
+  }
+});
 
 async function handleToday(req, res) {
   try {

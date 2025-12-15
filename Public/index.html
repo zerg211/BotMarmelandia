@@ -528,30 +528,7 @@
       return Number.isFinite(num) ? num : 0;
     }
 
-    const categories = [
-      { name: "Обогреватели · климатическая техника", keywords: ["обогрев", "обогреватель", "климат", "конвектор", "тепловентилятор"], commission: { fbo: 12, fbs: 12.5 } },
-      { name: "Техника для кухни", keywords: ["кухня", "кухонная техника", "блендер", "миксер", "чайник", "мультиварка"], commission: { fbo: 10, fbs: 10.5 } },
-      { name: "Бытовые товары для дома", keywords: ["утюг", "пароочиститель", "пылесос", "дом", "уход"], commission: { fbo: 11, fbs: 11.5 } },
-      { name: "Смартфоны и гаджеты", keywords: ["смартфон", "телефон", "гаджет", "iphone", "android"], commission: { fbo: 5, fbs: 5.5 } },
-      { name: "Ноутбуки и компьютеры", keywords: ["ноутбук", "компьютер", "пк", "моноблок"], commission: { fbo: 6, fbs: 6.5 } },
-      { name: "Периферия и аксессуары", keywords: ["клавиатура", "мышь", "накопитель", "ssd", "hdd"], commission: { fbo: 8, fbs: 8.5 } },
-      { name: "Одежда", keywords: ["одежда", "футболка", "куртка", "джинсы", "брюки"], commission: { fbo: 15, fbs: 16 } },
-      { name: "Обувь", keywords: ["обувь", "кроссовки", "ботинки", "туфли"], commission: { fbo: 14, fbs: 15 } },
-      { name: "Спорт и отдых", keywords: ["спорт", "туризм", "тренировки", "гантели", "йога"], commission: { fbo: 10, fbs: 10.5 } },
-      { name: "Красота и здоровье", keywords: ["косметика", "крем", "уход", "бьюти", "маска"], commission: { fbo: 10, fbs: 10.5 } },
-      { name: "Детские товары", keywords: ["игрушка", "дети", "коляска", "подгузники", "конструктор"], commission: { fbo: 12, fbs: 12.5 } },
-      { name: "Зоотовары", keywords: ["корм", "зоотовары", "кошки", "собаки"], commission: { fbo: 13, fbs: 13.5 } },
-      { name: "Дом и интерьер", keywords: ["дом", "интерьер", "декор", "постельное", "светильник"], commission: { fbo: 11, fbs: 11.5 } },
-      { name: "Инструменты и стройка", keywords: ["инструмент", "дрель", "шуруповёрт", "строительство", "ремонт"], commission: { fbo: 9, fbs: 9.5 } },
-      { name: "Автотовары", keywords: ["авто", "шины", "автомобиль", "аксессуары", "щётка"], commission: { fbo: 11, fbs: 11.5 } },
-      { name: "Канцелярия и хобби", keywords: ["канцелярия", "тетрадь", "хобби", "рукоделие", "краски"], commission: { fbo: 12, fbs: 12.5 } },
-      { name: "Сад и дача", keywords: ["сад", "дача", "огород", "гриль", "шланг"], commission: { fbo: 12, fbs: 12.5 } },
-      { name: "Товары для уборки", keywords: ["уборка", "швабра", "ведро", "губки", "перчатки"], commission: { fbo: 12, fbs: 12.5 } },
-      { name: "Хранение и организация", keywords: ["контейнер", "органайзер", "короб", "полка"], commission: { fbo: 12, fbs: 12.5 } },
-      { name: "Для творчества", keywords: ["краски", "пластилин", "рисование", "скрап"], commission: { fbo: 12, fbs: 12.5 } },
-      { name: "Аптека и медтовары", keywords: ["тонометр", "ингалятор", "мед", "аптечка"], commission: { fbo: 9.5, fbs: 10 } },
-      { name: "Кухонная посуда", keywords: ["сковорода", "кастрюля", "тарелка", "посуда", "кухонная утварь"], commission: { fbo: 11, fbs: 11.5 } },
-    ];
+    let categories = [];
 
     const fulfillmentBase = {
       fbo: [
@@ -575,6 +552,34 @@
     };
 
     const norm = (s) => String(s || "").toLowerCase().trim();
+    let categoriesLoadedFrom = null;
+    let lastLiveCommission = null;
+    let lastLogisticsQuote = null;
+    let commissionFetchTs = 0;
+    let logisticsFetchTs = 0;
+
+    async function fetchCategoriesFromApi(){
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
+      if (!clientId || !apiKey) return;
+      try {
+        categoryHintEl.textContent = "Тянем категории из Ozon API...";
+        const resp = await fetch("/api/ozon/categories", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId, apiKey }) });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data?.error || resp.status);
+        categories = (data?.categories || []).map((c) => ({
+          name: c.path || c.name,
+          category_id: c.category_id,
+          keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
+          commission: {},
+        }));
+        categoriesLoadedFrom = data?.source || "Ozon API";
+        buildCategoryList();
+        categoryHintEl.textContent = `Категории подтянуты из ${categoriesLoadedFrom} (${categories.length} шт.)`;
+      } catch (e){
+        categoryHintEl.textContent = `Не удалось загрузить категории из Ozon API: ${e.message || e}`;
+      }
+    }
 
     function buildCategoryList(){
       if (!categoryListEl) return;
@@ -615,6 +620,36 @@
       return Number.isFinite(rate) ? rate : null;
     }
 
+    async function fetchCommissionFromApi(price){
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
+      if (!clientId || !apiKey || !selectedCategory?.category_id) return;
+      const now = Date.now();
+      if (now - commissionFetchTs < 800) return; // троттлим
+      commissionFetchTs = now;
+      try {
+        categoryHintEl.textContent = "Запрашиваем реальную комиссию...";
+        const payload = { items: [{ price, category_id: Number(selectedCategory.category_id), delivery_schema: fulfillmentMode.toUpperCase() }] };
+        const resp = await fetch("/api/ozon/commission", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId, apiKey, payload }) });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data?.error || resp.status);
+        const item = data?.result?.items?.[0] || data?.result?.result?.items?.[0] || null;
+        const rate = Number(item?.sales_percent || item?.commission_percent || 0);
+        if (Number.isFinite(rate) && rate > 0){
+          selectedCategory.commission = selectedCategory.commission || {};
+          selectedCategory.commission[fulfillmentMode] = rate;
+          lastLiveCommission = rate;
+          calcInputs.commission.value = rate;
+          categoryHintEl.textContent = `Комиссия из Ozon API (${data?.source || "commission"}): ${rate}%`;
+          updateCalc();
+        } else {
+          categoryHintEl.textContent = "Ozon API вернул ответ без комиссии, укажите вручную.";
+        }
+      } catch (e){
+        categoryHintEl.textContent = `Не удалось получить комиссию из Ozon API: ${e.message || e}`;
+      }
+    }
+
     function computeVolumeAndWeight(){
       let volumeLiters = 0;
       let weightKg = 0;
@@ -641,6 +676,48 @@
       const reverse = tier.base * returnCoeff * returnShare;
       const total = forward + reverse;
       return { forward, reverse, total, volumetricWeight, tier, svdCoeff, returnShare };
+    }
+
+    async function fetchLogisticsFromApi({ price, volumeLiters, weightKg, svdValue, buyoutPct }){
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
+      if (!clientId || !apiKey) return;
+      const now = Date.now();
+      if (now - logisticsFetchTs < 800) return;
+      logisticsFetchTs = now;
+      try {
+        const payload = {
+          weight: weightKg,
+          dimensions: {
+            height: Math.max(0, parseNumber(calcInputs.height)),
+            length: Math.max(0, parseNumber(calcInputs.len)),
+            width: Math.max(0, parseNumber(calcInputs.width)),
+          },
+          volume: volumeLiters / 1000,
+          price,
+          delivery_schema: fulfillmentMode.toUpperCase(),
+          delivery_time: svdValue,
+          buyout_percent: buyoutPct,
+        };
+        const resp = await fetch("/api/ozon/logistics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId, apiKey, payload }) });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data?.error || resp.status);
+        const res = data?.result?.delivery || data?.result || data;
+        const total = Number(res?.total || res?.price || res?.amount || 0);
+        if (Number.isFinite(total) && total > 0){
+          lastLogisticsQuote = { total, raw: res };
+          setLogisticsMeta({
+            volumeLiters,
+            volumetricWeight: weightKg,
+            tier: { base: total, maxWeight: weightKg, maxVolume: volumeLiters },
+            svdCoeff: 1,
+            returnShare: buyoutPct / 100,
+          });
+          updateCalc();
+        }
+      } catch (e){
+        logisticsMeta.innerHTML = `<span class="tag">Ozon API логистика: ${e.message || e}</span>`;
+      }
     }
 
     function setLogisticsMeta(info){
@@ -748,14 +825,19 @@
       const { volumeLiters, weightKg } = computeVolumeAndWeight();
       const table = fulfillmentBase[fulfillmentMode] || fulfillmentBase.fbo;
       const logisticsInfo = computeLogistics(table, volumeLiters, weightKg, svdVal, buyoutPct);
-      const logistics = logisticsInfo.total;
-      setLogisticsMeta({ ...logisticsInfo, volumeLiters, svdValue: svdVal });
+      let logistics = lastLogisticsQuote?.total || logisticsInfo.total;
+      if (!lastLogisticsQuote) setLogisticsMeta({ ...logisticsInfo, volumeLiters, svdValue: svdVal });
 
       const discountFactor = Math.max(0, 1 - discount / 100);
       const netPrice = price * discountFactor;
+      if (selectedCategory?.category_id) fetchCommissionFromApi(netPrice || price || 0);
       const commissionAmt = netPrice * (commissionPct / 100);
       const adsAmt = netPrice * (adsPct / 100);
       const vatAmt = netPrice * (vatPct / 100);
+
+      if (!lastLogisticsQuote && weightKg && volumeLiters){
+        fetchLogisticsFromApi({ price: netPrice || price || 0, volumeLiters, weightKg, svdValue: svdVal, buyoutPct });
+      }
 
       const totalCosts = cost + logistics + other + commissionAmt + adsAmt + vatAmt;
       const profit = netPrice - totalCosts;
@@ -796,6 +878,7 @@
     volumeTab?.addEventListener("click", () => setLogisticsMode("volume"));
 
     buildCategoryList();
+    fetchCategoriesFromApi();
     setFulfillment("fbo");
     setLogisticsMode("dims");
     svdValueEl.textContent = calcInputs.svd?.value || "0";
