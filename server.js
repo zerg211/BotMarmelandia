@@ -33,12 +33,16 @@ const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
 const OZON_CATEGORY_TREE_PATH = process.env.OZON_CATEGORY_TREE_PATH || "/v1/description-category/tree";
 const OZON_COMMISSION_PATH = process.env.OZON_COMMISSION_PATH || "/v1/product/calc/commission";
 const OZON_LOGISTICS_PATH = process.env.OZON_LOGISTICS_PATH || "/v1/product/calc/fbs";
+const OZON_DEFAULT_CLIENT_ID = process.env.OZON_DEFAULT_CLIENT_ID || process.env.OZON_CLIENT_ID;
+const OZON_DEFAULT_API_KEY = process.env.OZON_DEFAULT_API_KEY || process.env.OZON_API_KEY;
 
 // “Сегодня” считаем по МСК (или поменяй через ENV SALES_TZ)
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
+const CATEGORY_CACHE_PATH = path.join(DATA_DIR, "category-cache.json");
+const OZON_FALLBACK_CATEGORIES_PATH = path.join(__dirname, "ozon-category-fallback.json");
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 const pending = new Map();
 
@@ -186,6 +190,7 @@ function scoreCategory(cat, qTokens) {
 }
 
 async function ensureCategoryCache({ clientId, apiKey, source }) {
+  loadCategoryCacheFromDisk();
   if (categoryCache.list.length) return categoryCache;
   if (!clientId || !apiKey) throw new Error("no_creds");
 
@@ -202,6 +207,7 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
   categoryCache.list = flat;
   categoryCache.source = source || OZON_CATEGORY_TREE_PATH;
   categoryCache.updatedAt = Date.now();
+  saveCategoryCacheToDisk();
   return categoryCache;
 }
 
@@ -223,6 +229,55 @@ const categoryCache = {
   source: null,
   updatedAt: 0,
 };
+
+function loadCategoryCacheFromDisk() {
+  if (categoryCache.list.length) return;
+  try {
+    if (!fs.existsSync(CATEGORY_CACHE_PATH)) return;
+    const data = JSON.parse(fs.readFileSync(CATEGORY_CACHE_PATH, "utf-8"));
+    if (Array.isArray(data?.list)) {
+      categoryCache.list = data.list;
+      categoryCache.source = data.source || "disk";
+      categoryCache.updatedAt = data.updatedAt || Date.now();
+    }
+  } catch (_) {}
+}
+
+function saveCategoryCacheToDisk() {
+  try {
+    const payload = {
+      list: categoryCache.list,
+      source: categoryCache.source,
+      updatedAt: categoryCache.updatedAt || Date.now(),
+    };
+    fs.writeFileSync(CATEGORY_CACHE_PATH, JSON.stringify(payload, null, 2), "utf-8");
+  } catch (_) {}
+}
+
+function seedCategoryCacheFromFallback() {
+  if (categoryCache.list.length) return false;
+  try {
+    if (!fs.existsSync(OZON_FALLBACK_CATEGORIES_PATH)) return false;
+    const data = JSON.parse(fs.readFileSync(OZON_FALLBACK_CATEGORIES_PATH, "utf-8"));
+    if (!Array.isArray(data)) return false;
+    categoryCache.list = data.map((c) => ({
+      category_id: c.category_id,
+      name: c.name,
+      path: c.path || c.name,
+      keywords: (c.keywords || c.path || c.name || "")
+        .toString()
+        .split(/[>/]/)
+        .map((p) => p.trim())
+        .filter(Boolean),
+      commission: c.commission || {},
+    }));
+    categoryCache.source = "fallback";
+    categoryCache.updatedAt = Date.now();
+    return categoryCache.list.length > 0;
+  } catch (_) {
+    return false;
+  }
+}
 
 // ---------------- date helpers ----------------
 function todayDateStr() {
@@ -710,11 +765,18 @@ function resolveCredsFromRequest(req) {
     }
   }
 
+  // 4) Фолбэк на переменные окружения
+  if (OZON_DEFAULT_CLIENT_ID && OZON_DEFAULT_API_KEY) {
+    return { clientId: OZON_DEFAULT_CLIENT_ID, apiKey: OZON_DEFAULT_API_KEY, source: "env" };
+  }
+
   return null;
 }
 
 app.post("/api/ozon/categories", async (req, res) => {
   try {
+    loadCategoryCacheFromDisk();
+    seedCategoryCacheFromFallback();
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
 
@@ -744,6 +806,7 @@ app.post("/api/ozon/categories", async (req, res) => {
 
 app.post("/api/ozon/categories/search", async (req, res) => {
   try {
+    loadCategoryCacheFromDisk();
     const query = req.body?.query || req.query.q || "";
     const limit = Number(req.body?.limit || req.query.limit || 20) || 20;
 
@@ -751,8 +814,11 @@ app.post("/api/ozon/categories/search", async (req, res) => {
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
 
     if (!categoryCache.list.length) {
-      if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
-      await ensureCategoryCache(resolved);
+      if (!resolved?.clientId || !resolved?.apiKey) {
+        if (!seedCategoryCacheFromFallback()) return res.status(400).json({ error: "no_creds" });
+      } else {
+        await ensureCategoryCache(resolved);
+      }
     }
 
     const matches = searchCategories(query, { limit });
