@@ -185,6 +185,12 @@
     .svd-value{font-weight:800;color:var(--accent);}
     .badge-row{display:flex;flex-wrap:wrap;gap:8px;font-size:12px;color:var(--muted);}
     .badge-row .pill{border-color:rgba(255,255,255,.08);}
+    .typeahead{position:relative;}
+    .typeahead-list{position:absolute;left:0;right:0;top:100%;margin-top:6px;border:1px solid var(--line);background:rgba(16,22,31,.96);
+      border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.35);max-height:220px;overflow:auto;display:none;z-index:20;}
+    .typeahead-item{padding:10px 12px;font-size:13px;color:var(--text);cursor:pointer;display:flex;flex-direction:column;gap:2px;}
+    .typeahead-item:hover,.typeahead-item:active{background:rgba(77,163,255,.14);}
+    .typeahead-item .meta{font-size:11px;color:var(--muted);}
 
 </style>
 </head>
@@ -277,12 +283,15 @@
             <div class="fieldset">
               <legend>Категория и тип товара</legend>
               <label>Категория или тип, как в кабинете Ozon
-                <input id="calcCategory" type="text" placeholder="например: обогрев" list="categoryList" />
+                <div class="typeahead">
+                  <input id="calcCategory" type="text" placeholder="например: обогрев" autocomplete="off" />
+                  <div class="typeahead-list" id="categorySuggest"></div>
+                </div>
               </label>
               <datalist id="categoryList"></datalist>
               <div class="inline-note" id="categoryHint">Начните вводить название — покажем ближайшую категорию, а комиссию подставим автоматически.</div>
               <label>Комиссия маркетплейса, %
-                <input id="calcCommission" type="number" inputmode="decimal" placeholder="15" value="15" />
+                <input id="calcCommission" type="number" inputmode="decimal" placeholder="15" />
               </label>
             </div>
             <div class="fieldset">
@@ -496,6 +505,7 @@
     const volumeInputs = $("volumeInputs");
     const categoryHintEl = $("categoryHint");
     const categoryListEl = $("categoryList");
+    const categorySuggestEl = $("categorySuggest");
     const fulfillmentButtons = document.querySelectorAll('.fulfillment-btn');
 
     const tabButtons = document.querySelectorAll('.tab-btn');
@@ -550,6 +560,8 @@
     }
 
     let categories = [];
+    let categoriesLoading = false;
+    let commissionDirty = false;
 
     const fulfillmentBase = {
       fbo: [
@@ -580,9 +592,15 @@
     let logisticsFetchTs = 0;
 
     async function fetchCategoriesFromApi(){
+      if (categoriesLoading) return;
+      categoriesLoading = true;
       const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
       const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
-      if (!clientId || !apiKey) return;
+      if (!clientId || !apiKey) {
+        categoryHintEl.textContent = "Добавьте Client ID и Api-Key, чтобы подтянуть категории из кабинета.";
+        categoriesLoading = false;
+        return;
+      }
       try {
         categoryHintEl.textContent = "Тянем категории из Ozon API...";
         const resp = await fetch("/api/ozon/categories", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId, apiKey }) });
@@ -590,6 +608,7 @@
         if (!resp.ok) throw new Error(data?.error || resp.status);
         categories = (data?.categories || []).map((c) => ({
           name: c.path || c.name,
+          path: c.path || c.name,
           category_id: c.category_id,
           keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
           commission: {},
@@ -599,17 +618,35 @@
         categoryHintEl.textContent = `Категории подтянуты из ${categoriesLoadedFrom} (${categories.length} шт.)`;
       } catch (e){
         categoryHintEl.textContent = `Не удалось загрузить категории из Ozon API: ${e.message || e}`;
+      } finally {
+        categoriesLoading = false;
       }
     }
 
     function setCategoryOptions(list){
       if (!categoryListEl) return;
       categoryListEl.innerHTML = (list || []).map((c) => `<option value="${c.name}"></option>`).join("");
+      renderCategorySuggest(list);
+    }
+
+    function renderCategorySuggest(list){
+      if (!categorySuggestEl) return;
+      if (!list || !list.length){
+        categorySuggestEl.style.display = "none";
+        categorySuggestEl.innerHTML = "";
+        return;
+      }
+      categorySuggestEl.innerHTML = list.map((c) => {
+        const meta = c.path && c.path !== c.name ? `<div class="meta">${c.path}</div>` : "";
+        return `<div class="typeahead-item" data-id="${c.category_id}"><div>${c.name}</div>${meta}</div>`;
+      }).join("");
+      categorySuggestEl.style.display = "block";
     }
 
     function matchCategories(query, limit = 12){
       const q = norm(query);
       if (!q || q.length < 2) return [];
+      if (!categories.length) return [];
       const tokens = q.split(/\s+/).filter(Boolean);
       const scored = [];
       categories.forEach((c) => {
@@ -657,7 +694,7 @@
           selectedCategory.commission = selectedCategory.commission || {};
           selectedCategory.commission[fulfillmentMode] = rate;
           lastLiveCommission = rate;
-          calcInputs.commission.value = rate;
+          if (!commissionDirty) calcInputs.commission.value = rate;
           categoryHintEl.textContent = `Комиссия из Ozon API (${data?.source || "commission"}): ${rate}%`;
           updateCalc();
         } else {
@@ -769,22 +806,40 @@
       selectedCategory = cat;
       if (cat){
         const rate = commissionForMode(cat);
-        if (rate !== null){
+        if (rate !== null && !commissionDirty){
           calcInputs.commission.value = rate;
-          categoryHintEl.textContent = `Нашли: ${cat.name}. Комиссия для ${fulfillmentMode.toUpperCase()}: ${rate}%`;
-        } else {
-          categoryHintEl.textContent = `Категория: ${cat.name}. Укажите комиссию вручную.`;
         }
+        categoryHintEl.textContent = rate !== null
+          ? `Нашли: ${cat.name}. Комиссия для ${fulfillmentMode.toUpperCase()}: ${rate}%`
+          : `Категория: ${cat.name}. Укажите комиссию вручную.`;
       } else {
+        if (!commissionDirty) calcInputs.commission.value = "";
         categoryHintEl.textContent = "Не нашли категорию. Попробуйте точнее написать название или подкатегорию.";
       }
     }
 
+    function chooseCategory(cat){
+      commissionDirty = false;
+      if (calcInputs.category && cat?.name){
+        calcInputs.category.value = cat.name;
+      }
+      renderCategorySuggest([]);
+      applyCategory(cat);
+      if (cat){
+        fetchCommissionFromApi(parseNumber(calcInputs.price));
+      }
+      updateCalc();
+    }
+
     function handleCategoryInput(){
       const query = calcInputs.category?.value || "";
+      if (!categories.length) fetchCategoriesFromApi();
+
       if (!query.trim()){
         selectedCategory = null;
         setCategoryOptions([]);
+        renderCategorySuggest([]);
+        if (!commissionDirty) calcInputs.commission.value = "";
         categoryHintEl.textContent = "Начните вводить категорию так, как в кабинете Ozon.";
         updateCalc();
         return;
@@ -795,14 +850,14 @@
 
       const exact = matches.find((m) => norm(m.name) === norm(query));
       if (exact){
-        applyCategory(exact);
-        fetchCommissionFromApi(parseNumber(calcInputs.price));
-      } else {
-        selectedCategory = null;
-        categoryHintEl.textContent = matches.length
-          ? `Подходящие категории: ${matches.slice(0,3).map((m)=>m.name).join(" · ")}`
-          : "Не нашли категорию в каталоге Ozon. Продолжайте печатать или уточните подкатегорию.";
+        chooseCategory(exact);
+        return;
       }
+
+      selectedCategory = null;
+      categoryHintEl.textContent = matches.length
+        ? `Подходящие категории: ${matches.slice(0,5).map((m)=>m.name).join(" · ")}`
+        : (categories.length ? "Не нашли категорию в каталоге Ozon. Продолжайте печатать или уточните подкатегорию." : "Подтяните категории из Ozon через ключи в меню 🔑.");
       updateCalc();
     }
 
@@ -814,7 +869,7 @@
         btn.classList.toggle('active', isActive);
       });
       const rate = commissionForMode(selectedCategory);
-      if (rate !== null){
+      if (rate !== null && !commissionDirty){
         calcInputs.commission.value = rate;
         if (selectedCategory){
           categoryHintEl.textContent = `Категория: ${selectedCategory.name}. Комиссия ${mode.toUpperCase()}: ${rate}%`;
@@ -895,8 +950,16 @@
     Object.values(calcInputs).forEach((el) => {
       el?.addEventListener("input", updateCalc);
     });
+    calcInputs.commission?.addEventListener("input", () => { commissionDirty = true; lastLiveCommission = null; });
     calcInputs.category?.addEventListener("input", handleCategoryInput);
     calcInputs.category?.addEventListener("change", handleCategoryInput);
+    categorySuggestEl?.addEventListener("click", (e) => {
+      const item = e.target.closest(".typeahead-item");
+      if (!item) return;
+      const id = item.getAttribute("data-id");
+      const cat = categories.find((c) => String(c.category_id) === String(id));
+      if (cat) chooseCategory(cat);
+    });
     calcInputs.svd?.addEventListener("input", () => {
       svdValueEl.textContent = calcInputs.svd.value || "0";
       updateModeMeta();
