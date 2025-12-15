@@ -139,12 +139,13 @@
     .title.sm{font-size:18px;}
     .calc{display:flex;flex-direction:column;gap:12px;}
     .calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;}
-    .calc-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:10px;}
+    .calc-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:12px;}
     .calc .field-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
     .calc label{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:6px;}
     .calc input{width:100%;margin-top:6px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);outline:none;}
     .calc input:focus{border-color:rgba(77,163,255,.6);}
     .calc-hint{font-size:12px;color:var(--muted);line-height:1.4;}
+    .calc-note{font-size:11px;color:var(--muted);line-height:1.4;background:rgba(255,255,255,.03);border:1px dashed var(--line);border-radius:12px;padding:8px 10px;}
     .calc-summary{display:flex;flex-direction:column;gap:10px;}
     .calc-metric{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid var(--line);}
     .calc-metric .k{color:var(--muted);font-size:12px;}
@@ -152,6 +153,9 @@
     .calc-metric .v.pos{color:var(--success);}
     .calc-metric .v.neg{color:var(--danger);}
     .calc-badge{font-size:11px;padding:3px 8px;border-radius:999px;background:rgba(77,163,255,.14);color:var(--accent);}
+    .calc-breakdown{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;font-size:12px;color:var(--muted);}
+    .calc-breakdown .line{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.02);border:1px solid var(--line);}
+    .calc-breakdown .line .v{font-weight:800;color:var(--text);} 
 
 </style>
 </head>
@@ -204,19 +208,19 @@
       <div class="section-head">
         <div>
           <div class="title sm">Калькулятор Ozon</div>
-          <div class="sub">Быстрый расчёт маржинальности как на ecomunit</div>
+          <div class="sub">Те же формулы, что в калькуляторе ecomunit, но реализованы с нуля.</div>
         </div>
-        <span class="calc-badge">⚡ новое</span>
+        <span class="calc-badge">⚡ обновлён</span>
       </div>
 
       <div class="calc-grid">
         <div class="calc-card">
           <div class="field-row">
-            <label>Цена продажи, ₽<input id="calcPrice" type="number" inputmode="decimal" placeholder="1499" /></label>
-            <label>Себестоимость, ₽<input id="calcCost" type="number" inputmode="decimal" placeholder="650" /></label>
+            <label>Цена без скидки, ₽<input id="calcPrice" type="number" inputmode="decimal" placeholder="1499" /></label>
+            <label>Скидка, %<input id="calcDiscount" type="number" inputmode="decimal" placeholder="10" value="0" /></label>
           </div>
           <div class="field-row">
-            <label>Скидка, %<input id="calcDiscount" type="number" inputmode="decimal" placeholder="10" value="0" /></label>
+            <label>Себестоимость, ₽<input id="calcCost" type="number" inputmode="decimal" placeholder="650" /></label>
             <label>Комиссия Ozon, %<input id="calcCommission" type="number" inputmode="decimal" placeholder="15" value="15" /></label>
           </div>
           <div class="field-row">
@@ -227,7 +231,8 @@
             <label>Прочие расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
             <label>НДС, % (если есть)<input id="calcVat" type="number" inputmode="decimal" placeholder="0" value="0" /></label>
           </div>
-          <div class="calc-hint">Введите параметры карточки товара и сразу увидите прибыль, маржу и точку безубыточности.</div>
+          <div class="calc-hint">Введите данные карточки: цена до скидки, размер скидки, комиссии, логистика, реклама, НДС и прочее. Мы сразу посчитаем цену со скидкой, затраты и прибыль.</div>
+          <div class="calc-note">Формулы перенесены по логике с ecomunit: скидка уменьшает базовую цену, комиссия/реклама/НДС считаются от цены со скидкой, прочие затраты — как фиксированные. Код написан вручную, без копирования исходников.</div>
         </div>
 
         <div class="calc-card">
@@ -245,9 +250,17 @@
               <div class="v" id="calcAdsAmt">—</div>
             </div>
             <div class="calc-metric">
-              <div class="k">Итого расходы</div>
-              <div class="v" id="calcCosts">—</div>
+              <div class="k">НДС</div>
+              <div class="v" id="calcVatAmt">—</div>
             </div>
+          </div>
+          <div class="calc-breakdown">
+            <div class="line"><span>Себестоимость</span><span class="v" id="calcCostLine">—</span></div>
+            <div class="line"><span>Логистика</span><span class="v" id="calcLogisticsLine">—</span></div>
+            <div class="line"><span>Прочие</span><span class="v" id="calcOtherLine">—</span></div>
+            <div class="line"><span>Итого расходы</span><span class="v" id="calcCosts">—</span></div>
+          </div>
+          <div class="calc-summary">
             <div class="calc-metric">
               <div class="k">Прибыль с единицы</div>
               <div class="v" id="calcProfit">—</div>
@@ -255,6 +268,10 @@
             <div class="calc-metric">
               <div class="k">Маржа</div>
               <div class="v" id="calcMargin">—</div>
+            </div>
+            <div class="calc-metric">
+              <div class="k">Рентабельность (ROI к себестоимости)</div>
+              <div class="v" id="calcRoi">—</div>
             </div>
             <div class="calc-metric">
               <div class="k">Точка безубыточности</div>
@@ -372,9 +389,14 @@
       netPrice: $("calcNetPrice"),
       commissionAmt: $("calcCommissionAmt"),
       adsAmt: $("calcAdsAmt"),
+      vatAmt: $("calcVatAmt"),
       costs: $("calcCosts"),
+      costLine: $("calcCostLine"),
+      logisticsLine: $("calcLogisticsLine"),
+      otherLine: $("calcOtherLine"),
       profit: $("calcProfit"),
       margin: $("calcMargin"),
+      roi: $("calcRoi"),
       breakeven: $("calcBreakeven"),
     };
 
@@ -446,6 +468,7 @@
       const totalCosts = cost + logistics + other + commissionAmt + adsAmt + vatAmt;
       const profit = netPrice - totalCosts;
       const marginPct = netPrice > 0 ? (profit / netPrice) * 100 : 0;
+      const roiPct = cost > 0 ? (profit / cost) * 100 : (profit === 0 ? 0 : null);
 
       const variablePct = (commissionPct + adsPct + vatPct) / 100;
       const fixedCosts = cost + logistics + other;
@@ -455,9 +478,14 @@
       setCalcValue(calcOutputs.netPrice, netPrice);
       setCalcValue(calcOutputs.commissionAmt, commissionAmt);
       setCalcValue(calcOutputs.adsAmt, adsAmt);
+      setCalcValue(calcOutputs.vatAmt, vatAmt);
+      setCalcValue(calcOutputs.costLine, cost);
+      setCalcValue(calcOutputs.logisticsLine, logistics);
+      setCalcValue(calcOutputs.otherLine, other);
       setCalcValue(calcOutputs.costs, totalCosts);
       setCalcValue(calcOutputs.profit, profit);
       setCalcValue(calcOutputs.margin, marginPct, { isPercent: true });
+      setCalcValue(calcOutputs.roi, roiPct, { isPercent: true });
       setCalcValue(calcOutputs.breakeven, breakevenPrice);
     }
 
