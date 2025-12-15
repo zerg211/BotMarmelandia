@@ -145,12 +145,17 @@
     .section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;}
     .title.sm{font-size:18px;}
     .calc{display:flex;flex-direction:column;gap:12px;}
-    .calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;}
+    .calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;}
     .calc-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:12px;}
     .calc .field-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
     .calc label{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:6px;}
     .calc input{width:100%;margin-top:6px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);outline:none;}
     .calc input:focus{border-color:rgba(77,163,255,.6);}
+    .calc select{width:100%;margin-top:6px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);outline:none;}
+    .calc .fieldset{display:flex;flex-direction:column;gap:8px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:rgba(255,255,255,.02);}
+    .calc .fieldset legend{font-size:11px;color:var(--muted);padding:0 4px;}
+    .calc .tags{display:flex;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--muted);}
+    .calc .tag{padding:4px 8px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.04);}
     .calc-hint{font-size:12px;color:var(--muted);line-height:1.4;}
     .calc-note{font-size:11px;color:var(--muted);line-height:1.4;background:rgba(255,255,255,.03);border:1px dashed var(--line);border-radius:12px;padding:8px 10px;}
     .calc-summary{display:flex;flex-direction:column;gap:10px;}
@@ -162,7 +167,17 @@
     .calc-badge{font-size:11px;padding:3px 8px;border-radius:999px;background:rgba(77,163,255,.14);color:var(--accent);}
     .calc-breakdown{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;font-size:12px;color:var(--muted);}
     .calc-breakdown .line{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.02);border:1px solid var(--line);}
-    .calc-breakdown .line .v{font-weight:800;color:var(--text);} 
+    .calc-breakdown .line .v{font-weight:800;color:var(--text);}
+    .svd-row{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted);}
+    .svd-row input[type="range"]{flex:1;accent-color:var(--accent);}
+    .toggle-row{display:flex;gap:8px;flex-wrap:wrap;}
+    .toggle-row .toggle-btn{flex:0 0 auto;min-width:120px;}
+    .toggle-btn{border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--text);padding:8px 12px;border-radius:12px;font-weight:800;cursor:pointer;}
+    .toggle-btn.active{background:rgba(77,163,255,.18);border-color:rgba(77,163,255,.6);}
+    .pill-radio{display:flex;gap:8px;flex-wrap:wrap;}
+    .pill-radio button{border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--text);padding:8px 12px;border-radius:12px;font-weight:800;cursor:pointer;}
+    .pill-radio button.active{background:rgba(77,163,255,.18);border-color:rgba(77,163,255,.6);}
+    .inline-note{font-size:11px;color:var(--muted);}
 
 </style>
 </head>
@@ -235,18 +250,65 @@
             </div>
             <div class="field-row">
               <label>Себестоимость, ₽<input id="calcCost" type="number" inputmode="decimal" placeholder="650" /></label>
-              <label>Комиссия Ozon, %<input id="calcCommission" type="number" inputmode="decimal" placeholder="15" value="15" /></label>
-            </div>
-            <div class="field-row">
-              <label>Логистика за единицу, ₽<input id="calcLogistics" type="number" inputmode="decimal" placeholder="120" value="0" /></label>
               <label>Реклама, % от цены<input id="calcAds" type="number" inputmode="decimal" placeholder="8" value="0" /></label>
             </div>
-            <div class="field-row">
-              <label>Прочие расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
-              <label>НДС, % (если есть)<input id="calcVat" type="number" inputmode="decimal" placeholder="0" value="0" /></label>
+
+            <div class="fieldset">
+              <legend>Категория и модель исполнения</legend>
+              <label>Категория Ozon
+                <input id="calcCategory" type="text" placeholder="например: обогрев" list="categoryList" />
+              </label>
+              <datalist id="categoryList"></datalist>
+              <div class="pill-radio" role="group" aria-label="Модель исполнения">
+                <button type="button" class="fulfillment-btn active" data-mode="fbo">FBO (склад Ozon)</button>
+                <button type="button" class="fulfillment-btn" data-mode="fbs">FBS (со склада продавца)</button>
+              </div>
+              <div class="inline-note" id="categoryHint">Комиссия заполнится автоматически после выбора категории.</div>
+              <div class="field-row">
+                <label>Комиссия Ozon, %
+                  <input id="calcCommission" type="number" inputmode="decimal" placeholder="15" value="15" />
+                </label>
+                <label>НДС, % (если есть)<input id="calcVat" type="number" inputmode="decimal" placeholder="0" value="0" /></label>
+              </div>
             </div>
-            <div class="calc-hint">Введите данные карточки: цена до скидки, размер скидки, комиссии, логистика, реклама, НДС и прочее. Мы сразу посчитаем цену со скидкой, затраты и прибыль.</div>
-            <div class="calc-note">Формулы перенесены по логике с ecomunit: скидка уменьшает базовую цену, комиссия/реклама/НДС считаются от цены со скидкой, прочие затраты — как фиксированные. Код написан вручную, без копирования исходников.</div>
+
+            <div class="fieldset">
+              <legend>Логистика и габариты</legend>
+              <div class="toggle-row">
+                <button type="button" class="toggle-btn active" id="dimsTab">Габариты</button>
+                <button type="button" class="toggle-btn" id="volumeTab">Объём (л) + вес</button>
+              </div>
+              <div id="dimsInputs">
+                <div class="field-row">
+                  <label>Длина, см<input id="calcLen" type="number" inputmode="decimal" placeholder="20" /></label>
+                  <label>Ширина, см<input id="calcWidth" type="number" inputmode="decimal" placeholder="15" /></label>
+                </div>
+                <div class="field-row">
+                  <label>Высота, см<input id="calcHeight" type="number" inputmode="decimal" placeholder="10" /></label>
+                  <label>Вес, кг<input id="calcWeight" type="number" inputmode="decimal" placeholder="0.9" /></label>
+                </div>
+              </div>
+              <div id="volumeInputs" style="display:none;">
+                <div class="field-row">
+                  <label>Объём, л<input id="calcVolume" type="number" inputmode="decimal" placeholder="3" /></label>
+                  <label>Вес, кг<input id="calcWeightAlt" type="number" inputmode="decimal" placeholder="0.9" /></label>
+                </div>
+              </div>
+              <div class="svd-row">
+                <span>СВД (среднее время доставки)</span>
+                <input id="calcSvd" type="range" min="0" max="100" value="50" />
+                <span id="svdValue">50</span>
+              </div>
+              <div class="inline-note">Ползунок СВД работает как на Ozon: чем выше значение, тем дороже доставка. Мы учитываем обратную доставку по проценту выкупа.</div>
+              <div class="field-row">
+                <label>Процент выкупа, %<input id="calcBuyout" type="number" inputmode="decimal" placeholder="95" value="95" /></label>
+                <label>Доп. расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
+              </div>
+              <div class="tags" id="logisticsMeta"></div>
+            </div>
+
+            <div class="calc-hint">Введите цену, скидку и себестоимость. Выберите категорию — комиссия подтянется автоматически. Логистика считается как на Ozon: по габаритам/весу, модели FBO/FBS, СВД и проценту выкупа с учётом обратной доставки.</div>
+            <div class="calc-note">Формулы перенесены по духу ecomunit и калькулятора Ozon: скидка уменьшает базовую цену, комиссия/реклама/НДС считаются от цены со скидкой, прочие затраты — фикс. Логистика берёт максимальный из фактического и объёмного веса и корректируется СВД, моделью FBO/FBS и возвратами.</div>
           </div>
 
           <div class="calc-card">
@@ -395,10 +457,18 @@
       cost: $("calcCost"),
       discount: $("calcDiscount"),
       commission: $("calcCommission"),
-      logistics: $("calcLogistics"),
       ads: $("calcAds"),
       other: $("calcOther"),
       vat: $("calcVat"),
+      len: $("calcLen"),
+      width: $("calcWidth"),
+      height: $("calcHeight"),
+      weight: $("calcWeight"),
+      volume: $("calcVolume"),
+      weightAlt: $("calcWeightAlt"),
+      svd: $("calcSvd"),
+      buyout: $("calcBuyout"),
+      category: $("calcCategory"),
     };
     const calcOutputs = {
       netPrice: $("calcNetPrice"),
@@ -414,6 +484,16 @@
       roi: $("calcRoi"),
       breakeven: $("calcBreakeven"),
     };
+
+    const svdValueEl = $("svdValue");
+    const logisticsMeta = $("logisticsMeta");
+    const dimsTab = $("dimsTab");
+    const volumeTab = $("volumeTab");
+    const dimsInputs = $("dimsInputs");
+    const volumeInputs = $("volumeInputs");
+    const categoryHintEl = $("categoryHint");
+    const categoryListEl = $("categoryList");
+    const fulfillmentButtons = document.querySelectorAll('.fulfillment-btn');
 
     const tabButtons = document.querySelectorAll('.tab-btn');
     const tabContents = document.querySelectorAll('.tab-content');
@@ -466,6 +546,166 @@
       return Number.isFinite(num) ? num : 0;
     }
 
+    const categories = [
+      { name: "Обогреватели и климатическая техника", keywords: ["обогрев", "обогреватель", "климат", "тепловентилятор", "конвектор"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Бытовая техника для кухни", keywords: ["кухонная техника", "блендер", "миксер", "чайник", "мультиварка"], commission: { fbo: 10, fbs: 10.5 } },
+      { name: "Смартфоны и гаджеты", keywords: ["смартфон", "телефон", "гаджет", "iphone", "android"], commission: { fbo: 5, fbs: 5.5 } },
+      { name: "Ноутбуки и компьютеры", keywords: ["ноутбук", "компьютер", "пк", "моноблок"], commission: { fbo: 6, fbs: 6.5 } },
+      { name: "Одежда", keywords: ["одежда", "футболка", "куртка", "джинсы"], commission: { fbo: 15, fbs: 16 } },
+      { name: "Обувь", keywords: ["обувь", "кроссовки", "ботинки", "туфли"], commission: { fbo: 14, fbs: 15 } },
+      { name: "Детские товары", keywords: ["игрушка", "дети", "коляска", "подгузники"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Красота и здоровье", keywords: ["косметика", "крем", "уход", "бьюти"], commission: { fbo: 10, fbs: 10.5 } },
+      { name: "Зоотовары", keywords: ["корм", "зоотовары", "кошки", "собаки"], commission: { fbo: 13, fbs: 13.5 } },
+      { name: "Дом и интерьер", keywords: ["дом", "интерьер", "декор", "постельное"], commission: { fbo: 11, fbs: 11.5 } },
+      { name: "Инструменты и стройка", keywords: ["инструмент", "дрель", "шуруповёрт", "строительство"], commission: { fbo: 9, fbs: 9.5 } },
+      { name: "Автотовары", keywords: ["авто", "шины", "автомобиль", "аксессуары"], commission: { fbo: 11, fbs: 11.5 } },
+      { name: "Спорт и отдых", keywords: ["спорт", "туризм", "тренировки", "гантели"], commission: { fbo: 10, fbs: 10.5 } },
+      { name: "Канцелярия и хобби", keywords: ["канцелярия", "тетрадь", "хобби", "рукоделие"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Сад и дача", keywords: ["сад", "дача", "огород", "гриль"], commission: { fbo: 12, fbs: 12.5 } },
+    ];
+
+    const fulfillmentBase = {
+      fbo: [
+        { maxWeight: 0.5, maxVolume: 5, base: 55 },
+        { maxWeight: 2, maxVolume: 12, base: 75 },
+        { maxWeight: 5, maxVolume: 25, base: 110 },
+        { maxWeight: 10, maxVolume: 45, base: 150 },
+        { maxWeight: 20, maxVolume: 120, base: 210 },
+        { maxWeight: 40, maxVolume: 350, base: 310 },
+        { maxWeight: Infinity, maxVolume: Infinity, base: 420 },
+      ],
+      fbs: [
+        { maxWeight: 0.5, maxVolume: 5, base: 70 },
+        { maxWeight: 2, maxVolume: 12, base: 95 },
+        { maxWeight: 5, maxVolume: 25, base: 135 },
+        { maxWeight: 10, maxVolume: 45, base: 185 },
+        { maxWeight: 20, maxVolume: 120, base: 240 },
+        { maxWeight: 40, maxVolume: 350, base: 340 },
+        { maxWeight: Infinity, maxVolume: Infinity, base: 460 },
+      ],
+    };
+
+    const norm = (s) => String(s || "").toLowerCase().trim();
+
+    function buildCategoryList(){
+      if (!categoryListEl) return;
+      categoryListEl.innerHTML = categories.map((c) => `<option value="${c.name}"></option>`).join("");
+    }
+
+    function pickCategory(query){
+      const q = norm(query);
+      if (!q) return null;
+      const exact = categories.find((c) => norm(c.name) === q);
+      if (exact) return exact;
+      return categories.find((c) => {
+        const candidates = [c.name, ...(c.keywords || [])].map(norm);
+        return candidates.some((k) => k.includes(q) || q.includes(k));
+      }) || null;
+    }
+
+    let fulfillmentMode = "fbo";
+    let selectedCategory = null;
+    let logisticsInputMode = "dims";
+
+    function commissionForMode(cat){
+      if (!cat) return null;
+      const rate = cat.commission?.[fulfillmentMode];
+      return Number.isFinite(rate) ? rate : null;
+    }
+
+    function computeVolumeAndWeight(){
+      let volumeLiters = 0;
+      let weightKg = 0;
+      if (logisticsInputMode === "volume"){
+        volumeLiters = Math.max(0, parseNumber(calcInputs.volume));
+        weightKg = Math.max(0, parseNumber(calcInputs.weightAlt));
+      } else {
+        const len = Math.max(0, parseNumber(calcInputs.len));
+        const width = Math.max(0, parseNumber(calcInputs.width));
+        const height = Math.max(0, parseNumber(calcInputs.height));
+        volumeLiters = (len * width * height) / 1000; // см^3 -> литры
+        weightKg = Math.max(0, parseNumber(calcInputs.weight));
+      }
+      return { volumeLiters, weightKg };
+    }
+
+    function computeLogistics(baseTable, volumeLiters, weightKg, svdValue, buyoutPct){
+      const volumetricWeight = Math.max(weightKg, volumeLiters / 5);
+      const tier = baseTable.find((t) => volumetricWeight <= t.maxWeight && volumeLiters <= t.maxVolume) || baseTable[baseTable.length - 1];
+      const svdCoeff = 0.75 + (svdValue / 100) * 0.65; // ближе к логике Ozon: 0.75..1.4
+      const forward = tier.base * svdCoeff;
+      const returnCoeff = 0.65; // возврат дешевле прямой доставки
+      const expectedReturns = Math.max(0, Math.min(100, buyoutPct));
+      const returnShare = (100 - expectedReturns) / 100;
+      const reverse = tier.base * returnCoeff * returnShare;
+      const total = forward + reverse;
+      return { forward, reverse, total, volumetricWeight, tier };
+    }
+
+    function setLogisticsMeta(info){
+      if (!logisticsMeta) return;
+      if (!info){
+        logisticsMeta.innerHTML = "";
+        return;
+      }
+      const tags = [
+        `${logisticsInputMode === "volume" ? "Объём" : "Габариты"}: ${info.volumeLiters.toFixed(2)} л` ,
+        `Вес для тарифа: ${info.volumetricWeight.toFixed(2)} кг`,
+        `Модель: ${fulfillmentMode.toUpperCase()}`,
+        `СВД: ${info.svdValue}`,
+        `Обратка: ${(info.returnShare * 100).toFixed(0)}% попыток`
+      ];
+      logisticsMeta.innerHTML = tags.map((t) => `<span class="tag">${t}</span>`).join("");
+    }
+
+    function applyCategory(cat){
+      selectedCategory = cat;
+      if (cat){
+        calcInputs.category.value = cat.name;
+        const rate = commissionForMode(cat);
+        if (rate !== null){
+          calcInputs.commission.value = rate;
+          categoryHintEl.textContent = `Категория: ${cat.name}. Комиссия для ${fulfillmentMode.toUpperCase()}: ${rate}%`;
+        } else {
+          categoryHintEl.textContent = `Категория: ${cat.name}. Укажите комиссию вручную.`;
+        }
+      } else {
+        categoryHintEl.textContent = "Комиссия заполнится автоматически после выбора категории.";
+      }
+    }
+
+    function handleCategoryInput(){
+      const cat = pickCategory(calcInputs.category.value);
+      applyCategory(cat);
+      updateCalc();
+    }
+
+    function setFulfillment(mode){
+      if (!mode) return;
+      fulfillmentMode = mode;
+      fulfillmentButtons.forEach((btn) => {
+        const isActive = btn.dataset.mode === mode;
+        btn.classList.toggle('active', isActive);
+      });
+      const rate = commissionForMode(selectedCategory);
+      if (rate !== null){
+        calcInputs.commission.value = rate;
+        if (selectedCategory){
+          categoryHintEl.textContent = `Категория: ${selectedCategory.name}. Комиссия ${mode.toUpperCase()}: ${rate}%`;
+        }
+      }
+      updateCalc();
+    }
+
+    function setLogisticsMode(mode){
+      logisticsInputMode = mode;
+      dimsTab?.classList.toggle('active', mode === "dims");
+      volumeTab?.classList.toggle('active', mode === "volume");
+      if (dimsInputs) dimsInputs.style.display = mode === "dims" ? "block" : "none";
+      if (volumeInputs) volumeInputs.style.display = mode === "volume" ? "block" : "none";
+      updateCalc();
+    }
+
     function setCalcValue(el, value, { isPercent = false } = {}){
       if (!el) return;
       const cls = value > 0 ? "pos" : (value < 0 ? "neg" : "");
@@ -486,10 +726,17 @@
       const discount = Math.max(0, parseNumber(calcInputs.discount));
       const cost = Math.max(0, parseNumber(calcInputs.cost));
       const commissionPct = Math.max(0, parseNumber(calcInputs.commission));
-      const logistics = Math.max(0, parseNumber(calcInputs.logistics));
       const adsPct = Math.max(0, parseNumber(calcInputs.ads));
       const other = Math.max(0, parseNumber(calcInputs.other));
       const vatPct = Math.max(0, parseNumber(calcInputs.vat));
+      const svdVal = Math.max(0, Math.min(100, parseNumber(calcInputs.svd)));
+      const buyoutPct = Math.max(0, Math.min(100, parseNumber(calcInputs.buyout)));
+
+      const { volumeLiters, weightKg } = computeVolumeAndWeight();
+      const table = fulfillmentBase[fulfillmentMode] || fulfillmentBase.fbo;
+      const logisticsInfo = computeLogistics(table, volumeLiters, weightKg, svdVal, buyoutPct);
+      const logistics = logisticsInfo.total;
+      setLogisticsMeta({ ...logisticsInfo, volumeLiters, svdValue: svdVal, returnShare: (100 - buyoutPct) / 100 });
 
       const discountFactor = Math.max(0, 1 - discount / 100);
       const netPrice = price * discountFactor;
@@ -524,6 +771,21 @@
     Object.values(calcInputs).forEach((el) => {
       el?.addEventListener("input", updateCalc);
     });
+    calcInputs.category?.addEventListener("input", handleCategoryInput);
+    calcInputs.category?.addEventListener("change", handleCategoryInput);
+    calcInputs.svd?.addEventListener("input", () => {
+      svdValueEl.textContent = calcInputs.svd.value || "0";
+      updateCalc();
+    });
+    fulfillmentButtons.forEach((btn) => btn.addEventListener("click", () => setFulfillment(btn.dataset.mode)));
+    dimsTab?.addEventListener("click", () => setLogisticsMode("dims"));
+    volumeTab?.addEventListener("click", () => setLogisticsMode("volume"));
+
+    buildCategoryList();
+    setFulfillment("fbo");
+    setLogisticsMode("dims");
+    svdValueEl.textContent = calcInputs.svd?.value || "0";
+    handleCategoryInput();
     updateCalc();
 
     function fmtOpWhen(iso, todayLocal){
