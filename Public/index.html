@@ -290,6 +290,7 @@
               </label>
               <datalist id="categoryList"></datalist>
               <div class="inline-note" id="categoryHint">Начните вводить название — покажем ближайшую категорию, а комиссию подставим автоматически.</div>
+              <div class="err" id="categoryError" style="display:none;"></div>
               <label>Комиссия маркетплейса, %
                 <input id="calcCommission" type="number" inputmode="decimal" placeholder="15" />
               </label>
@@ -504,6 +505,7 @@
     const dimsInputs = $("dimsInputs");
     const volumeInputs = $("volumeInputs");
     const categoryHintEl = $("categoryHint");
+    const categoryErrorEl = $("categoryError");
     const categoryListEl = $("categoryList");
     const categorySuggestEl = $("categorySuggest");
     const fulfillmentButtons = document.querySelectorAll('.fulfillment-btn');
@@ -620,7 +622,9 @@
         setCategoryOptions(categories.slice(0, 10));
         categoryHintEl.textContent = `Категории подтянуты из ${categoriesLoadedFrom} (${categories.length} шт.)`;
       } catch (e){
-        categoryHintEl.textContent = `Не удалось загрузить категории из Ozon API: ${e.message || e}`;
+        const msg = e?.message || e;
+        categoryHintEl.textContent = `Не удалось загрузить категории из Ozon API: ${msg}`;
+        setCategoryError(msg === "no_creds" ? "Нет доступа к каталогу Ozon: добавьте Client ID и Api-Key." : `Ошибка загрузки: ${msg}`);
       } finally {
         categoriesLoading = false;
       }
@@ -661,17 +665,33 @@
           ? `Нашли ${categories.length} вариантов (источник: ${categoriesLoadedFrom}).`
           : "Не нашли категорию в каталоге Ozon. Продолжайте печатать или уточните подкатегорию.";
       } catch (e){
-        categoryHintEl.textContent = `Не удалось найти категории через Ozon API: ${e.message || e}`;
+        const msg = e?.message || e;
+        categoryHintEl.textContent = `Не удалось найти категории через Ozon API: ${msg}`;
+        setCategoryError(msg === "no_creds" ? "Нет доступа к каталогу Ozon: добавьте Client ID и Api-Key." : `Ошибка поиска: ${msg}`);
         renderCategorySuggest([]);
       } finally {
         categoriesLoading = false;
       }
     }
 
+    function setCategoryError(msg){
+      if (!categoryErrorEl) return;
+      if (!msg){
+        categoryErrorEl.style.display = "none";
+        categoryErrorEl.textContent = "";
+        return;
+      }
+      categoryErrorEl.style.display = "block";
+      categoryErrorEl.textContent = msg;
+    }
+
     function setCategoryOptions(list){
       if (!categoryListEl) return;
       categoryListEl.innerHTML = (list || []).map((c) => `<option value="${c.name}"></option>`).join("");
       renderCategorySuggest(list);
+      if (list && list.length){
+        setCategoryError("");
+      }
     }
 
     function renderCategorySuggest(list){
@@ -861,6 +881,7 @@
         selectedCategory = null;
         setCategoryOptions([]);
         renderCategorySuggest([]);
+        setCategoryError("");
         if (!commissionDirty) calcInputs.commission.value = "";
         categoryHintEl.textContent = "Начните вводить категорию так, как в кабинете Ozon.";
         updateCalc();
