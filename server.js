@@ -165,6 +165,65 @@ function flattenCategoryTree(tree, acc = []) {
   return acc;
 }
 
+function normalize(str) {
+  return String(str || "").toLowerCase().trim();
+}
+
+function scoreCategory(cat, qTokens) {
+  const haystack = [cat.name, cat.path, ...(cat.keywords || [])].map(normalize).filter(Boolean);
+  if (!haystack.length) return 0;
+  let score = 0;
+  const joined = qTokens.join(" ");
+  haystack.forEach((h) => {
+    if (h === joined) score = Math.max(score, 140);
+    else if (h.startsWith(joined)) score = Math.max(score, 120);
+    else if (h.includes(joined)) score = Math.max(score, 100);
+    qTokens.forEach((t) => {
+      if (t.length > 2 && h.includes(t)) score = Math.max(score, 80);
+    });
+  });
+  return score;
+}
+
+async function ensureCategoryCache({ clientId, apiKey, source }) {
+  if (categoryCache.list.length) return categoryCache;
+  if (!clientId || !apiKey) throw new Error("no_creds");
+
+  const body = { language: "RU" };
+  const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId, apiKey, body });
+  const tree = data?.result?.categories || data?.result?.items || data?.result || data;
+  const flat = flattenCategoryTree(tree, []).map((c) => ({
+    category_id: c.category_id,
+    name: c.name,
+    path: c.path || c.name,
+    keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
+  }));
+
+  categoryCache.list = flat;
+  categoryCache.source = source || OZON_CATEGORY_TREE_PATH;
+  categoryCache.updatedAt = Date.now();
+  return categoryCache;
+}
+
+function searchCategories(query, { limit = 20 } = {}) {
+  const q = normalize(query);
+  if (!q || q.length < 2 || !categoryCache.list.length) return [];
+  const qTokens = q.split(/\s+/).filter(Boolean);
+  return categoryCache.list
+    .map((cat) => ({ cat, score: scoreCategory(cat, qTokens) }))
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((s) => s.cat);
+}
+
+// Cache of categories fetched from Ozon to allow repeated lookups and search.
+const categoryCache = {
+  list: [],
+  source: null,
+  updatedAt: 0,
+};
+
 // ---------------- date helpers ----------------
 function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
@@ -658,16 +717,49 @@ app.post("/api/ozon/categories", async (req, res) => {
   try {
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
-    if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
 
-    const body = req.body?.payload || { language: "RU" };
-    const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId: resolved.clientId, apiKey: resolved.apiKey, body });
-    const tree = data?.result?.categories || data?.result?.items || data?.result || data;
-    const flat = flattenCategoryTree(tree, []);
+    if (!resolved?.clientId || !resolved?.apiKey) {
+      if (categoryCache.list.length) {
+        return res.json({
+          source: categoryCache.source || "cache",
+          total: categoryCache.list.length,
+          categories: categoryCache.list,
+          cached: true,
+        });
+      }
+      return res.status(400).json({ error: "no_creds" });
+    }
+
+    await ensureCategoryCache(resolved);
+
     return res.json({
-      source: resolved.source || OZON_CATEGORY_TREE_PATH,
-      total: flat.length,
-      categories: flat,
+      source: categoryCache.source,
+      total: categoryCache.list.length,
+      categories: categoryCache.list,
+    });
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/api/ozon/categories/search", async (req, res) => {
+  try {
+    const query = req.body?.query || req.query.q || "";
+    const limit = Number(req.body?.limit || req.query.limit || 20) || 20;
+
+    const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
+    const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
+
+    if (!categoryCache.list.length) {
+      if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
+      await ensureCategoryCache(resolved);
+    }
+
+    const matches = searchCategories(query, { limit });
+    return res.json({
+      source: categoryCache.source,
+      total: categoryCache.list.length,
+      categories: matches,
     });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
