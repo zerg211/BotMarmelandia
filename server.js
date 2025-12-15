@@ -189,9 +189,18 @@ function scoreCategory(cat, qTokens) {
   return score;
 }
 
+const CATEGORY_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 часов
+
 async function ensureCategoryCache({ clientId, apiKey, source }) {
   loadCategoryCacheFromDisk();
-  if (categoryCache.list.length) return categoryCache;
+
+  const cacheIsFallback = categoryCache.source === "fallback";
+  const cacheIsStale = categoryCache.updatedAt && Date.now() - categoryCache.updatedAt > CATEGORY_CACHE_TTL_MS;
+
+  // Если уже есть кэш и он не фолбэк/не протух — возвращаем, иначе попробуем обновить по API
+  if (categoryCache.list.length && !cacheIsFallback && !cacheIsStale) return categoryCache;
+
+  // Если кэш есть, но он из фолбэка или устарел — продолжаем и перезапишем его при наличии ключей
   if (!clientId || !apiKey) throw new Error("no_creds");
 
   const body = { language: "RU" };
@@ -819,6 +828,9 @@ app.post("/api/ozon/categories/search", async (req, res) => {
       } else {
         await ensureCategoryCache(resolved);
       }
+    } else if (resolved?.clientId && resolved?.apiKey) {
+      // Если данные есть, но они из фолбэка или устарели — обновим при наличии ключей
+      await ensureCategoryCache(resolved);
     }
 
     const matches = searchCategories(query, { limit });
