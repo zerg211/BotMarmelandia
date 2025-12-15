@@ -145,7 +145,7 @@
     .section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;}
     .title.sm{font-size:18px;}
     .calc{display:flex;flex-direction:column;gap:12px;}
-    .calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;}
+    .calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;}
     .calc-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:12px;}
     .calc .field-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
     .calc label{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:6px;}
@@ -178,6 +178,13 @@
     .pill-radio button{border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--text);padding:8px 12px;border-radius:12px;font-weight:800;cursor:pointer;}
     .pill-radio button.active{background:rgba(77,163,255,.18);border-color:rgba(77,163,255,.6);}
     .inline-note{font-size:11px;color:var(--muted);}
+    .hero-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;}
+    .mode-card{background:linear-gradient(135deg, rgba(77,163,255,.16), rgba(60,203,127,.08));border:1px solid rgba(77,163,255,.35);}
+    .mode-pill{padding:6px 10px;border-radius:12px;font-size:12px;background:rgba(0,0,0,.16);border:1px solid var(--line);color:var(--text);}
+    .svd-legend{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted);}
+    .svd-value{font-weight:800;color:var(--accent);}
+    .badge-row{display:flex;flex-wrap:wrap;gap:8px;font-size:12px;color:var(--muted);}
+    .badge-row .pill{border-color:rgba(255,255,255,.08);}
 
 </style>
 </head>
@@ -237,41 +244,66 @@
         <div class="section-head">
           <div>
             <div class="title sm">Калькулятор Ozon</div>
-            <div class="sub">Те же формулы, что в калькуляторе ecomunit, но реализованы с нуля.</div>
+            <div class="sub">Повторяет UX ecomunit: автоподбор категории и комиссий, логистика FBO/FBS с ползунком СВД.</div>
           </div>
           <span class="calc-badge">⚡ обновлён</span>
         </div>
 
-        <div class="calc-grid">
-          <div class="calc-card">
-            <div class="field-row">
-              <label>Цена без скидки, ₽<input id="calcPrice" type="number" inputmode="decimal" placeholder="1499" /></label>
-              <label>Скидка, %<input id="calcDiscount" type="number" inputmode="decimal" placeholder="10" value="0" /></label>
+        <div class="hero-row">
+          <div class="calc-card mode-card">
+            <div class="label" style="color:var(--text);font-weight:800;">Схема работы</div>
+            <div class="pill-radio" role="group" aria-label="Модель исполнения" style="gap:10px;">
+              <button type="button" class="fulfillment-btn active" data-mode="fbo">FBO · склад Ozon</button>
+              <button type="button" class="fulfillment-btn" data-mode="fbs">FBS · склад продавца</button>
             </div>
-            <div class="field-row">
-              <label>Себестоимость, ₽<input id="calcCost" type="number" inputmode="decimal" placeholder="650" /></label>
-              <label>Реклама, % от цены<input id="calcAds" type="number" inputmode="decimal" placeholder="8" value="0" /></label>
+            <div class="badge-row" id="modeMeta"></div>
+            <div class="svd-legend">
+              <span>Среднее время доставки (СВД)</span>
+              <span class="svd-value" id="svdValue">50</span>
             </div>
+            <div class="svd-row">
+              <span>0</span>
+              <input id="calcSvd" type="range" min="0" max="100" value="50" />
+              <span>100</span>
+            </div>
+            <div class="inline-note">Чем выше СВД, тем дороже логистика. Ближе к логике калькулятора Ozon: учитываем обратную доставку через процент выкупа.</div>
+            <div class="field-row">
+              <label>Процент выкупа, %<input id="calcBuyout" type="number" inputmode="decimal" placeholder="95" value="95" /></label>
+              <label>Доп. расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
+            </div>
+          </div>
 
+          <div class="calc-card">
             <div class="fieldset">
-              <legend>Категория и модель исполнения</legend>
-              <label>Категория Ozon
+              <legend>Категория и тип товара</legend>
+              <label>Категория или тип, как в кабинете Ozon
                 <input id="calcCategory" type="text" placeholder="например: обогрев" list="categoryList" />
               </label>
               <datalist id="categoryList"></datalist>
-              <div class="pill-radio" role="group" aria-label="Модель исполнения">
-                <button type="button" class="fulfillment-btn active" data-mode="fbo">FBO (склад Ozon)</button>
-                <button type="button" class="fulfillment-btn" data-mode="fbs">FBS (со склада продавца)</button>
-              </div>
-              <div class="inline-note" id="categoryHint">Комиссия заполнится автоматически после выбора категории.</div>
+              <div class="inline-note" id="categoryHint">Начните вводить название — покажем ближайшую категорию, а комиссию подставим автоматически.</div>
               <div class="field-row">
-                <label>Комиссия Ozon, %
+                <label>Комиссия маркетплейса, %
                   <input id="calcCommission" type="number" inputmode="decimal" placeholder="15" value="15" />
                 </label>
                 <label>НДС, % (если есть)<input id="calcVat" type="number" inputmode="decimal" placeholder="0" value="0" /></label>
               </div>
             </div>
+            <div class="fieldset">
+              <legend>Финансы и налоги</legend>
+              <div class="field-row">
+                <label>Цена продажи, ₽<input id="calcPrice" type="number" inputmode="decimal" placeholder="1499" /></label>
+                <label>Себестоимость, ₽<input id="calcCost" type="number" inputmode="decimal" placeholder="650" /></label>
+              </div>
+              <div class="field-row">
+                <label>Скидка, %<input id="calcDiscount" type="number" inputmode="decimal" placeholder="10" value="0" /></label>
+                <label>Реклама, % от цены<input id="calcAds" type="number" inputmode="decimal" placeholder="8" value="0" /></label>
+              </div>
+            </div>
+          </div>
+        </div>
 
+        <div class="calc-grid">
+          <div class="calc-card">
             <div class="fieldset">
               <legend>Логистика и габариты</legend>
               <div class="toggle-row">
@@ -294,21 +326,11 @@
                   <label>Вес, кг<input id="calcWeightAlt" type="number" inputmode="decimal" placeholder="0.9" /></label>
                 </div>
               </div>
-              <div class="svd-row">
-                <span>СВД (среднее время доставки)</span>
-                <input id="calcSvd" type="range" min="0" max="100" value="50" />
-                <span id="svdValue">50</span>
-              </div>
-              <div class="inline-note">Ползунок СВД работает как на Ozon: чем выше значение, тем дороже доставка. Мы учитываем обратную доставку по проценту выкупа.</div>
-              <div class="field-row">
-                <label>Процент выкупа, %<input id="calcBuyout" type="number" inputmode="decimal" placeholder="95" value="95" /></label>
-                <label>Доп. расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
-              </div>
               <div class="tags" id="logisticsMeta"></div>
+              <div class="calc-note">Учёт как в примере Ozon: берём больший из фактического и объёмного веса, тариф по FBO/FBS и корректировку по СВД. Возвраты считаем по проценту выкупа.</div>
             </div>
 
             <div class="calc-hint">Введите цену, скидку и себестоимость. Выберите категорию — комиссия подтянется автоматически. Логистика считается как на Ozon: по габаритам/весу, модели FBO/FBS, СВД и проценту выкупа с учётом обратной доставки.</div>
-            <div class="calc-note">Формулы перенесены по духу ecomunit и калькулятора Ozon: скидка уменьшает базовую цену, комиссия/реклама/НДС считаются от цены со скидкой, прочие затраты — фикс. Логистика берёт максимальный из фактического и объёмного веса и корректируется СВД, моделью FBO/FBS и возвратами.</div>
           </div>
 
           <div class="calc-card">
@@ -342,11 +364,11 @@
                 <div class="v" id="calcProfit">—</div>
               </div>
               <div class="calc-metric">
-                <div class="k">Маржа</div>
+                <div class="k">Маржинальность</div>
                 <div class="v" id="calcMargin">—</div>
               </div>
               <div class="calc-metric">
-                <div class="k">Рентабельность (ROI к себестоимости)</div>
+                <div class="k">ROI к себестоимости</div>
                 <div class="v" id="calcRoi">—</div>
               </div>
               <div class="calc-metric">
@@ -358,47 +380,6 @@
         </div>
       </div>
     </div>
-
-    <div class="footer">
-      <div id="updatedAt">Последнее обновление: —</div>
-      <div class="row" style="justify-content:flex-end;">
-        <button class="btn secondary" id="keysBtn">🔑 Ключи</button>
-        <button class="btn" id="refreshBtn">
-          <svg id="refreshIcon" width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-            <path d="M21 3v7h-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          </svg>
-          Обновить
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- modal -->
-  <div class="modal-backdrop" id="modalBg">
-    <div class="modal">
-      <h3>Ключи Ozon Seller</h3>
-
-      <div class="field">
-        <label>Client ID</label>
-        <input id="clientId" placeholder="например 2396143" />
-      </div>
-
-      <div class="field">
-        <label>Api-Key</label>
-        <input id="apiKey" placeholder="например 6157f0ba-..." />
-      </div>
-
-      <div class="err" id="modalErr">Ошибка</div>
-
-      <div class="row">
-        <button class="btn secondary" id="cancelBtn">Закрыть</button>
-        <button class="btn" id="saveBtn">Сохранить</button>
-      </div>
-    </div>
-  </div>
-
-
   <!-- balance modal -->
   <div class="modal-backdrop" id="balModalBg">
     <div class="modal">
@@ -487,6 +468,7 @@
 
     const svdValueEl = $("svdValue");
     const logisticsMeta = $("logisticsMeta");
+    const modeMetaEl = $("modeMeta");
     const dimsTab = $("dimsTab");
     const volumeTab = $("volumeTab");
     const dimsInputs = $("dimsInputs");
@@ -547,21 +529,28 @@
     }
 
     const categories = [
-      { name: "Обогреватели и климатическая техника", keywords: ["обогрев", "обогреватель", "климат", "тепловентилятор", "конвектор"], commission: { fbo: 12, fbs: 12.5 } },
-      { name: "Бытовая техника для кухни", keywords: ["кухонная техника", "блендер", "миксер", "чайник", "мультиварка"], commission: { fbo: 10, fbs: 10.5 } },
+      { name: "Обогреватели · климатическая техника", keywords: ["обогрев", "обогреватель", "климат", "конвектор", "тепловентилятор"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Техника для кухни", keywords: ["кухня", "кухонная техника", "блендер", "миксер", "чайник", "мультиварка"], commission: { fbo: 10, fbs: 10.5 } },
+      { name: "Бытовые товары для дома", keywords: ["утюг", "пароочиститель", "пылесос", "дом", "уход"], commission: { fbo: 11, fbs: 11.5 } },
       { name: "Смартфоны и гаджеты", keywords: ["смартфон", "телефон", "гаджет", "iphone", "android"], commission: { fbo: 5, fbs: 5.5 } },
       { name: "Ноутбуки и компьютеры", keywords: ["ноутбук", "компьютер", "пк", "моноблок"], commission: { fbo: 6, fbs: 6.5 } },
-      { name: "Одежда", keywords: ["одежда", "футболка", "куртка", "джинсы"], commission: { fbo: 15, fbs: 16 } },
+      { name: "Периферия и аксессуары", keywords: ["клавиатура", "мышь", "накопитель", "ssd", "hdd"], commission: { fbo: 8, fbs: 8.5 } },
+      { name: "Одежда", keywords: ["одежда", "футболка", "куртка", "джинсы", "брюки"], commission: { fbo: 15, fbs: 16 } },
       { name: "Обувь", keywords: ["обувь", "кроссовки", "ботинки", "туфли"], commission: { fbo: 14, fbs: 15 } },
-      { name: "Детские товары", keywords: ["игрушка", "дети", "коляска", "подгузники"], commission: { fbo: 12, fbs: 12.5 } },
-      { name: "Красота и здоровье", keywords: ["косметика", "крем", "уход", "бьюти"], commission: { fbo: 10, fbs: 10.5 } },
+      { name: "Спорт и отдых", keywords: ["спорт", "туризм", "тренировки", "гантели", "йога"], commission: { fbo: 10, fbs: 10.5 } },
+      { name: "Красота и здоровье", keywords: ["косметика", "крем", "уход", "бьюти", "маска"], commission: { fbo: 10, fbs: 10.5 } },
+      { name: "Детские товары", keywords: ["игрушка", "дети", "коляска", "подгузники", "конструктор"], commission: { fbo: 12, fbs: 12.5 } },
       { name: "Зоотовары", keywords: ["корм", "зоотовары", "кошки", "собаки"], commission: { fbo: 13, fbs: 13.5 } },
-      { name: "Дом и интерьер", keywords: ["дом", "интерьер", "декор", "постельное"], commission: { fbo: 11, fbs: 11.5 } },
-      { name: "Инструменты и стройка", keywords: ["инструмент", "дрель", "шуруповёрт", "строительство"], commission: { fbo: 9, fbs: 9.5 } },
-      { name: "Автотовары", keywords: ["авто", "шины", "автомобиль", "аксессуары"], commission: { fbo: 11, fbs: 11.5 } },
-      { name: "Спорт и отдых", keywords: ["спорт", "туризм", "тренировки", "гантели"], commission: { fbo: 10, fbs: 10.5 } },
-      { name: "Канцелярия и хобби", keywords: ["канцелярия", "тетрадь", "хобби", "рукоделие"], commission: { fbo: 12, fbs: 12.5 } },
-      { name: "Сад и дача", keywords: ["сад", "дача", "огород", "гриль"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Дом и интерьер", keywords: ["дом", "интерьер", "декор", "постельное", "светильник"], commission: { fbo: 11, fbs: 11.5 } },
+      { name: "Инструменты и стройка", keywords: ["инструмент", "дрель", "шуруповёрт", "строительство", "ремонт"], commission: { fbo: 9, fbs: 9.5 } },
+      { name: "Автотовары", keywords: ["авто", "шины", "автомобиль", "аксессуары", "щётка"], commission: { fbo: 11, fbs: 11.5 } },
+      { name: "Канцелярия и хобби", keywords: ["канцелярия", "тетрадь", "хобби", "рукоделие", "краски"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Сад и дача", keywords: ["сад", "дача", "огород", "гриль", "шланг"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Товары для уборки", keywords: ["уборка", "швабра", "ведро", "губки", "перчатки"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Хранение и организация", keywords: ["контейнер", "органайзер", "короб", "полка"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Для творчества", keywords: ["краски", "пластилин", "рисование", "скрап"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Аптека и медтовары", keywords: ["тонометр", "ингалятор", "мед", "аптечка"], commission: { fbo: 9.5, fbs: 10 } },
+      { name: "Кухонная посуда", keywords: ["сковорода", "кастрюля", "тарелка", "посуда", "кухонная утварь"], commission: { fbo: 11, fbs: 11.5 } },
     ];
 
     const fulfillmentBase = {
@@ -595,12 +584,25 @@
     function pickCategory(query){
       const q = norm(query);
       if (!q) return null;
-      const exact = categories.find((c) => norm(c.name) === q);
-      if (exact) return exact;
-      return categories.find((c) => {
+      let best = null;
+      let bestScore = 0;
+      const tokens = q.split(/\s+/).filter(Boolean);
+      categories.forEach((c) => {
         const candidates = [c.name, ...(c.keywords || [])].map(norm);
-        return candidates.some((k) => k.includes(q) || q.includes(k));
-      }) || null;
+        let score = 0;
+        candidates.forEach((cand) => {
+          if (cand === q) score = Math.max(score, 5);
+          else if (cand.includes(q) || q.includes(cand)) score = Math.max(score, 4);
+          else tokens.forEach((t) => {
+            if (t.length > 2 && cand.includes(t)) score = Math.max(score, 3);
+          });
+        });
+        if (score > bestScore) {
+          bestScore = score;
+          best = c;
+        }
+      });
+      return bestScore ? best : null;
     }
 
     let fulfillmentMode = "fbo";
@@ -632,14 +634,13 @@
     function computeLogistics(baseTable, volumeLiters, weightKg, svdValue, buyoutPct){
       const volumetricWeight = Math.max(weightKg, volumeLiters / 5);
       const tier = baseTable.find((t) => volumetricWeight <= t.maxWeight && volumeLiters <= t.maxVolume) || baseTable[baseTable.length - 1];
-      const svdCoeff = 0.75 + (svdValue / 100) * 0.65; // ближе к логике Ozon: 0.75..1.4
+      const svdCoeff = 0.55 + (svdValue / 100) * 0.9; // 0.55..1.45 — ближе к калькулятору Ozon
       const forward = tier.base * svdCoeff;
-      const returnCoeff = 0.65; // возврат дешевле прямой доставки
-      const expectedReturns = Math.max(0, Math.min(100, buyoutPct));
-      const returnShare = (100 - expectedReturns) / 100;
+      const returnShare = Math.max(0, Math.min(1, (100 - buyoutPct) / 100));
+      const returnCoeff = 0.55 + (svdValue / 100) * 0.35;
       const reverse = tier.base * returnCoeff * returnShare;
       const total = forward + reverse;
-      return { forward, reverse, total, volumetricWeight, tier };
+      return { forward, reverse, total, volumetricWeight, tier, svdCoeff, returnShare };
     }
 
     function setLogisticsMeta(info){
@@ -649,13 +650,24 @@
         return;
       }
       const tags = [
-        `${logisticsInputMode === "volume" ? "Объём" : "Габариты"}: ${info.volumeLiters.toFixed(2)} л` ,
+        `${logisticsInputMode === "volume" ? "Объём" : "Габариты"}: ${info.volumeLiters.toFixed(2)} л`,
         `Вес для тарифа: ${info.volumetricWeight.toFixed(2)} кг`,
-        `Модель: ${fulfillmentMode.toUpperCase()}`,
-        `СВД: ${info.svdValue}`,
-        `Обратка: ${(info.returnShare * 100).toFixed(0)}% попыток`
+        `База тарифа: ${fmtRub(info.tier.base)}`,
+        `СВД множитель: ${info.svdCoeff.toFixed(2)}`,
+        `Обратка: ${(info.returnShare * 100).toFixed(0)}%`
       ];
       logisticsMeta.innerHTML = tags.map((t) => `<span class="tag">${t}</span>`).join("");
+    }
+
+    function updateModeMeta(){
+      if (!modeMetaEl) return;
+      const svd = calcInputs.svd?.value || "0";
+      const desc = fulfillmentMode === "fbo" ? "FBO: завоз на склад Ozon, ниже тарифы, нужна отгрузка заранее." : "FBS: со склада продавца, тариф выше при долгом СВД, но гибче отгрузка.";
+      modeMetaEl.innerHTML = [
+        `<span class="pill">Модель: ${fulfillmentMode.toUpperCase()}</span>`,
+        `<span class="pill">СВД: ${svd}</span>`,
+        `<span class="pill">${desc}</span>`,
+      ].join("");
     }
 
     function applyCategory(cat){
@@ -665,12 +677,12 @@
         const rate = commissionForMode(cat);
         if (rate !== null){
           calcInputs.commission.value = rate;
-          categoryHintEl.textContent = `Категория: ${cat.name}. Комиссия для ${fulfillmentMode.toUpperCase()}: ${rate}%`;
+          categoryHintEl.textContent = `Нашли: ${cat.name}. Комиссия для ${fulfillmentMode.toUpperCase()}: ${rate}%`;
         } else {
           categoryHintEl.textContent = `Категория: ${cat.name}. Укажите комиссию вручную.`;
         }
       } else {
-        categoryHintEl.textContent = "Комиссия заполнится автоматически после выбора категории.";
+        categoryHintEl.textContent = "Не нашли категорию. Попробуйте точнее написать название или подкатегорию.";
       }
     }
 
@@ -694,6 +706,7 @@
           categoryHintEl.textContent = `Категория: ${selectedCategory.name}. Комиссия ${mode.toUpperCase()}: ${rate}%`;
         }
       }
+      updateModeMeta();
       updateCalc();
     }
 
@@ -736,7 +749,7 @@
       const table = fulfillmentBase[fulfillmentMode] || fulfillmentBase.fbo;
       const logisticsInfo = computeLogistics(table, volumeLiters, weightKg, svdVal, buyoutPct);
       const logistics = logisticsInfo.total;
-      setLogisticsMeta({ ...logisticsInfo, volumeLiters, svdValue: svdVal, returnShare: (100 - buyoutPct) / 100 });
+      setLogisticsMeta({ ...logisticsInfo, volumeLiters, svdValue: svdVal });
 
       const discountFactor = Math.max(0, 1 - discount / 100);
       const netPrice = price * discountFactor;
@@ -775,6 +788,7 @@
     calcInputs.category?.addEventListener("change", handleCategoryInput);
     calcInputs.svd?.addEventListener("input", () => {
       svdValueEl.textContent = calcInputs.svd.value || "0";
+      updateModeMeta();
       updateCalc();
     });
     fulfillmentButtons.forEach((btn) => btn.addEventListener("click", () => setFulfillment(btn.dataset.mode)));
@@ -785,6 +799,7 @@
     setFulfillment("fbo");
     setLogisticsMode("dims");
     svdValueEl.textContent = calcInputs.svd?.value || "0";
+    updateModeMeta();
     handleCategoryInput();
     updateCalc();
 
