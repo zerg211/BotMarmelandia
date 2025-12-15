@@ -616,7 +616,7 @@
           path: c.path || c.name,
           category_id: c.category_id,
           keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
-          commission: {},
+          commission: c.commission || {},
         }));
         categoriesLoadedFrom = data?.source || "Ozon API";
         setCategoryOptions(categories.slice(0, 10));
