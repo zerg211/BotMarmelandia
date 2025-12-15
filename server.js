@@ -42,6 +42,7 @@ const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 const CATEGORY_CACHE_PATH = path.join(DATA_DIR, "category-cache.json");
+const OZON_FALLBACK_CATEGORIES_PATH = path.join(__dirname, "ozon-category-fallback.json");
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 const pending = new Map();
 
@@ -251,6 +252,31 @@ function saveCategoryCacheToDisk() {
     };
     fs.writeFileSync(CATEGORY_CACHE_PATH, JSON.stringify(payload, null, 2), "utf-8");
   } catch (_) {}
+}
+
+function seedCategoryCacheFromFallback() {
+  if (categoryCache.list.length) return false;
+  try {
+    if (!fs.existsSync(OZON_FALLBACK_CATEGORIES_PATH)) return false;
+    const data = JSON.parse(fs.readFileSync(OZON_FALLBACK_CATEGORIES_PATH, "utf-8"));
+    if (!Array.isArray(data)) return false;
+    categoryCache.list = data.map((c) => ({
+      category_id: c.category_id,
+      name: c.name,
+      path: c.path || c.name,
+      keywords: (c.keywords || c.path || c.name || "")
+        .toString()
+        .split(/[>/]/)
+        .map((p) => p.trim())
+        .filter(Boolean),
+      commission: c.commission || {},
+    }));
+    categoryCache.source = "fallback";
+    categoryCache.updatedAt = Date.now();
+    return categoryCache.list.length > 0;
+  } catch (_) {
+    return false;
+  }
 }
 
 // ---------------- date helpers ----------------
@@ -750,6 +776,7 @@ function resolveCredsFromRequest(req) {
 app.post("/api/ozon/categories", async (req, res) => {
   try {
     loadCategoryCacheFromDisk();
+    seedCategoryCacheFromFallback();
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
 
@@ -787,8 +814,11 @@ app.post("/api/ozon/categories/search", async (req, res) => {
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
 
     if (!categoryCache.list.length) {
-      if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
-      await ensureCategoryCache(resolved);
+      if (!resolved?.clientId || !resolved?.apiKey) {
+        if (!seedCategoryCacheFromFallback()) return res.status(400).json({ error: "no_creds" });
+      } else {
+        await ensureCategoryCache(resolved);
+      }
     }
 
     const matches = searchCategories(query, { limit });
