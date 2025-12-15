@@ -656,16 +656,16 @@ function resolveCredsFromRequest(req) {
 
 app.post("/api/ozon/categories", async (req, res) => {
   try {
-    const clientId = req.body?.clientId || req.query.clientId;
-    const apiKey = req.body?.apiKey || req.query.apiKey;
-    if (!clientId || !apiKey) return res.status(400).json({ error: "no_creds" });
+    const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
+    const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
+    if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
 
     const body = req.body?.payload || { language: "RU" };
-    const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId, apiKey, body });
+    const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId: resolved.clientId, apiKey: resolved.apiKey, body });
     const tree = data?.result?.categories || data?.result?.items || data?.result || data;
     const flat = flattenCategoryTree(tree, []);
     return res.json({
-      source: OZON_CATEGORY_TREE_PATH,
+      source: resolved.source || OZON_CATEGORY_TREE_PATH,
       total: flat.length,
       categories: flat,
     });
@@ -676,14 +676,14 @@ app.post("/api/ozon/categories", async (req, res) => {
 
 app.post("/api/ozon/commission", async (req, res) => {
   try {
-    const clientId = req.body?.clientId || req.query.clientId;
-    const apiKey = req.body?.apiKey || req.query.apiKey;
-    if (!clientId || !apiKey) return res.status(400).json({ error: "no_creds" });
+    const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
+    const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
+    if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
     const payload = req.body?.payload;
     if (!payload) return res.status(400).json({ error: "no_payload" });
 
-    const data = await ozonPost(OZON_COMMISSION_PATH, { clientId, apiKey, body: payload });
-    return res.json({ source: OZON_COMMISSION_PATH, result: data?.result || data });
+    const data = await ozonPost(OZON_COMMISSION_PATH, { clientId: resolved.clientId, apiKey: resolved.apiKey, body: payload });
+    return res.json({ source: resolved.source || OZON_COMMISSION_PATH, result: data?.result || data });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
   }
@@ -691,14 +691,14 @@ app.post("/api/ozon/commission", async (req, res) => {
 
 app.post("/api/ozon/logistics", async (req, res) => {
   try {
-    const clientId = req.body?.clientId || req.query.clientId;
-    const apiKey = req.body?.apiKey || req.query.apiKey;
-    if (!clientId || !apiKey) return res.status(400).json({ error: "no_creds" });
+    const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
+    const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
+    if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
     const payload = req.body?.payload;
     if (!payload) return res.status(400).json({ error: "no_payload" });
 
-    const data = await ozonPost(OZON_LOGISTICS_PATH, { clientId, apiKey, body: payload });
-    return res.json({ source: OZON_LOGISTICS_PATH, result: data?.result || data });
+    const data = await ozonPost(OZON_LOGISTICS_PATH, { clientId: resolved.clientId, apiKey: resolved.apiKey, body: payload });
+    return res.json({ source: resolved.source || OZON_LOGISTICS_PATH, result: data?.result || data });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
   }
