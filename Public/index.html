@@ -269,7 +269,7 @@
             <div class="inline-note">Чем выше СВД, тем дороже логистика. Ближе к логике калькулятора Ozon: учитываем обратную доставку через процент выкупа.</div>
             <div class="field-row">
               <label>Процент выкупа, %<input id="calcBuyout" type="number" inputmode="decimal" placeholder="95" value="95" /></label>
-              <label>Доп. расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
+              <label>Скидка, %<input id="calcDiscount" type="number" inputmode="decimal" placeholder="10" value="0" /></label>
             </div>
           </div>
 
@@ -281,22 +281,19 @@
               </label>
               <datalist id="categoryList"></datalist>
               <div class="inline-note" id="categoryHint">Начните вводить название — покажем ближайшую категорию, а комиссию подставим автоматически.</div>
-              <div class="field-row">
-                <label>Комиссия маркетплейса, %
-                  <input id="calcCommission" type="number" inputmode="decimal" placeholder="15" value="15" />
-                </label>
-                <label>НДС, % (если есть)<input id="calcVat" type="number" inputmode="decimal" placeholder="0" value="0" /></label>
-              </div>
+              <label>Комиссия маркетплейса, %
+                <input id="calcCommission" type="number" inputmode="decimal" placeholder="15" value="15" />
+              </label>
             </div>
             <div class="fieldset">
-              <legend>Финансы и налоги</legend>
+              <legend>Финансы</legend>
               <div class="field-row">
                 <label>Цена продажи, ₽<input id="calcPrice" type="number" inputmode="decimal" placeholder="1499" /></label>
                 <label>Себестоимость, ₽<input id="calcCost" type="number" inputmode="decimal" placeholder="650" /></label>
               </div>
               <div class="field-row">
-                <label>Скидка, %<input id="calcDiscount" type="number" inputmode="decimal" placeholder="10" value="0" /></label>
                 <label>Реклама, % от цены<input id="calcAds" type="number" inputmode="decimal" placeholder="8" value="0" /></label>
+                <label>Доп. расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
               </div>
             </div>
           </div>
@@ -347,10 +344,6 @@
                 <div class="k">Реклама</div>
                 <div class="v" id="calcAdsAmt">—</div>
               </div>
-              <div class="calc-metric">
-                <div class="k">НДС</div>
-                <div class="v" id="calcVatAmt">—</div>
-              </div>
             </div>
             <div class="calc-breakdown">
               <div class="line"><span>Себестоимость</span><span class="v" id="calcCostLine">—</span></div>
@@ -367,19 +360,51 @@
                 <div class="k">Маржинальность</div>
                 <div class="v" id="calcMargin">—</div>
               </div>
-              <div class="calc-metric">
-                <div class="k">ROI к себестоимости</div>
-                <div class="v" id="calcRoi">—</div>
-              </div>
-              <div class="calc-metric">
-                <div class="k">Точка безубыточности</div>
-                <div class="v" id="calcBreakeven">—</div>
-              </div>
             </div>
           </div>
         </div>
       </div>
     </div>
+
+    <div class="footer">
+      <div id="updatedAt">Последнее обновление: —</div>
+      <div class="row" style="justify-content:flex-end;">
+        <button class="btn secondary" id="keysBtn">🔑 Ключи</button>
+        <button class="btn" id="refreshBtn">
+          <svg id="refreshIcon" width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path d="M21 3v7h-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          Обновить
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- modal: api keys -->
+  <div class="modal-backdrop" id="modalBg">
+    <div class="modal">
+      <h3>Ключи Ozon Seller</h3>
+
+      <div class="field">
+        <label>Client ID</label>
+        <input id="clientId" placeholder="например 2396143" />
+      </div>
+
+      <div class="field">
+        <label>Api-Key</label>
+        <input id="apiKey" placeholder="например 6157f0ba-..." />
+      </div>
+
+      <div class="err" id="modalErr">Ошибка</div>
+
+      <div class="row">
+        <button class="btn secondary" id="cancelBtn">Закрыть</button>
+        <button class="btn" id="saveBtn">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
   <!-- balance modal -->
   <div class="modal-backdrop" id="balModalBg">
     <div class="modal">
@@ -440,7 +465,6 @@
       commission: $("calcCommission"),
       ads: $("calcAds"),
       other: $("calcOther"),
-      vat: $("calcVat"),
       len: $("calcLen"),
       width: $("calcWidth"),
       height: $("calcHeight"),
@@ -455,15 +479,12 @@
       netPrice: $("calcNetPrice"),
       commissionAmt: $("calcCommissionAmt"),
       adsAmt: $("calcAdsAmt"),
-      vatAmt: $("calcVatAmt"),
       costs: $("calcCosts"),
       costLine: $("calcCostLine"),
       logisticsLine: $("calcLogisticsLine"),
       otherLine: $("calcOtherLine"),
       profit: $("calcProfit"),
       margin: $("calcMargin"),
-      roi: $("calcRoi"),
-      breakeven: $("calcBreakeven"),
     };
 
     const svdValueEl = $("svdValue");
@@ -574,40 +595,37 @@
           commission: {},
         }));
         categoriesLoadedFrom = data?.source || "Ozon API";
-        buildCategoryList();
+        setCategoryOptions(matchCategories(calcInputs.category?.value || ""));
         categoryHintEl.textContent = `Категории подтянуты из ${categoriesLoadedFrom} (${categories.length} шт.)`;
       } catch (e){
         categoryHintEl.textContent = `Не удалось загрузить категории из Ozon API: ${e.message || e}`;
       }
     }
 
-    function buildCategoryList(){
+    function setCategoryOptions(list){
       if (!categoryListEl) return;
-      categoryListEl.innerHTML = categories.map((c) => `<option value="${c.name}"></option>`).join("");
+      categoryListEl.innerHTML = (list || []).map((c) => `<option value="${c.name}"></option>`).join("");
     }
 
-    function pickCategory(query){
+    function matchCategories(query, limit = 12){
       const q = norm(query);
-      if (!q) return null;
-      let best = null;
-      let bestScore = 0;
+      if (!q || q.length < 2) return [];
       const tokens = q.split(/\s+/).filter(Boolean);
+      const scored = [];
       categories.forEach((c) => {
         const candidates = [c.name, ...(c.keywords || [])].map(norm);
         let score = 0;
         candidates.forEach((cand) => {
-          if (cand === q) score = Math.max(score, 5);
-          else if (cand.includes(q) || q.includes(cand)) score = Math.max(score, 4);
-          else tokens.forEach((t) => {
-            if (t.length > 2 && cand.includes(t)) score = Math.max(score, 3);
+          if (cand === q) score = Math.max(score, 120);
+          else if (cand.startsWith(q)) score = Math.max(score, 100);
+          else if (cand.includes(q)) score = Math.max(score, 80);
+          tokens.forEach((t) => {
+            if (t.length > 2 && cand.includes(t)) score = Math.max(score, 60);
           });
         });
-        if (score > bestScore) {
-          bestScore = score;
-          best = c;
-        }
+        if (score > 0) scored.push({ cat: c, score });
       });
-      return bestScore ? best : null;
+      return scored.sort((a, b) => b.score - a.score).slice(0, limit).map((s) => s.cat);
     }
 
     let fulfillmentMode = "fbo";
@@ -750,7 +768,6 @@
     function applyCategory(cat){
       selectedCategory = cat;
       if (cat){
-        calcInputs.category.value = cat.name;
         const rate = commissionForMode(cat);
         if (rate !== null){
           calcInputs.commission.value = rate;
@@ -764,8 +781,28 @@
     }
 
     function handleCategoryInput(){
-      const cat = pickCategory(calcInputs.category.value);
-      applyCategory(cat);
+      const query = calcInputs.category?.value || "";
+      if (!query.trim()){
+        selectedCategory = null;
+        setCategoryOptions([]);
+        categoryHintEl.textContent = "Начните вводить категорию так, как в кабинете Ozon.";
+        updateCalc();
+        return;
+      }
+
+      const matches = matchCategories(query, 20);
+      setCategoryOptions(matches);
+
+      const exact = matches.find((m) => norm(m.name) === norm(query));
+      if (exact){
+        applyCategory(exact);
+        fetchCommissionFromApi(parseNumber(calcInputs.price));
+      } else {
+        selectedCategory = null;
+        categoryHintEl.textContent = matches.length
+          ? `Подходящие категории: ${matches.slice(0,3).map((m)=>m.name).join(" · ")}`
+          : "Не нашли категорию в каталоге Ozon. Продолжайте печатать или уточните подкатегорию.";
+      }
       updateCalc();
     }
 
@@ -818,7 +855,6 @@
       const commissionPct = Math.max(0, parseNumber(calcInputs.commission));
       const adsPct = Math.max(0, parseNumber(calcInputs.ads));
       const other = Math.max(0, parseNumber(calcInputs.other));
-      const vatPct = Math.max(0, parseNumber(calcInputs.vat));
       const svdVal = Math.max(0, Math.min(100, parseNumber(calcInputs.svd)));
       const buyoutPct = Math.max(0, Math.min(100, parseNumber(calcInputs.buyout)));
 
@@ -833,34 +869,27 @@
       if (selectedCategory?.category_id) fetchCommissionFromApi(netPrice || price || 0);
       const commissionAmt = netPrice * (commissionPct / 100);
       const adsAmt = netPrice * (adsPct / 100);
-      const vatAmt = netPrice * (vatPct / 100);
 
       if (!lastLogisticsQuote && weightKg && volumeLiters){
         fetchLogisticsFromApi({ price: netPrice || price || 0, volumeLiters, weightKg, svdValue: svdVal, buyoutPct });
       }
 
-      const totalCosts = cost + logistics + other + commissionAmt + adsAmt + vatAmt;
+      const totalCosts = cost + logistics + other + commissionAmt + adsAmt;
       const profit = netPrice - totalCosts;
       const marginPct = netPrice > 0 ? (profit / netPrice) * 100 : 0;
-      const roiPct = cost > 0 ? (profit / cost) * 100 : (profit === 0 ? 0 : null);
 
-      const variablePct = (commissionPct + adsPct + vatPct) / 100;
+      const variablePct = (commissionPct + adsPct) / 100;
       const fixedCosts = cost + logistics + other;
-      const breakevenNet = (1 - variablePct) > 0 ? fixedCosts / (1 - variablePct) : null;
-      const breakevenPrice = (breakevenNet !== null && discountFactor > 0) ? (breakevenNet / discountFactor) : null;
 
       setCalcValue(calcOutputs.netPrice, netPrice);
       setCalcValue(calcOutputs.commissionAmt, commissionAmt);
       setCalcValue(calcOutputs.adsAmt, adsAmt);
-      setCalcValue(calcOutputs.vatAmt, vatAmt);
       setCalcValue(calcOutputs.costLine, cost);
       setCalcValue(calcOutputs.logisticsLine, logistics);
       setCalcValue(calcOutputs.otherLine, other);
       setCalcValue(calcOutputs.costs, totalCosts);
       setCalcValue(calcOutputs.profit, profit);
       setCalcValue(calcOutputs.margin, marginPct, { isPercent: true });
-      setCalcValue(calcOutputs.roi, roiPct, { isPercent: true });
-      setCalcValue(calcOutputs.breakeven, breakevenPrice);
     }
 
     Object.values(calcInputs).forEach((el) => {
@@ -877,12 +906,13 @@
     dimsTab?.addEventListener("click", () => setLogisticsMode("dims"));
     volumeTab?.addEventListener("click", () => setLogisticsMode("volume"));
 
-    buildCategoryList();
+    setCategoryOptions([]);
     fetchCategoriesFromApi();
     setFulfillment("fbo");
     setLogisticsMode("dims");
     svdValueEl.textContent = calcInputs.svd?.value || "0";
     updateModeMeta();
+    calcInputs.category?.addEventListener("focus", () => { if (!categories.length) fetchCategoriesFromApi(); });
     handleCategoryInput();
     updateCalc();
 
