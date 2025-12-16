@@ -284,7 +284,7 @@
               <legend>Категория и тип товара</legend>
               <label>Категория или тип, как в кабинете Ozon
                 <div class="typeahead">
-                  <input id="calcCategory" type="text" placeholder="например: обогрев" autocomplete="off" />
+                  <input id="calcCategory" type="text" placeholder="например: обогрев" autocomplete="off" list="categoryList" />
                   <div class="typeahead-list" id="categorySuggest"></div>
                 </div>
               </label>
@@ -562,8 +562,7 @@
     }
 
     let categories = [];
-    let categoriesBootLoading = false;
-    let categorySearchLoading = false;
+    let categoriesLoading = false;
     let commissionDirty = false;
     let categorySuggestTimer = null;
 
@@ -596,8 +595,8 @@
     let logisticsFetchTs = 0;
 
     async function fetchCategoriesFromApi(){
-      if (categoriesBootLoading) return;
-      categoriesBootLoading = true;
+      if (categoriesLoading) return;
+      categoriesLoading = true;
       const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
       const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
       const hasLocalCreds = !!(clientId && apiKey);
@@ -627,23 +626,19 @@
         categoryHintEl.textContent = `Не удалось загрузить категории из Ozon API: ${msg}`;
         setCategoryError(msg === "no_creds" ? "Нет доступа к каталогу Ozon: добавьте Client ID и Api-Key." : `Ошибка загрузки: ${msg}`);
       } finally {
-        categoriesBootLoading = false;
+        categoriesLoading = false;
       }
     }
 
     async function fetchCategorySuggestions(query){
-      if (categorySearchLoading) {
-        clearTimeout(categorySuggestTimer);
-        categorySuggestTimer = setTimeout(() => fetchCategorySuggestions(query), 200);
-        return;
-      }
+      if (categoriesLoading) return;
       const q = norm(query);
       if (!q || q.length < 2){
         renderCategorySuggest([]);
         return;
       }
 
-      categorySearchLoading = true;
+      categoriesLoading = true;
       const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
       const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
       const hasLocalCreds = !!(clientId && apiKey);
@@ -675,7 +670,7 @@
         setCategoryError(msg === "no_creds" ? "Нет доступа к каталогу Ozon: добавьте Client ID и Api-Key." : `Ошибка поиска: ${msg}`);
         renderCategorySuggest([]);
       } finally {
-        categorySearchLoading = false;
+        categoriesLoading = false;
       }
     }
 
@@ -724,7 +719,8 @@
     }
 
     async function fetchCommissionFromApi(price){
-      if (!selectedCategory?.category_id) return;
+          if (!selectedCategory?.category_id) return;
+          if (!Number.isFinite(price) || price <= 0) return;
       const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
       const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
       const now = Date.now();
@@ -732,7 +728,7 @@
       commissionFetchTs = now;
       try {
         categoryHintEl.textContent = "Запрашиваем реальную комиссию...";
-        const payload = { items: [{ price, category_id: Number(selectedCategory.category_id), type_id: selectedCategory.type_id ? Number(selectedCategory.type_id) : undefined, delivery_schema: fulfillmentMode.toUpperCase() }] };
+        const payload = { items: [{ price, category_id: Number(selectedCategory.category_id), delivery_schema: fulfillmentMode.toUpperCase() }] };
         const body = clientId && apiKey ? { clientId, apiKey, payload } : { payload };
         const resp = await fetch("/api/ozon/commission", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         const data = await resp.json();
@@ -783,6 +779,8 @@
     }
 
     async function fetchLogisticsFromApi({ price, volumeLiters, weightKg, svdValue, buyoutPct }){
+          if (!Number.isFinite(price) || price <= 0) return;
+          if (!volumeLiters || !weightKg) return;
       const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
       const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
       const now = Date.now();
@@ -869,13 +867,15 @@
 
     function chooseCategory(cat){
       commissionDirty = false;
+      lastLiveCommission = null;
       if (calcInputs.category && cat?.name){
         calcInputs.category.value = cat.name;
       }
       renderCategorySuggest([]);
       applyCategory(cat);
-      if (cat){
-        fetchCommissionFromApi(parseNumber(calcInputs.price));
+      const price = parseNumber(calcInputs.price);
+      if (cat && Number.isFinite(price) && price > 0){
+        fetchCommissionFromApi(price);
       }
       updateCalc();
     }
@@ -958,7 +958,6 @@
 
       const discountFactor = Math.max(0, 1 - discount / 100);
       const netPrice = price * discountFactor;
-      if (selectedCategory?.category_id) fetchCommissionFromApi(netPrice || price || 0);
       const commissionAmt = netPrice * (commissionPct / 100);
       const adsAmt = netPrice * (adsPct / 100);
 
