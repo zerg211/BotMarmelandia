@@ -173,6 +173,14 @@ function normalize(str) {
   return String(str || "").toLowerCase().trim();
 }
 
+function tokensFromPath(str) {
+  return String(str || "")
+    .split(/[>\/]/)
+    .flatMap((p) => String(p || "").split(/[\s,.;-]+/))
+    .map((p) => p.trim())
+    .filter(Boolean);
+}
+
 function scoreCategory(cat, qTokens) {
   const haystack = [cat.name, cat.path, ...(cat.keywords || [])].map(normalize).filter(Boolean);
   if (!haystack.length) return 0;
@@ -202,7 +210,7 @@ function scoreCategory(cat, qTokens) {
 
 const CATEGORY_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 часов
 
-async function ensureCategoryCache({ clientId, apiKey, source } = {}) {
+async function ensureCategoryCache({ clientId, apiKey, source, forceLive = false } = {}) {
   loadCategoryCacheFromDisk();
 
   // если не передали ключи, пробуем использовать ENV (для серверного фонового обновления)
@@ -213,10 +221,10 @@ async function ensureCategoryCache({ clientId, apiKey, source } = {}) {
   const cacheIsFallback = categoryCache.source === "fallback";
   const cacheIsStale = categoryCache.updatedAt && Date.now() - categoryCache.updatedAt > CATEGORY_CACHE_TTL_MS;
 
-  // Если уже есть кэш и он не фолбэк/не протух — возвращаем, иначе попробуем обновить по API
-  if (categoryCache.list.length && !cacheIsFallback && !cacheIsStale) return categoryCache;
+  // Если уже есть свежий кэш и не просили принудительно обновить — возвращаем
+  if (!forceLive && categoryCache.list.length && !cacheIsFallback && !cacheIsStale) return categoryCache;
 
-  // Если кэш есть, но он из фолбэка или устарел — продолжаем и перезапишем его при наличии ключей
+  // Если кэш есть, но он из фолбэка, устарел или запросили force — продолжаем и перезапишем его при наличии ключей
   if (!resolvedClient || !resolvedKey) throw new Error("no_creds");
 
   const body = { language: "RU" };
@@ -226,7 +234,7 @@ async function ensureCategoryCache({ clientId, apiKey, source } = {}) {
     category_id: c.category_id,
     name: c.name,
     path: c.path || c.name,
-    keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
+    keywords: tokensFromPath(c.path || c.name),
   }));
 
   categoryCache.list = flat;
@@ -289,11 +297,7 @@ function seedCategoryCacheFromFallback() {
       category_id: c.category_id,
       name: c.name,
       path: c.path || c.name,
-      keywords: (c.keywords || c.path || c.name || "")
-        .toString()
-        .split(/[>/]/)
-        .map((p) => p.trim())
-        .filter(Boolean),
+      keywords: tokensFromPath((c.keywords || c.path || c.name || "").toString()),
       commission: c.commission || {},
     }));
     categoryCache.source = "fallback";
@@ -311,7 +315,7 @@ async function bootCategoryCache() {
 
   try {
     // если есть ключи в переменных окружения — обновим кэш живыми данными и сохраним на диск
-    await ensureCategoryCache();
+    await ensureCategoryCache({ forceLive: true });
     console.log(`🗂️  Categories loaded (${categoryCache.list.length}) from ${categoryCache.source}`);
   } catch (e) {
     if (!categoryCache.list.length) {
@@ -823,7 +827,7 @@ app.post("/api/ozon/categories", async (req, res) => {
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
     try {
-      await ensureCategoryCache(resolved || {});
+      await ensureCategoryCache({ ...(resolved || {}), forceLive: true });
     } catch (e) {
       if (String(e.message || e) !== "no_creds") console.error("category cache refresh error", e);
     }
@@ -852,12 +856,12 @@ app.post("/api/ozon/categories/search", async (req, res) => {
 
     if (!categoryCache.list.length) {
       if (!seedCategoryCacheFromFallback()) {
-        try { await ensureCategoryCache(resolved || {}); } catch (e) {
+        try { await ensureCategoryCache({ ...(resolved || {}), forceLive: true }); } catch (e) {
           if (String(e.message || e) !== "no_creds") console.error("category cache refresh error", e);
         }
       }
     } else {
-      try { await ensureCategoryCache(resolved || {}); } catch (e) {
+      try { await ensureCategoryCache({ ...(resolved || {}), forceLive: true }); } catch (e) {
         if (String(e.message || e) !== "no_creds") console.error("category cache refresh error", e);
       }
     }
