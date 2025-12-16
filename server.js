@@ -178,12 +178,23 @@ function scoreCategory(cat, qTokens) {
   if (!haystack.length) return 0;
   let score = 0;
   const joined = qTokens.join(" ");
+
+  const stemmedTokens = qTokens.flatMap((t) => {
+    if (t.length <= 4) return [t];
+    // Добавляем укороченные варианты, чтобы ловить разницу единственного/множественного числа («обогреватель» → «обогревател», «обогрев»)
+    const stems = [t.slice(0, -1), t.slice(0, -2), t.slice(0, -3)].filter((s) => s.length >= 3);
+    return [t, ...stems];
+  });
+
   haystack.forEach((h) => {
     if (h === joined) score = Math.max(score, 140);
-    else if (h.startsWith(joined)) score = Math.max(score, 120);
-    else if (h.includes(joined)) score = Math.max(score, 100);
-    qTokens.forEach((t) => {
-      if (t.length > 2 && h.includes(t)) score = Math.max(score, 80);
+    else if (h.startsWith(joined)) score = Math.max(score, 130);
+    else if (h.includes(joined)) score = Math.max(score, 115);
+
+    stemmedTokens.forEach((t) => {
+      if (h === t) score = Math.max(score, 120);
+      else if (h.startsWith(t)) score = Math.max(score, 110);
+      else if (h.includes(t)) score = Math.max(score, 95);
     });
   });
   return score;
