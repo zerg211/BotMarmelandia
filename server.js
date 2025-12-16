@@ -178,12 +178,23 @@ function scoreCategory(cat, qTokens) {
   if (!haystack.length) return 0;
   let score = 0;
   const joined = qTokens.join(" ");
+
+  const stemmedTokens = qTokens.flatMap((t) => {
+    if (t.length <= 4) return [t];
+    // Добавляем укороченные варианты, чтобы ловить разницу единственного/множественного числа («обогреватель» → «обогревател», «обогрев»)
+    const stems = [t.slice(0, -1), t.slice(0, -2), t.slice(0, -3)].filter((s) => s.length >= 3);
+    return [t, ...stems];
+  });
+
   haystack.forEach((h) => {
     if (h === joined) score = Math.max(score, 140);
-    else if (h.startsWith(joined)) score = Math.max(score, 120);
-    else if (h.includes(joined)) score = Math.max(score, 100);
-    qTokens.forEach((t) => {
-      if (t.length > 2 && h.includes(t)) score = Math.max(score, 80);
+    else if (h.startsWith(joined)) score = Math.max(score, 130);
+    else if (h.includes(joined)) score = Math.max(score, 115);
+
+    stemmedTokens.forEach((t) => {
+      if (h === t) score = Math.max(score, 120);
+      else if (h.startsWith(t)) score = Math.max(score, 110);
+      else if (h.includes(t)) score = Math.max(score, 95);
     });
   });
   return score;
@@ -191,8 +202,13 @@ function scoreCategory(cat, qTokens) {
 
 const CATEGORY_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 часов
 
-async function ensureCategoryCache({ clientId, apiKey, source }) {
+async function ensureCategoryCache({ clientId, apiKey, source } = {}) {
   loadCategoryCacheFromDisk();
+
+  // если не передали ключи, пробуем использовать ENV (для серверного фонового обновления)
+  const resolvedClient = clientId || OZON_DEFAULT_CLIENT_ID;
+  const resolvedKey = apiKey || OZON_DEFAULT_API_KEY;
+  const resolvedSource = source || (clientId ? "request" : "env");
 
   const cacheIsFallback = categoryCache.source === "fallback";
   const cacheIsStale = categoryCache.updatedAt && Date.now() - categoryCache.updatedAt > CATEGORY_CACHE_TTL_MS;
@@ -201,10 +217,10 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
   if (categoryCache.list.length && !cacheIsFallback && !cacheIsStale) return categoryCache;
 
   // Если кэш есть, но он из фолбэка или устарел — продолжаем и перезапишем его при наличии ключей
-  if (!clientId || !apiKey) throw new Error("no_creds");
+  if (!resolvedClient || !resolvedKey) throw new Error("no_creds");
 
   const body = { language: "RU" };
-  const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId, apiKey, body });
+  const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId: resolvedClient, apiKey: resolvedKey, body });
   const tree = data?.result?.categories || data?.result?.items || data?.result || data;
   const flat = flattenCategoryTree(tree, []).map((c) => ({
     category_id: c.category_id,
@@ -214,7 +230,7 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
   }));
 
   categoryCache.list = flat;
-  categoryCache.source = source || OZON_CATEGORY_TREE_PATH;
+  categoryCache.source = resolvedSource || OZON_CATEGORY_TREE_PATH;
   categoryCache.updatedAt = Date.now();
   saveCategoryCacheToDisk();
   return categoryCache;
@@ -285,6 +301,24 @@ function seedCategoryCacheFromFallback() {
     return categoryCache.list.length > 0;
   } catch (_) {
     return false;
+  }
+}
+
+async function bootCategoryCache() {
+  // пробуем загрузить кэш с диска или хотя бы подхватить фолбэк, чтобы фронт не оставался без вариантов
+  loadCategoryCacheFromDisk();
+  if (!categoryCache.list.length) seedCategoryCacheFromFallback();
+
+  try {
+    // если есть ключи в переменных окружения — обновим кэш живыми данными и сохраним на диск
+    await ensureCategoryCache();
+    console.log(`🗂️  Categories loaded (${categoryCache.list.length}) from ${categoryCache.source}`);
+  } catch (e) {
+    if (!categoryCache.list.length) {
+      console.warn("⚠️  Категории не загружены и фолбэк пуст: ", e.message || e);
+    } else {
+      console.warn(`⚠️  Используем кэш категорий (${categoryCache.list.length}), обновление не удалось:`, e.message || e);
+    }
   }
 }
 
@@ -788,25 +822,19 @@ app.post("/api/ozon/categories", async (req, res) => {
     seedCategoryCacheFromFallback();
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
-
-    if (!resolved?.clientId || !resolved?.apiKey) {
-      if (categoryCache.list.length) {
-        return res.json({
-          source: categoryCache.source || "cache",
-          total: categoryCache.list.length,
-          categories: categoryCache.list,
-          cached: true,
-        });
-      }
-      return res.status(400).json({ error: "no_creds" });
+    try {
+      await ensureCategoryCache(resolved || {});
+    } catch (e) {
+      if (String(e.message || e) !== "no_creds") console.error("category cache refresh error", e);
     }
 
-    await ensureCategoryCache(resolved);
+    if (!categoryCache.list.length) return res.status(400).json({ error: "no_creds" });
 
     return res.json({
-      source: categoryCache.source,
+      source: categoryCache.source || (resolved?.source ?? "cache"),
       total: categoryCache.list.length,
       categories: categoryCache.list,
+      cached: categoryCache.source === "fallback" || !resolved,
     });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
@@ -823,15 +851,18 @@ app.post("/api/ozon/categories/search", async (req, res) => {
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
 
     if (!categoryCache.list.length) {
-      if (!resolved?.clientId || !resolved?.apiKey) {
-        if (!seedCategoryCacheFromFallback()) return res.status(400).json({ error: "no_creds" });
-      } else {
-        await ensureCategoryCache(resolved);
+      if (!seedCategoryCacheFromFallback()) {
+        try { await ensureCategoryCache(resolved || {}); } catch (e) {
+          if (String(e.message || e) !== "no_creds") console.error("category cache refresh error", e);
+        }
       }
-    } else if (resolved?.clientId && resolved?.apiKey) {
-      // Если данные есть, но они из фолбэка или устарели — обновим при наличии ключей
-      await ensureCategoryCache(resolved);
+    } else {
+      try { await ensureCategoryCache(resolved || {}); } catch (e) {
+        if (String(e.message || e) !== "no_creds") console.error("category cache refresh error", e);
+      }
     }
+
+    if (!categoryCache.list.length) return res.status(400).json({ error: "no_creds" });
 
     const matches = searchCategories(query, { limit });
     return res.json({
@@ -1501,5 +1532,7 @@ app.post("/telegram-webhook", async (req, res) => {
     console.error("Webhook handler error:", err);
   }
 });
+
+bootCategoryCache();
 
 app.listen(PORT, () => console.log(`✅ Server started on :${PORT}`));
