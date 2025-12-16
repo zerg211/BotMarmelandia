@@ -12,31 +12,13 @@ const app = express();
 app.use(express.json());
 
 // ====== MINI APP (страница + статика из /Public) ======
-app.use(
-  "/public",
-  express.static(path.join(__dirname, "Public"), {
-    setHeaders: (res, filePath) => {
-      // Force UTF-8 for static assets (iOS/Telegram WebView can mis-decode JS/CSS without charset)
-      const ct = res.getHeader("Content-Type");
-      const cts = ct ? String(ct) : "";
-      if (cts && !/charset=/i.test(cts)) {
-        const p = String(filePath).toLowerCase();
-        if (p.endsWith(".js")) res.setHeader("Content-Type", cts + "; charset=utf-8");
-        else if (p.endsWith(".css")) res.setHeader("Content-Type", cts + "; charset=utf-8");
-        else if (p.endsWith(".html")) res.setHeader("Content-Type", cts + "; charset=utf-8");
-        else if (p.endsWith(".json")) res.setHeader("Content-Type", cts + "; charset=utf-8");
-        else if (p.endsWith(".svg")) res.setHeader("Content-Type", cts + "; charset=utf-8");
-      }
-    },
-  })
-);
+app.use("/public", express.static(path.join(__dirname, "Public")));
 
 // если кто-то открывает кривой путь вида "/https://....." — редиректим на главную
 app.get(/^\/https?:\/\//, (req, res) => res.redirect(302, "/"));
 
 // главная Mini App
 app.get("/", (req, res) => {
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.sendFile(path.join(__dirname, "Public", "index.html"));
 });
 app.get("/index.html", (req, res) => {
@@ -902,11 +884,43 @@ app.post("/api/ozon/commission", async (req, res) => {
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
     if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
+
     const payload = req.body?.payload;
     if (!payload) return res.status(400).json({ error: "no_payload" });
 
-    const data = await ozonPost(OZON_COMMISSION_PATH, { clientId: resolved.clientId, apiKey: resolved.apiKey, body: payload });
-    return res.json({ source: resolved.source || OZON_COMMISSION_PATH, result: data?.result || data });
+    // Ozon sometimes moves this method between versions. We try multiple known paths.
+    const pathCandidates = [
+      process.env.OZON_COMMISSION_PATH,
+      "/v1/product/calc/commission",
+      "/v2/product/calc/commission",
+      "/v3/product/calc/commission",
+    ].filter(Boolean);
+
+    const tried = [];
+    let lastErr = null;
+
+    for (const p of pathCandidates) {
+      try {
+        const data = await ozonPost(p, { clientId: resolved.clientId, apiKey: resolved.apiKey, body: payload });
+        return res.json({ source: resolved.source || p, result: data?.result || data });
+      } catch (e) {
+        const msg = String(e?.message || e);
+        tried.push({ path: p, error: msg });
+
+        // If it is NOT a 404, no point trying other versions — fail fast.
+        if (!msg.includes("(404)")) {
+          lastErr = e;
+          break;
+        }
+        lastErr = e;
+        continue;
+      }
+    }
+
+    return res.status(502).json({
+      error: String(lastErr?.message || lastErr || "commission_failed"),
+      tried,
+    });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
   }
