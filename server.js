@@ -206,11 +206,28 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
   const body = { language: "RU" };
   const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId, apiKey, body });
   const tree = data?.result?.categories || data?.result?.items || data?.result || data;
+  // попробуем подмешать "стандартные" комиссии из fallback-файла (если он есть)
+// чтобы комиссия работала даже при обновлении дерева категорий через API
+  let commissionById = new Map();
+  try{
+    if (fs.existsSync(OZON_FALLBACK_CATEGORIES_PATH)){
+      const fb = JSON.parse(fs.readFileSync(OZON_FALLBACK_CATEGORIES_PATH, "utf-8"));
+      if (Array.isArray(fb)){
+        commissionById = new Map(
+          fb
+            .filter(x => x && (x.category_id || x.id))
+            .map(x => [String(x.category_id || x.id), x.commission || {}])
+        );
+      }
+    }
+  } catch (_) {}
+
   const flat = flattenCategoryTree(tree, []).map((c) => ({
     category_id: c.category_id,
     name: c.name,
     path: c.path || c.name,
     keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
+    commission: commissionById.get(String(c.category_id)) || {},
   }));
 
   categoryCache.list = flat;
@@ -855,7 +872,14 @@ app.post("/api/ozon/commission", async (req, res) => {
     if (!payload) return res.status(400).json({ error: "no_payload" });
 
     const item = Array.isArray(payload?.items) ? payload.items[0] : null;
-    const price = Number(item?.price);
+    const categoryId = item?.category_id ?? item?.categoryId;
+    const price = item?.price ?? item?.prices?.price ?? item?.prices?.marketing_price;
+    if (!categoryId) return res.status(400).json({ error: "missing_category_id" });
+    if (!Number.isFinite(Number(price)) || Number(price) <= 0) {
+      // Для фиксированной комиссии по категории это не нужно, но если кто-то дернёт endpoint — защитимся
+      return res.status(400).json({ error: "missing_or_invalid_price" });
+    }
+  const price = Number(item?.price);
     const categoryId = Number(item?.category_id);
     if (!item || !Number.isFinite(price) || price <= 0 || !Number.isFinite(categoryId) || categoryId <= 0) {
       return res.status(400).json({
