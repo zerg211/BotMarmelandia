@@ -284,7 +284,7 @@
               <legend>Категория и тип товара</legend>
               <label>Категория или тип, как в кабинете Ozon
                 <div class="typeahead">
-                  <input id="calcCategory" type="text" placeholder="например: обогрев" autocomplete="off" list="categoryList" />
+                  <input id="calcCategory" type="text" placeholder="например: обогрев" autocomplete="off" />
                   <div class="typeahead-list" id="categorySuggest"></div>
                 </div>
               </label>
@@ -985,6 +985,37 @@
     });
     calcInputs.commission?.addEventListener("input", () => { commissionDirty = true; lastLiveCommission = null; });
     calcInputs.category?.addEventListener("input", handleCategoryInput);
+    // Быстрый выбор категории без "клика": Enter выбирает первый вариант из подсказок,
+    // blur (потеря фокуса) пытается подобрать точное совпадение.
+    calcInputs.category?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter"){
+        e.preventDefault();
+        const first = categorySuggestEl?.querySelector(".typeahead-item");
+        if (first){
+          const id = first.getAttribute("data-id");
+          const cat = categories.find((c) => String(c.category_id) === String(id));
+          if (cat) chooseCategory(cat);
+        } else {
+          // если подсказок нет, попробуем точное совпадение
+          const q = (calcInputs.category?.value || "").trim();
+          const exact = categories.find((c) => norm(c.name) === norm(q) || norm(c.path) === norm(q));
+          if (exact) chooseCategory(exact);
+        }
+      }
+    });
+    calcInputs.category?.addEventListener("blur", () => {
+      if (selectedCategory) return;
+      const q = (calcInputs.category?.value || "").trim();
+      if (!q) return;
+      const exact = categories.find((c) => norm(c.name) === norm(q) || norm(c.path) === norm(q));
+      if (exact) chooseCategory(exact);
+    });
+
+    calcInputs.category?.addEventListener("focus", () => {
+      // если уже есть результаты последнего поиска — покажем их
+      if (categories && categories.length) renderCategorySuggest(categories.slice(0, 20));
+    });
+
     calcInputs.category?.addEventListener("change", handleCategoryInput);
     categorySuggestEl?.addEventListener("click", (e) => {
       const item = e.target.closest(".typeahead-item");
