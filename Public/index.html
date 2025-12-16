@@ -199,7 +199,7 @@
     <div class="top">
       <div>
         <div class="title" id="title">Моя аналитика</div>
-        <div class="sub" id="subtitle">FBO · Сегодня · Europe/Moscow</div>
+        <div class="sub" id="subtitle">FBO &#183; Сегодня &#183; Europe/Moscow</div>
       </div>
       <div class="badge" id="status">готово</div>
     </div>
@@ -216,7 +216,7 @@
           <div class="value" id="orders">—</div>
         </div>
         <div class="card">
-          <div class="label">Сумма заказов <span class="badge">₽</span></div>
+          <div class="label">Сумма заказов <span class="badge">&#8381;</span></div>
           <div class="value small" id="ordersSum">—</div>
         </div>
         <div class="card">
@@ -224,21 +224,21 @@
           <div class="value" id="cancels">—</div>
         </div>
         <div class="card">
-          <div class="label">Сумма отмен <span class="badge danger">₽</span></div>
+          <div class="label">Сумма отмен <span class="badge danger">&#8381;</span></div>
           <div class="value small" id="cancelsSum">—</div>
         </div>
 
         <div class="card">
-          <div class="label">Выкупы сегодня <span class="badge">₽</span></div>
+          <div class="label">Выкупы сегодня <span class="badge">&#8381;</span></div>
           <div class="value small pos" id="buyoutsSum">—</div>
         </div>
         <div class="card">
-          <div class="label">Возвраты сегодня <span class="badge danger">₽</span></div>
+          <div class="label">Возвраты сегодня <span class="badge danger">&#8381;</span></div>
           <div class="value small neg" id="returnsSum">—</div>
         </div>
 
         <div class="card" id="balanceCard">
-          <div class="label">Баланс кабинета <span class="badge">₽</span></div>
+          <div class="label">Баланс кабинета <span class="badge">&#8381;</span></div>
           <div class="value small" id="balance">—</div>
           <div class="delta" id="balanceDelta"></div>
         </div>
@@ -259,8 +259,8 @@
           <div class="calc-card mode-card">
             <div class="label" style="color:var(--text);font-weight:800;">Схема работы</div>
             <div class="pill-radio" role="group" aria-label="Модель исполнения" style="gap:10px;">
-              <button type="button" class="fulfillment-btn active" data-mode="fbo">FBO · склад Ozon</button>
-              <button type="button" class="fulfillment-btn" data-mode="fbs">FBS · склад продавца</button>
+              <button type="button" class="fulfillment-btn active" data-mode="fbo">FBO &#183; склад Ozon</button>
+              <button type="button" class="fulfillment-btn" data-mode="fbs">FBS &#183; склад продавца</button>
             </div>
             <div class="badge-row" id="modeMeta"></div>
             <div class="svd-legend">
@@ -298,12 +298,12 @@
             <div class="fieldset">
               <legend>Финансы</legend>
               <div class="field-row">
-                <label>Цена продажи, ₽<input id="calcPrice" type="number" inputmode="decimal" placeholder="1499" /></label>
-                <label>Себестоимость, ₽<input id="calcCost" type="number" inputmode="decimal" placeholder="650" /></label>
+                <label>Цена продажи, &#8381;<input id="calcPrice" type="number" inputmode="decimal" placeholder="1499" /></label>
+                <label>Себестоимость, &#8381;<input id="calcCost" type="number" inputmode="decimal" placeholder="650" /></label>
               </div>
               <div class="field-row">
                 <label>Реклама, % от цены<input id="calcAds" type="number" inputmode="decimal" placeholder="8" value="0" /></label>
-                <label>Доп. расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
+                <label>Доп. расходы, &#8381;<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
               </div>
             </div>
           </div>
@@ -551,7 +551,7 @@
     }
 
     function fmtRub(val){
-      return `${rubFormatter.format(val)} ₽`;
+      return `${rubFormatter.format(val)} &#8381;`;
     }
 
     function parseNumber(input){

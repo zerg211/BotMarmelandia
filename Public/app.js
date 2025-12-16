@@ -169,7 +169,7 @@ async function refresh() {
   if (Number.isFinite(sum) && sum > 0) {
     // если пришло в копейках
     const rub = (sum > 100000 ? sum / 100 : sum);
-    sumEl.textContent = `Сумма: ${Math.round(rub).toLocaleString("ru-RU")} ₽`;
+    sumEl.textContent = `Сумма: ${Math.round(rub).toLocaleString("ru-RU")} \u20BD`;
   } else {
     sumEl.textContent = "";
   }
