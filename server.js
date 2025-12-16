@@ -147,55 +147,25 @@ async function ozonPost(pathname, { clientId, apiKey, body }) {
   return data;
 }
 
-function flattenCategoryTree(tree, acc = [], pathParts = []) {
-  // Robust flattener for Ozon description-category/tree
-  // Supports different response shapes/field names:
-  //  - description_category_id / description_category_name
-  //  - category_id / title / name
-  //  - type_id / type_name (kept as type_id on item)
-  //  - children / items / subcategories
+function flattenCategoryTree(tree, acc = []) {
   if (!tree) return acc;
-
   if (Array.isArray(tree)) {
-    tree.forEach((node) => flattenCategoryTree(node, acc, pathParts));
+    tree.forEach((node) => flattenCategoryTree(node, acc));
     return acc;
   }
 
-  const id =
-    tree.description_category_id ??
-    tree.category_id ??
-    tree.id ??
-    tree.value_id ??
-    null;
+  const current = {
+    category_id: tree.category_id || tree.id,
+    name: tree.title || tree.name,
+    path: tree.path || tree.path_name,
+    children: tree.children || tree.childrens || [],
+  };
 
-  const type_id = tree.type_id ?? tree.description_type_id ?? tree.typeId ?? null;
-
-  const name =
-    tree.description_category_name ??
-    tree.title ??
-    tree.name ??
-    tree.category_name ??
-    tree.value ??
-    "";
-
-  const children = tree.children ?? tree.items ?? tree.subcategories ?? tree.childrens ?? [];
-
-  const nextPathParts = name ? [...pathParts, name] : pathParts;
-  const path = nextPathParts.join(" → ");
-
-  if (id != null && name) {
-    acc.push({
-      category_id: id,
-      type_id,
-      name,
-      path,
-      children: [], // flattened list doesn't keep children
-    });
+  if (current.category_id && current.name) {
+    acc.push(current);
   }
 
-  if (Array.isArray(children) && children.length) {
-    children.forEach((ch) => flattenCategoryTree(ch, acc, nextPathParts));
-  }
+  flattenCategoryTree(current.children, acc);
   return acc;
 }
 
@@ -203,36 +173,17 @@ function normalize(str) {
   return String(str || "").toLowerCase().trim();
 }
 
-function tokensFromPath(str) {
-  return String(str || "")
-    .split(/[>\/]/)
-    .flatMap((p) => String(p || "").split(/[\s,.;-]+/))
-    .map((p) => p.trim())
-    .filter(Boolean);
-}
-
 function scoreCategory(cat, qTokens) {
   const haystack = [cat.name, cat.path, ...(cat.keywords || [])].map(normalize).filter(Boolean);
   if (!haystack.length) return 0;
   let score = 0;
   const joined = qTokens.join(" ");
-
-  const stemmedTokens = qTokens.flatMap((t) => {
-    if (t.length <= 4) return [t];
-    // Добавляем укороченные варианты, чтобы ловить разницу единственного/множественного числа («обогреватель» → «обогревател», «обогрев»)
-    const stems = [t.slice(0, -1), t.slice(0, -2), t.slice(0, -3)].filter((s) => s.length >= 3);
-    return [t, ...stems];
-  });
-
   haystack.forEach((h) => {
     if (h === joined) score = Math.max(score, 140);
-    else if (h.startsWith(joined)) score = Math.max(score, 130);
-    else if (h.includes(joined)) score = Math.max(score, 115);
-
-    stemmedTokens.forEach((t) => {
-      if (h === t) score = Math.max(score, 120);
-      else if (h.startsWith(t)) score = Math.max(score, 110);
-      else if (h.includes(t)) score = Math.max(score, 95);
+    else if (h.startsWith(joined)) score = Math.max(score, 120);
+    else if (h.includes(joined)) score = Math.max(score, 100);
+    qTokens.forEach((t) => {
+      if (t.length > 2 && h.includes(t)) score = Math.max(score, 80);
     });
   });
   return score;
@@ -240,47 +191,30 @@ function scoreCategory(cat, qTokens) {
 
 const CATEGORY_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 часов
 
-async function ensureCategoryCache({ clientId, apiKey, source, forceLive = false } = {}) {
+async function ensureCategoryCache({ clientId, apiKey, source }) {
   loadCategoryCacheFromDisk();
-
-  // если не передали ключи, пробуем использовать ENV (для серверного фонового обновления)
-  const resolvedClient = clientId || OZON_DEFAULT_CLIENT_ID;
-  const resolvedKey = apiKey || OZON_DEFAULT_API_KEY;
-  const resolvedSource = source || (clientId ? "request" : "env");
 
   const cacheIsFallback = categoryCache.source === "fallback";
   const cacheIsStale = categoryCache.updatedAt && Date.now() - categoryCache.updatedAt > CATEGORY_CACHE_TTL_MS;
 
-  // Если уже есть свежий кэш и не просили принудительно обновить — возвращаем
-  if (!forceLive && categoryCache.list.length && !cacheIsFallback && !cacheIsStale) return categoryCache;
+  // Если уже есть кэш и он не фолбэк/не протух — возвращаем, иначе попробуем обновить по API
+  if (categoryCache.list.length && !cacheIsFallback && !cacheIsStale) return categoryCache;
 
-  // Если кэш есть, но он из фолбэка, устарел или запросили force — продолжаем и перезапишем его при наличии ключей
-  if (!resolvedClient || !resolvedKey) throw new Error("no_creds");
+  // Если кэш есть, но он из фолбэка или устарел — продолжаем и перезапишем его при наличии ключей
+  if (!clientId || !apiKey) throw new Error("no_creds");
 
-  const body = { language: "DEFAULT" };
-  const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId: resolvedClient, apiKey: resolvedKey, body });
-
-  // description-category/tree may return:
-  // {result: [...]} OR {result:{items:[...]}} OR {result:{categories:[...]}} etc.
-  const result = data?.result ?? data;
-  const tree =
-    Array.isArray(result) ? result :
-    Array.isArray(result?.categories) ? result.categories :
-    Array.isArray(result?.items) ? result.items :
-    Array.isArray(result?.tree) ? result.tree :
-    result;
-
-  const flatRaw = flattenCategoryTree(tree, []);
-  const flat = flatRaw.map((c) => ({
+  const body = { language: "RU" };
+  const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId, apiKey, body });
+  const tree = data?.result?.categories || data?.result?.items || data?.result || data;
+  const flat = flattenCategoryTree(tree, []).map((c) => ({
     category_id: c.category_id,
-    type_id: c.type_id ?? null,
     name: c.name,
     path: c.path || c.name,
-    keywords: tokensFromPath(c.path || c.name),
+    keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
   }));
 
   categoryCache.list = flat;
-  categoryCache.source = resolvedSource || OZON_CATEGORY_TREE_PATH;
+  categoryCache.source = source || OZON_CATEGORY_TREE_PATH;
   categoryCache.updatedAt = Date.now();
   saveCategoryCacheToDisk();
   return categoryCache;
@@ -339,7 +273,11 @@ function seedCategoryCacheFromFallback() {
       category_id: c.category_id,
       name: c.name,
       path: c.path || c.name,
-      keywords: tokensFromPath((c.keywords || c.path || c.name || "").toString()),
+      keywords: (c.keywords || c.path || c.name || "")
+        .toString()
+        .split(/[>/]/)
+        .map((p) => p.trim())
+        .filter(Boolean),
       commission: c.commission || {},
     }));
     categoryCache.source = "fallback";
@@ -347,24 +285,6 @@ function seedCategoryCacheFromFallback() {
     return categoryCache.list.length > 0;
   } catch (_) {
     return false;
-  }
-}
-
-async function bootCategoryCache() {
-  // пробуем загрузить кэш с диска или хотя бы подхватить фолбэк, чтобы фронт не оставался без вариантов
-  loadCategoryCacheFromDisk();
-  if (!categoryCache.list.length) seedCategoryCacheFromFallback();
-
-  try {
-    // если есть ключи в переменных окружения — обновим кэш живыми данными и сохраним на диск
-    await ensureCategoryCache({ forceLive: true });
-    console.log(`🗂️  Categories loaded (${categoryCache.list.length}) from ${categoryCache.source}`);
-  } catch (e) {
-    if (!categoryCache.list.length) {
-      console.warn("⚠️  Категории не загружены и фолбэк пуст: ", e.message || e);
-    } else {
-      console.warn(`⚠️  Используем кэш категорий (${categoryCache.list.length}), обновление не удалось:`, e.message || e);
-    }
   }
 }
 
@@ -868,21 +788,28 @@ app.post("/api/ozon/categories", async (req, res) => {
     seedCategoryCacheFromFallback();
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
-    try {
-      await ensureCategoryCache({ ...(resolved || {}), forceLive: true });
-    } catch (e) {
-      if (String(e.message || e) !== "no_creds") console.error("category cache refresh error", e);
+
+    if (!resolved?.clientId || !resolved?.apiKey) {
+      if (categoryCache.list.length) {
+        return res.json({
+          source: categoryCache.source || "cache",
+          total: categoryCache.list.length,
+          categories: categoryCache.list,
+          cached: true,
+        });
+      }
+      return res.status(400).json({ error: "no_creds" });
     }
 
-    if (!categoryCache.list.length) return res.status(400).json({ error: "no_creds" });
+    await ensureCategoryCache(resolved);
 
     return res.json({
-      source: categoryCache.source || (resolved?.source ?? "cache"),
+      source: categoryCache.source,
       total: categoryCache.list.length,
       categories: categoryCache.list,
-      cached: categoryCache.source === "fallback" || !resolved,
     });
   } catch (e) {
+    console.error("OZON COMMISSION ERROR:", e);
     return res.status(500).json({ error: String(e.message || e) });
   }
 });
@@ -897,18 +824,15 @@ app.post("/api/ozon/categories/search", async (req, res) => {
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
 
     if (!categoryCache.list.length) {
-      if (!seedCategoryCacheFromFallback()) {
-        try { await ensureCategoryCache({ ...(resolved || {}), forceLive: true }); } catch (e) {
-          if (String(e.message || e) !== "no_creds") console.error("category cache refresh error", e);
-        }
+      if (!resolved?.clientId || !resolved?.apiKey) {
+        if (!seedCategoryCacheFromFallback()) return res.status(400).json({ error: "no_creds" });
+      } else {
+        await ensureCategoryCache(resolved);
       }
-    } else {
-      try { await ensureCategoryCache({ ...(resolved || {}), forceLive: true }); } catch (e) {
-        if (String(e.message || e) !== "no_creds") console.error("category cache refresh error", e);
-      }
+    } else if (resolved?.clientId && resolved?.apiKey) {
+      // Если данные есть, но они из фолбэка или устарели — обновим при наличии ключей
+      await ensureCategoryCache(resolved);
     }
-
-    if (!categoryCache.list.length) return res.status(400).json({ error: "no_creds" });
 
     const matches = searchCategories(query, { limit });
     return res.json({
@@ -917,46 +841,40 @@ app.post("/api/ozon/categories/search", async (req, res) => {
       categories: matches,
     });
   } catch (e) {
+    console.error("OZON LOGISTICS ERROR:", e);
     return res.status(500).json({ error: String(e.message || e) });
   }
 });
 
 app.post("/api/ozon/commission", async (req, res) => {
-  const tried = [];
   try {
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
     if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
-
     const payload = req.body?.payload;
     if (!payload) return res.status(400).json({ error: "no_payload" });
 
-    // Try multiple endpoints because Ozon versions sometimes differ by account/region
-    const base = String(OZON_COMMISSION_PATH || "/v1/product/calc/commission");
-    const candidates = Array.from(new Set([
-      base,
-      base.replace(/^\/v1\//, "/v2/"),
-      base.replace(/^\/v1\//, "/v3/"),
-      "/v1/product/calc/commission",
-      "/v2/product/calc/commission",
-      "/v3/product/calc/commission",
-    ]));
-
-    for (const p of candidates) {
-      try {
-        const data = await ozonPost(p, { clientId: resolved.clientId, apiKey: resolved.apiKey, body: payload });
-        return res.json({ source: p, result: data?.result || data });
-      } catch (e) {
-        tried.push({ path: p, error: String(e.message || e) });
-      }
+    const item = Array.isArray(payload?.items) ? payload.items[0] : null;
+    const price = Number(item?.price);
+    const categoryId = Number(item?.category_id);
+    if (!item || !Number.isFinite(price) || price <= 0 || !Number.isFinite(categoryId) || categoryId <= 0) {
+      return res.status(400).json({
+        error: "invalid_input",
+        details: {
+          has_items: Array.isArray(payload?.items),
+          price: item?.price,
+          category_id: item?.category_id,
+          delivery_schema: item?.delivery_schema,
+        },
+      });
     }
 
-    return res.status(502).json({ error: "commission_failed", tried });
+    const data = await ozonPost(OZON_COMMISSION_PATH, { clientId: resolved.clientId, apiKey: resolved.apiKey, body: payload });
+    return res.json({ source: resolved.source || OZON_COMMISSION_PATH, result: data?.result || data });
   } catch (e) {
-    return res.status(500).json({ error: String(e.message || e), tried });
+    return res.status(500).json({ error: String(e.message || e) });
   }
 });
-
 
 app.post("/api/ozon/logistics", async (req, res) => {
   try {
@@ -965,6 +883,24 @@ app.post("/api/ozon/logistics", async (req, res) => {
     if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
     const payload = req.body?.payload;
     if (!payload) return res.status(400).json({ error: "no_payload" });
+
+    const price = Number(payload?.price);
+    const weight = Number(payload?.weight);
+    const volume = Number(payload?.volume);
+    const schema = String(payload?.delivery_schema || "");
+    const deliveryTime = Number(payload?.delivery_time);
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(weight) || weight <= 0 || !Number.isFinite(volume) || volume <= 0 || !schema) {
+      return res.status(400).json({
+        error: "invalid_input",
+        details: {
+          price: payload?.price,
+          weight: payload?.weight,
+          volume: payload?.volume,
+          delivery_schema: payload?.delivery_schema,
+          delivery_time: payload?.delivery_time,
+        },
+      });
+    }
 
     const data = await ozonPost(OZON_LOGISTICS_PATH, { clientId: resolved.clientId, apiKey: resolved.apiKey, body: payload });
     return res.json({ source: resolved.source || OZON_LOGISTICS_PATH, result: data?.result || data });
@@ -1600,7 +1536,5 @@ app.post("/telegram-webhook", async (req, res) => {
     console.error("Webhook handler error:", err);
   }
 });
-
-bootCategoryCache();
 
 app.listen(PORT, () => console.log(`✅ Server started on :${PORT}`));
