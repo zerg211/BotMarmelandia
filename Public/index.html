@@ -866,17 +866,14 @@
     }
 
     function chooseCategory(cat){
+      // фиксируем выбор категории и сразу подставляем "стандартную" комиссию из дерева категорий
       commissionDirty = false;
       lastLiveCommission = null;
       if (calcInputs.category && cat?.name){
         calcInputs.category.value = cat.name;
       }
       renderCategorySuggest([]);
-      applyCategory(cat);
-      const price = parseNumber(calcInputs.price);
-      if (cat && Number.isFinite(price) && price > 0){
-        fetchCommissionFromApi(price);
-      }
+      applyCategory(cat); // внутри applyCategory комиссия проставляется из cat.commission
       updateCalc();
     }
 
