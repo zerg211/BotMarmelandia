@@ -30,19 +30,12 @@ app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
-const OZON_CATEGORY_TREE_PATH = process.env.OZON_CATEGORY_TREE_PATH || "/v1/description-category/tree";
-const OZON_COMMISSION_PATH = process.env.OZON_COMMISSION_PATH || "/v1/product/calc/commission";
-const OZON_LOGISTICS_PATH = process.env.OZON_LOGISTICS_PATH || "/v1/product/calc/fbs";
-const OZON_DEFAULT_CLIENT_ID = process.env.OZON_DEFAULT_CLIENT_ID || process.env.OZON_CLIENT_ID;
-const OZON_DEFAULT_API_KEY = process.env.OZON_DEFAULT_API_KEY || process.env.OZON_API_KEY;
 
 // “Сегодня” считаем по МСК (или поменяй через ENV SALES_TZ)
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
-const CATEGORY_CACHE_PATH = path.join(DATA_DIR, "category-cache.json");
-const OZON_FALLBACK_CATEGORIES_PATH = path.join(__dirname, "ozon-category-fallback.json");
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 const pending = new Map();
 
@@ -147,164 +140,6 @@ async function ozonPost(pathname, { clientId, apiKey, body }) {
   return data;
 }
 
-function flattenCategoryTree(tree, acc = []) {
-  if (!tree) return acc;
-  if (Array.isArray(tree)) {
-    tree.forEach((node) => flattenCategoryTree(node, acc));
-    return acc;
-  }
-
-  const current = {
-    category_id: tree.category_id || tree.id,
-    name: tree.title || tree.name,
-    path: tree.path || tree.path_name,
-    children: tree.children || tree.childrens || [],
-  };
-
-  if (current.category_id && current.name) {
-    acc.push(current);
-  }
-
-  flattenCategoryTree(current.children, acc);
-  return acc;
-}
-
-function normalize(str) {
-  return String(str || "").toLowerCase().trim();
-}
-
-function scoreCategory(cat, qTokens) {
-  const haystack = [cat.name, cat.path, ...(cat.keywords || [])].map(normalize).filter(Boolean);
-  if (!haystack.length) return 0;
-  let score = 0;
-  const joined = qTokens.join(" ");
-  haystack.forEach((h) => {
-    if (h === joined) score = Math.max(score, 140);
-    else if (h.startsWith(joined)) score = Math.max(score, 120);
-    else if (h.includes(joined)) score = Math.max(score, 100);
-    qTokens.forEach((t) => {
-      if (t.length > 2 && h.includes(t)) score = Math.max(score, 80);
-    });
-  });
-  return score;
-}
-
-const CATEGORY_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 часов
-
-async function ensureCategoryCache({ clientId, apiKey, source }) {
-  loadCategoryCacheFromDisk();
-
-  const cacheIsFallback = categoryCache.source === "fallback";
-  const cacheIsStale = categoryCache.updatedAt && Date.now() - categoryCache.updatedAt > CATEGORY_CACHE_TTL_MS;
-
-  // Если уже есть кэш и он не фолбэк/не протух — возвращаем, иначе попробуем обновить по API
-  if (categoryCache.list.length && !cacheIsFallback && !cacheIsStale) return categoryCache;
-
-  // Если кэш есть, но он из фолбэка или устарел — продолжаем и перезапишем его при наличии ключей
-  if (!clientId || !apiKey) throw new Error("no_creds");
-
-  const body = { language: "RU" };
-  const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId, apiKey, body });
-  const tree = data?.result?.categories || data?.result?.items || data?.result || data;
-  // попробуем подмешать "стандартные" комиссии из fallback-файла (если он есть)
-// чтобы комиссия работала даже при обновлении дерева категорий через API
-  let commissionById = new Map();
-  try{
-    if (fs.existsSync(OZON_FALLBACK_CATEGORIES_PATH)){
-      const fb = JSON.parse(fs.readFileSync(OZON_FALLBACK_CATEGORIES_PATH, "utf-8"));
-      if (Array.isArray(fb)){
-        commissionById = new Map(
-          fb
-            .filter(x => x && (x.category_id || x.id))
-            .map(x => [String(x.category_id || x.id), x.commission || {}])
-        );
-      }
-    }
-  } catch (_) {}
-
-  const flat = flattenCategoryTree(tree, []).map((c) => ({
-    category_id: c.category_id,
-    name: c.name,
-    path: c.path || c.name,
-    keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
-    commission: commissionById.get(String(c.category_id)) || {},
-  }));
-
-  categoryCache.list = flat;
-  categoryCache.source = source || OZON_CATEGORY_TREE_PATH;
-  categoryCache.updatedAt = Date.now();
-  saveCategoryCacheToDisk();
-  return categoryCache;
-}
-
-function searchCategories(query, { limit = 20 } = {}) {
-  const q = normalize(query);
-  if (!q || q.length < 2 || !categoryCache.list.length) return [];
-  const qTokens = q.split(/\s+/).filter(Boolean);
-  return categoryCache.list
-    .map((cat) => ({ cat, score: scoreCategory(cat, qTokens) }))
-    .filter((s) => s.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map((s) => s.cat);
-}
-
-// Cache of categories fetched from Ozon to allow repeated lookups and search.
-const categoryCache = {
-  list: [],
-  source: null,
-  updatedAt: 0,
-};
-
-function loadCategoryCacheFromDisk() {
-  if (categoryCache.list.length) return;
-  try {
-    if (!fs.existsSync(CATEGORY_CACHE_PATH)) return;
-    const data = JSON.parse(fs.readFileSync(CATEGORY_CACHE_PATH, "utf-8"));
-    if (Array.isArray(data?.list)) {
-      categoryCache.list = data.list;
-      categoryCache.source = data.source || "disk";
-      categoryCache.updatedAt = data.updatedAt || Date.now();
-    }
-  } catch (_) {}
-}
-
-function saveCategoryCacheToDisk() {
-  try {
-    const payload = {
-      list: categoryCache.list,
-      source: categoryCache.source,
-      updatedAt: categoryCache.updatedAt || Date.now(),
-    };
-    fs.writeFileSync(CATEGORY_CACHE_PATH, JSON.stringify(payload, null, 2), "utf-8");
-  } catch (_) {}
-}
-
-function seedCategoryCacheFromFallback() {
-  if (categoryCache.list.length) return false;
-  try {
-    if (!fs.existsSync(OZON_FALLBACK_CATEGORIES_PATH)) return false;
-    const data = JSON.parse(fs.readFileSync(OZON_FALLBACK_CATEGORIES_PATH, "utf-8"));
-    if (!Array.isArray(data)) return false;
-    categoryCache.list = data.map((c) => ({
-      category_id: c.category_id,
-      name: c.name,
-      path: c.path || c.name,
-      keywords: (c.keywords || c.path || c.name || "")
-        .toString()
-        .split(/[>/]/)
-        .map((p) => p.trim())
-        .filter(Boolean),
-      commission: c.commission || {},
-    }));
-    categoryCache.source = "fallback";
-    categoryCache.updatedAt = Date.now();
-    return categoryCache.list.length > 0;
-  } catch (_) {
-    return false;
-  }
-}
-
 // ---------------- date helpers ----------------
 function todayDateStr() {
   return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
@@ -326,24 +161,12 @@ function isSameDayLocal(iso, dateStr) {
 // ---------------- money helpers (без float) ----------------
 function toCents(val) {
   if (val === null || val === undefined) return 0;
-  let s = String(val).trim().replace(",", ".");
+  const s = String(val).trim().replace(",", ".");
   if (!s) return 0;
-
-  let sign = 1;
-  if (s.startsWith("-")) {
-    sign = -1;
-    s = s.slice(1);
-  } else if (s.startsWith("+")) {
-    s = s.slice(1);
-  }
-
   const parts = s.split(".");
   const rub = parseInt(parts[0] || "0", 10) || 0;
   const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10) || 0;
-  return sign * (rub * 100 + kop);
-}
-function rubToCents(val) {
-  return toCents(val);
+  return rub * 100 + kop;
 }
 const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function centsToRubString(cents) {
@@ -791,163 +614,8 @@ function resolveCredsFromRequest(req) {
     }
   }
 
-  // 4) Фолбэк на переменные окружения
-  if (OZON_DEFAULT_CLIENT_ID && OZON_DEFAULT_API_KEY) {
-    return { clientId: OZON_DEFAULT_CLIENT_ID, apiKey: OZON_DEFAULT_API_KEY, source: "env" };
-  }
-
   return null;
 }
-
-app.post("/api/ozon/categories", async (req, res) => {
-  try {
-    loadCategoryCacheFromDisk();
-    seedCategoryCacheFromFallback();
-    const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
-    const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
-
-    if (!resolved?.clientId || !resolved?.apiKey) {
-      if (categoryCache.list.length) {
-        return res.json({
-          source: categoryCache.source || "cache",
-          total: categoryCache.list.length,
-          categories: categoryCache.list,
-          cached: true,
-        });
-      }
-      return res.status(400).json({ error: "no_creds" });
-    }
-
-    await ensureCategoryCache(resolved);
-
-    return res.json({
-      source: categoryCache.source,
-      total: categoryCache.list.length,
-      categories: categoryCache.list,
-    });
-  } catch (e) {
-    console.error("OZON CATEGORIES ERROR:", e);
-    return res.status(500).json({ error: String(e.message || e) });
-  }
-});
-
-app.post("/api/ozon/categories/search", async (req, res) => {
-  try {
-    loadCategoryCacheFromDisk();
-    const query = req.body?.query || req.query.q || "";
-    const limit = Number(req.body?.limit || req.query.limit || 20) || 20;
-
-    const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
-    const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
-
-    if (!categoryCache.list.length) {
-      if (!resolved?.clientId || !resolved?.apiKey) {
-        if (!seedCategoryCacheFromFallback()) return res.status(400).json({ error: "no_creds" });
-      } else {
-        await ensureCategoryCache(resolved);
-      }
-    } else if (resolved?.clientId && resolved?.apiKey) {
-      // Если данные есть, но они из фолбэка или устарели — обновим при наличии ключей
-      await ensureCategoryCache(resolved);
-    }
-
-    const matches = searchCategories(query, { limit });
-    return res.json({
-      source: categoryCache.source,
-      total: categoryCache.list.length,
-      categories: matches,
-    });
-  } catch (e) {
-    console.error("OZON CATEGORIES SEARCH ERROR:", e);
-    return res.status(500).json({ error: String(e.message || e) });
-  }
-});
-
-app.post("/api/ozon/commission", async (req, res) => {
-  // ВАЖНО: для твоей логики комиссия фиксированная по категории.
-  // Этот endpoint возвращает % комиссии из categoryCache (seed из ozon-category-fallback.json + подмешивание в API дерево).
-  try {
-    loadCategoryCacheFromDisk();
-    seedCategoryCacheFromFallback();
-
-    const payload = req.body?.payload || req.body || {};
-    const item = Array.isArray(payload?.items) ? payload.items[0] : (payload?.item || payload || null);
-
-    const categoryIdRaw = item?.category_id ?? item?.categoryId ?? payload?.category_id ?? payload?.categoryId;
-    if (!categoryIdRaw) return res.status(400).json({ error: "missing_category_id" });
-
-    // fbo/fbs: берём из delivery_schema если он есть, иначе из query/body, иначе fbo
-    const schemaRaw =
-      item?.delivery_schema ??
-      payload?.delivery_schema ??
-      req.body?.delivery_schema ??
-      req.query?.delivery_schema ??
-      "fbo";
-    const schema = String(schemaRaw).toLowerCase().includes("fbs") ? "fbs" : "fbo";
-
-    // если кэша нет и есть ключи — попробуем обновить дерево (это не обязательно, но полезно)
-    const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
-    const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
-    if ((!categoryCache.list.length || categoryCache.source === "fallback") && resolved?.clientId && resolved?.apiKey) {
-      try { await ensureCategoryCache(resolved); } catch (_) {}
-    }
-
-    const id = String(categoryIdRaw);
-    const cat = categoryCache.list.find((c) => String(c.category_id) === id);
-
-    const rate = Number(cat?.commission?.[schema] ?? cat?.commission?.rate ?? cat?.commission ?? NaN);
-    if (!Number.isFinite(rate) || rate <= 0) {
-      return res.status(404).json({
-        error: "commission_not_found",
-        category_id: id,
-        schema,
-        hint: "Добавь комиссию в ozon-category-fallback.json для этого category_id.",
-      });
-    }
-
-    return res.json({
-      source: "category_cache",
-      category_id: id,
-      schema,
-      rate, // % комиссии
-    });
-  } catch (e) {
-    return res.status(500).json({ error: String(e.message || e) });
-  }
-});
-
-app.post("/api/ozon/logistics", async (req, res) => {
-  try {
-    const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
-    const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
-    if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
-    const payload = req.body?.payload;
-    if (!payload) return res.status(400).json({ error: "no_payload" });
-
-    const price = Number(payload?.price);
-    const weight = Number(payload?.weight);
-    const volume = Number(payload?.volume);
-    const schema = String(payload?.delivery_schema || "");
-    const deliveryTime = Number(payload?.delivery_time);
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(weight) || weight <= 0 || !Number.isFinite(volume) || volume <= 0 || !schema) {
-      return res.status(400).json({
-        error: "invalid_input",
-        details: {
-          price: payload?.price,
-          weight: payload?.weight,
-          volume: payload?.volume,
-          delivery_schema: payload?.delivery_schema,
-          delivery_time: payload?.delivery_time,
-        },
-      });
-    }
-
-    const data = await ozonPost(OZON_LOGISTICS_PATH, { clientId: resolved.clientId, apiKey: resolved.apiKey, body: payload });
-    return res.json({ source: resolved.source || OZON_LOGISTICS_PATH, result: data?.result || data });
-  } catch (e) {
-    return res.status(500).json({ error: String(e.message || e) });
-  }
-});
 
 async function handleToday(req, res) {
   try {
@@ -1054,63 +722,13 @@ function normalizeAmountToCents(v){
   return 0;
 }
 
-function serviceTitle(rawKey) {
-  const map = {
-    marketplace_service_item_fulfillment: "Логистика",
-    marketplace_service_item_pickup: "Логистика",
-    marketplace_service_item_dropoff_pvz: "Логистика",
-    marketplace_service_item_dropoff_ff: "Логистика",
-    marketplace_service_item_direct_flow_trans: "Логистика",
-    marketplace_service_item_deliv_to_customer: "Логистика",
-    marketplace_service_payment_processing: "Эквайринг",
-    marketplace_service_item_return_flow: "Возврат",
-    marketplace_service_item_return_after_deliv_to_customer: "Возврат после доставки",
-    marketplace_service_item_dropoff_sc: "Доставка на сортировочный центр",
-    marketplace_service_item_customer_pickup: "Самовывоз покупателем",
-    marketplace_service_item_defect_commission: "Комиссия за брак",
-    marketplace_service_item_return_not_deliv_to_customer: "Невыкуп",
-  };
-
-  if (map[rawKey]) return map[rawKey];
-  const cleaned = String(rawKey || "").replace(/marketplace_service_/g, "").replace(/item_/g, "");
-  return cleaned ? cleaned.replace(/_/g, " ").trim() : "Услуга";
-}
-
-function extractServiceAmount(val) {
-  if (val === null || val === undefined) return 0;
-  if (typeof val === "number" || typeof val === "string") return normalizeAmountToCents(val);
-  if (Array.isArray(val)) return val.reduce((s, v) => s + extractServiceAmount(v), 0);
-
-  if (typeof val === "object") {
-    const preferred = ["total", "price", "amount", "value", "payout"];
-    for (const key of preferred) {
-      if (key in val) {
-        const v = extractServiceAmount(val[key]);
-        if (v) return v;
-      }
-    }
-
-    if (Array.isArray(val.items)) {
-      const itemsSum = val.items.reduce((s, v) => s + extractServiceAmount(v), 0);
-      if (itemsSum) return itemsSum;
-    }
-
-    // попытка извлечь из вложенных полей, если нет явных ключей
-    let nestedSum = 0;
-    for (const v of Object.values(val)) nestedSum += extractServiceAmount(v);
-    return nestedSum;
-  }
-
-  return 0;
-}
-
-async function fetchFinanceTransactions({ clientId, apiKey, fromUtcIso, toUtcIso, postingNumber = "" }) {
+async function fetchFinanceTransactions({ clientId, apiKey, fromUtcIso, toUtcIso }) {
   // Вытягиваем ВСЕ транзакции за период (постранично), чтобы список операций был полным.
   const bodyBase = {
     filter: {
       date: { from: fromUtcIso, to: toUtcIso },
       operation_type: [],
-      posting_number: postingNumber || "",
+      posting_number: "",
       transaction_type: "all",
     },
     page: 1,
@@ -1186,24 +804,13 @@ function buildOpsRows(transactions) {
       return cands[0] || null;
     })();
 
-    // сортируем по времени операции, но на фронт отдаём уже в МСК
-    let ts = 0;
-    let occurred_at_msk = null;
-    if (occurredAt) {
-      const dt = DateTime.fromISO(String(occurredAt), { setZone: true });
-      if (dt.isValid) {
-        ts = dt.toMillis();
-        occurred_at_msk = dt.setZone(SALES_TZ).toISO();
-      }
-    }
+    // сортируем по времени операции (UTC), но на фронт отдаём уже в МСК
+    const ts = occurredAt ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).toMillis() : 0;
+    const occurred_at_msk = occurredAt
+      ? DateTime.fromISO(String(occurredAt), { zone: "utc" }).setZone(SALES_TZ).toISO()
+      : null;
 
-    // если нет валидного времени — хотя бы сортируем по id транзакции
-    if (!ts) {
-      const fallback = Number(t?.operation_id || t?.transaction_id || t?.id || 0);
-      if (Number.isFinite(fallback)) ts = fallback;
-    }
-
-    const titleLc = String(title).toLowerCase();
+const titleLc = String(title).toLowerCase();
     const isSaleDelivery = titleLc.includes("доставка покупателю");
 
     rows.push({
@@ -1270,7 +877,7 @@ app.get("/api/balance/sale/detail", async (req, res) => {
       body: {
         posting_number: posting,
         translit: true,
-        with: { analytics_data: true, financial_data: true, legal_info: false },
+        with: { analytics_data: false, financial_data: true, legal_info: false },
       },
     });
 
@@ -1290,21 +897,10 @@ app.get("/api/balance/sale/detail", async (req, res) => {
 
     const gross = items.reduce((s, it) => s + Number(it.total_cents || 0), 0);
 
-    // 2) Тянем транзакции по этому отправлению и собираем услуги/расходы
-    // Отталкиваемся от даты доставки/создания конкретного постинга и берём узкое окно,
-    // чтобы не тащить все транзакции за месяц и не упираться в лимиты API.
-    const deliveredIso = pickDeliveredIso(pRes);
-    const createdIso = pRes?.created_at || pRes?.in_process_at || null;
-    const anchorIso = deliveredIso || createdIso || todayDateStr();
-
-    let anchor = DateTime.fromISO(anchorIso, { setZone: true });
-    if (!anchor.isValid) anchor = DateTime.fromFormat(todayDateStr(), "yyyy-LL-dd", { zone: SALES_TZ });
-
-    // берём 15 дней до и после якорной даты
-    const fromLocal = anchor.minus({ days: 15 }).startOf("day");
-    const toLocal = anchor.plus({ days: 15 }).endOf("day");
-    const since = fromLocal.toUTC().toISO({ suppressMilliseconds: false });
-    const to = toLocal.toUTC().toISO({ suppressMilliseconds: false });
+    // 2) Тянем транзакции по этому отправлению за последние 30 дней и собираем услуги/расходы
+    const today = todayDateStr();
+    const fromLocal = DateTime.fromISO(today, { zone: SALES_TZ }).minus({ days: 30 }).toFormat("yyyy-MM-dd");
+    const { since, to } = dayBoundsUtcFromLocal(fromLocal);
 
     // Постранично (на всякий случай)
     const allTx = await fetchFinanceTransactions({
@@ -1312,7 +908,6 @@ app.get("/api/balance/sale/detail", async (req, res) => {
       apiKey: resolved.apiKey,
       fromUtcIso: since,
       toUtcIso: to,
-      postingNumber: posting,
     });
 
     // фильтруем по posting_number
@@ -1327,7 +922,6 @@ app.get("/api/balance/sale/detail", async (req, res) => {
     });
 
     // группируем расходы/услуги по названию операции
-    let netFromSaleCents = null;
     const group = new Map(); // name -> cents
     for (const t of tx) {
       const name =
@@ -1344,58 +938,17 @@ app.get("/api/balance/sale/detail", async (req, res) => {
 
       const nameLc = String(name).toLowerCase();
 
-      // сохраняем сумму чистого начисления по доставке (net)
-      if (nameLc.includes("доставка покупателю")) {
-        if (netFromSaleCents === null) netFromSaleCents = cents;
-        continue; // в детализации показываем разложение без самого начисления
-      }
+      // пропускаем саму "доставку покупателю" (это net-начисление, которое ты видишь в списке)
+      if (nameLc.includes("доставка покупателю")) continue;
 
       group.set(String(name), (group.get(String(name)) || 0) + cents);
     }
 
     // Комиссия из financial_data постинга (если вдруг нет в транзакциях)
-    const finData = pRes?.financial_data || {};
-    const finProds = Array.isArray(finData?.products) ? finData.products : [];
+    const finProds = Array.isArray(pRes?.financial_data?.products) ? pRes.financial_data.products : [];
     const commissionFromPosting = finProds.reduce((s, fp) => s + (normalizeAmountToCents(fp?.commission_amount) || 0), 0);
     if (commissionFromPosting && ![...group.keys()].some(k => k.toLowerCase().includes("комис"))) {
       group.set("Комиссия", (group.get("Комиссия") || 0) + commissionFromPosting);
-    }
-
-    // Услуги/удержания из financial_data (логистика, эквайринг и т.п.)
-    const serviceBuckets = [finData?.services, finData?.posting_services, finData?.additional_services];
-    for (const bucket of serviceBuckets) {
-      if (!bucket || typeof bucket !== "object") continue;
-      for (const [rawKey, svc] of Object.entries(bucket)) {
-        const keyLc = String(rawKey || "").toLowerCase();
-
-        // Пытаемся забрать net по доставке из payout/amount, но в расходы не кладём
-        if (keyLc.includes("marketplace_service_item_deliv_to_customer")) {
-          const payoutFromSvc = normalizeAmountToCents(
-            svc?.payout ?? svc?.total ?? svc?.amount ?? svc?.value ?? svc
-          );
-          if (netFromSaleCents === null && payoutFromSvc) netFromSaleCents = payoutFromSvc;
-          continue;
-        }
-
-        const title = serviceTitle(rawKey);
-        const amount = extractServiceAmount(svc);
-        if (!amount) continue;
-        group.set(title, (group.get(title) || 0) + amount);
-      }
-    }
-
-    // если не нашли net в транзакциях — возьмём из payout услуги доставки
-    if (netFromSaleCents === null) {
-      const deliverySvc =
-        finData?.posting_services?.marketplace_service_item_deliv_to_customer ||
-        finData?.services?.marketplace_service_item_deliv_to_customer ||
-        null;
-      if (deliverySvc) {
-        const payoutFromSvc = normalizeAmountToCents(
-          deliverySvc?.payout ?? deliverySvc?.total ?? deliverySvc?.amount ?? deliverySvc?.value ?? deliverySvc
-        );
-        if (payoutFromSvc) netFromSaleCents = payoutFromSvc;
-      }
     }
 
     // собираем строки
@@ -1419,16 +972,6 @@ app.get("/api/balance/sale/detail", async (req, res) => {
       .sort((a, b) => Math.abs(Number(b.amount_cents)) - Math.abs(Number(a.amount_cents)));
 
     lines.push(...feeLines);
-
-    // если сумма по "Доставка покупателю" не совпадает с gross + услуги, добавляем остаток как прочие удержания
-    if (netFromSaleCents !== null) {
-      const feesTotal = feeLines.reduce((s, f) => s + Number(f.amount_cents || 0), 0);
-      const residual = netFromSaleCents - gross - feesTotal;
-      if (Math.abs(residual) > 0) {
-        const pct = gross ? Math.round((Math.abs(residual) / gross) * 1000) / 10 : null;
-        lines.push({ title: "Прочие удержания", amount_cents: residual, percent: pct, kind: "residual" });
-      }
-    }
 
     // отдельная подсказка "Оплата за заказ"
     const payForOrderLine = feeLines.find(l => String(l.title).toLowerCase().includes("оплата за заказ"));
