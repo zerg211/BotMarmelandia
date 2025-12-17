@@ -43,6 +43,7 @@ const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 const CATEGORY_CACHE_PATH = path.join(DATA_DIR, "category-cache.json");
 const OZON_FALLBACK_CATEGORIES_PATH = path.join(__dirname, "ozon-category-fallback.json");
+const OZON_COMMISSION_TABLE_PATH = path.join(__dirname, "ozon-commission-table.json");
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 const pending = new Map();
 
@@ -191,69 +192,6 @@ function scoreCategory(cat, qTokens) {
 
 const CATEGORY_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 часов
 
-// --- Commission table (fixed percent per category/type, independent of price) ---
-const COMMISSION_TABLE_PATH = path.join(process.cwd(), "ozon-commission-table.json");
-
-let commissionTable = { entries: [] };
-
-function loadCommissionTable() {
-  try {
-    const raw = fs.readFileSync(COMMISSION_TABLE_PATH, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (parsed && Array.isArray(parsed.entries)) commissionTable = parsed;
-  } catch (e) {
-    console.warn("Commission table not loaded:", e?.message || e);
-    commissionTable = { entries: [] };
-  }
-}
-
-function normRu(s) {
-  return String(s || "")
-    .toLowerCase()
-    .trim()
-    .replace(/ё/g, "е")
-    .replace(/\s+/g, " ")
-    .replace(/[\"'`“”«»]/g, "");
-}
-
-function bestCommissionForCategoryPath(pathOrName) {
-  if (!commissionTable?.entries?.length) return null;
-  const src = normRu(pathOrName);
-  if (!src) return null;
-
-  const parts = src.split(/[>/]/).map((p) => p.trim()).filter(Boolean);
-  const leaf = parts.length ? parts[parts.length - 1] : src;
-
-  let best = null;
-  let bestScore = 0;
-
-  for (const e of commissionTable.entries) {
-    const kType = e.k_type || "";
-    const kCat = e.k_cat || "";
-    let score = 0;
-
-    if (kType && kType === leaf) score = 240;
-    else if (kType && src.startsWith(kType)) score = Math.max(score, 210);
-    else if (kType && src.includes(kType)) score = Math.max(score, 190);
-
-    if (kCat && kCat === leaf) score = Math.max(score, 180);
-    else if (kCat && src.includes(kCat)) score = Math.max(score, 140);
-
-    if (kType && kCat && src.includes(kType) && src.includes(kCat)) score += 20;
-
-    if (score > bestScore) {
-      bestScore = score;
-      best = e;
-    }
-  }
-
-  if (!best || bestScore < 140) return null;
-  return best.commission || null;
-}
-
-// Load once on boot
-loadCommissionTable();
-
 async function ensureCategoryCache({ clientId, apiKey, source }) {
   loadCategoryCacheFromDisk();
 
@@ -285,13 +223,19 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
     }
   } catch (_) {}
 
-  const flat = flattenCategoryTree(tree, []).map((c) => ({
-    category_id: c.category_id,
-    name: c.name,
-    path: c.path || c.name,
-    keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
-    commission: bestCommissionForCategoryPath(c.path || c.name) || commissionById.get(String(c.category_id)) || {},
-  }));
+  const flat = flattenCategoryTree(tree, []).map((c) => {
+    const base = {
+      category_id: c.category_id,
+      name: c.name,
+      path: c.path || c.name,
+      keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
+    };
+    const fromFallback = commissionById.get(String(c.category_id)) || {};
+    const guessed = guessCommissionForCategory(base) || {};
+    // приоритет: fallback по id -> таблица комиссий -> пусто
+    const commission = Object.keys(fromFallback).length ? fromFallback : guessed;
+    return { ...base, commission };
+  });
 
   categoryCache.list = flat;
   categoryCache.source = source || OZON_CATEGORY_TREE_PATH;
@@ -318,6 +262,77 @@ const categoryCache = {
   source: null,
   updatedAt: 0,
 };
+
+// -------- commission table (from Excel) helpers --------
+let commissionTable = null; // { byType: Map, byCategory: Map }
+
+function normRu(s){
+  return String(s || "")
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/\s+/g, " ");
+}
+
+function loadCommissionTableFromDisk(){
+  if (commissionTable) return commissionTable;
+  try{
+    if (!fs.existsSync(OZON_COMMISSION_TABLE_PATH)) {
+      commissionTable = { byType: new Map(), byCategory: new Map() };
+      return commissionTable;
+    }
+    const raw = JSON.parse(fs.readFileSync(OZON_COMMISSION_TABLE_PATH, "utf-8"));
+    const byType = new Map();
+    const byCategory = new Map();
+    const entries = Array.isArray(raw?.entries) ? raw.entries : [];
+    for (const e of entries){
+      const t = normRu(e?.type);
+      const c = normRu(e?.category);
+      const payload = {
+        fbo: Number.isFinite(Number(e?.fbo)) ? Number(e.fbo) : null,
+        fbs: Number.isFinite(Number(e?.fbs)) ? Number(e.fbs) : null,
+        rfbs: Number.isFinite(Number(e?.rfbs)) ? Number(e.rfbs) : null,
+      };
+      if (t) byType.set(t, payload);
+      if (c) byCategory.set(c, payload);
+    }
+    commissionTable = { byType, byCategory };
+    return commissionTable;
+  } catch (e){
+    commissionTable = { byType: new Map(), byCategory: new Map() };
+    return commissionTable;
+  }
+}
+
+function guessCommissionForCategory(cat){
+  const t = loadCommissionTableFromDisk();
+  if (!t) return null;
+  const pathStr = normRu(cat?.path || cat?.name || "");
+  const nameStr = normRu(cat?.name || "");
+  // Try exact matches first
+  if (t.byType.has(nameStr)) return t.byType.get(nameStr);
+  if (t.byCategory.has(nameStr)) return t.byCategory.get(nameStr);
+  // Try by last segment of path (after > or /)
+  const lastSeg = normRu(String(cat?.path || "").split(/[>/]/).pop() || "");
+  if (t.byType.has(lastSeg)) return t.byType.get(lastSeg);
+  if (t.byCategory.has(lastSeg)) return t.byCategory.get(lastSeg);
+  // Try contains: if any type appears in path, prefer the longest match
+  let best = null;
+  let bestLen = 0;
+  for (const [key, payload] of t.byType.entries()){
+    if (key.length > bestLen && pathStr.includes(key)){
+      best = payload; bestLen = key.length;
+    }
+  }
+  if (best) return best;
+  best = null; bestLen = 0;
+  for (const [key, payload] of t.byCategory.entries()){
+    if (key.length > bestLen && pathStr.includes(key)){
+      best = payload; bestLen = key.length;
+    }
+  }
+  return best;
+}
 
 function loadCategoryCacheFromDisk() {
   if (categoryCache.list.length) return;
@@ -358,7 +373,7 @@ function seedCategoryCacheFromFallback() {
         .split(/[>/]/)
         .map((p) => p.trim())
         .filter(Boolean),
-      commission: bestCommissionForCategoryPath(c.path || c.name) || c.commission || {},
+      commission: c.commission || {},
     }));
     categoryCache.source = "fallback";
     categoryCache.updatedAt = Date.now();
