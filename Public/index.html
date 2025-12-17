@@ -185,12 +185,6 @@
     .svd-value{font-weight:800;color:var(--accent);}
     .badge-row{display:flex;flex-wrap:wrap;gap:8px;font-size:12px;color:var(--muted);}
     .badge-row .pill{border-color:rgba(255,255,255,.08);}
-    .typeahead{position:relative;}
-    .typeahead-list{position:absolute;left:0;right:0;top:100%;margin-top:6px;border:1px solid var(--line);background:rgba(16,22,31,.96);
-      border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.35);max-height:220px;overflow:auto;display:none;z-index:20;}
-    .typeahead-item{padding:10px 12px;font-size:13px;color:var(--text);cursor:pointer;display:flex;flex-direction:column;gap:2px;}
-    .typeahead-item:hover,.typeahead-item:active{background:rgba(77,163,255,.14);}
-    .typeahead-item .meta{font-size:11px;color:var(--muted);}
 
 </style>
 </head>
@@ -275,7 +269,7 @@
             <div class="inline-note">Чем выше СВД, тем дороже логистика. Ближе к логике калькулятора Ozon: учитываем обратную доставку через процент выкупа.</div>
             <div class="field-row">
               <label>Процент выкупа, %<input id="calcBuyout" type="number" inputmode="decimal" placeholder="95" value="95" /></label>
-              <label>Скидка, %<input id="calcDiscount" type="number" inputmode="decimal" placeholder="10" value="0" /></label>
+              <label>Доп. расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
             </div>
           </div>
 
@@ -283,27 +277,26 @@
             <div class="fieldset">
               <legend>Категория и тип товара</legend>
               <label>Категория или тип, как в кабинете Ozon
-                <div class="typeahead">
-                  <input id="calcCategory" type="text" placeholder="например: обогрев" autocomplete="off" list="categoryList" />
-                  <div class="typeahead-list" id="categorySuggest"></div>
-                </div>
+                <input id="calcCategory" type="text" placeholder="например: обогрев" list="categoryList" />
               </label>
               <datalist id="categoryList"></datalist>
               <div class="inline-note" id="categoryHint">Начните вводить название — покажем ближайшую категорию, а комиссию подставим автоматически.</div>
-              <div class="err" id="categoryError" style="display:none;"></div>
-              <label>Комиссия маркетплейса, %
-                <input id="calcCommission" type="number" inputmode="decimal" placeholder="15" />
-              </label>
+              <div class="field-row">
+                <label>Комиссия маркетплейса, %
+                  <input id="calcCommission" type="number" inputmode="decimal" placeholder="15" value="15" />
+                </label>
+                <label>НДС, % (если есть)<input id="calcVat" type="number" inputmode="decimal" placeholder="0" value="0" /></label>
+              </div>
             </div>
             <div class="fieldset">
-              <legend>Финансы</legend>
+              <legend>Финансы и налоги</legend>
               <div class="field-row">
                 <label>Цена продажи, ₽<input id="calcPrice" type="number" inputmode="decimal" placeholder="1499" /></label>
                 <label>Себестоимость, ₽<input id="calcCost" type="number" inputmode="decimal" placeholder="650" /></label>
               </div>
               <div class="field-row">
+                <label>Скидка, %<input id="calcDiscount" type="number" inputmode="decimal" placeholder="10" value="0" /></label>
                 <label>Реклама, % от цены<input id="calcAds" type="number" inputmode="decimal" placeholder="8" value="0" /></label>
-                <label>Доп. расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
               </div>
             </div>
           </div>
@@ -354,6 +347,10 @@
                 <div class="k">Реклама</div>
                 <div class="v" id="calcAdsAmt">—</div>
               </div>
+              <div class="calc-metric">
+                <div class="k">НДС</div>
+                <div class="v" id="calcVatAmt">—</div>
+              </div>
             </div>
             <div class="calc-breakdown">
               <div class="line"><span>Себестоимость</span><span class="v" id="calcCostLine">—</span></div>
@@ -370,51 +367,19 @@
                 <div class="k">Маржинальность</div>
                 <div class="v" id="calcMargin">—</div>
               </div>
+              <div class="calc-metric">
+                <div class="k">ROI к себестоимости</div>
+                <div class="v" id="calcRoi">—</div>
+              </div>
+              <div class="calc-metric">
+                <div class="k">Точка безубыточности</div>
+                <div class="v" id="calcBreakeven">—</div>
+              </div>
             </div>
           </div>
         </div>
       </div>
     </div>
-
-    <div class="footer">
-      <div id="updatedAt">Последнее обновление: —</div>
-      <div class="row" style="justify-content:flex-end;">
-        <button class="btn secondary" id="keysBtn">🔑 Ключи</button>
-        <button class="btn" id="refreshBtn">
-          <svg id="refreshIcon" width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-            <path d="M21 3v7h-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          </svg>
-          Обновить
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- modal: api keys -->
-  <div class="modal-backdrop" id="modalBg">
-    <div class="modal">
-      <h3>Ключи Ozon Seller</h3>
-
-      <div class="field">
-        <label>Client ID</label>
-        <input id="clientId" placeholder="например 2396143" />
-      </div>
-
-      <div class="field">
-        <label>Api-Key</label>
-        <input id="apiKey" placeholder="например 6157f0ba-..." />
-      </div>
-
-      <div class="err" id="modalErr">Ошибка</div>
-
-      <div class="row">
-        <button class="btn secondary" id="cancelBtn">Закрыть</button>
-        <button class="btn" id="saveBtn">Сохранить</button>
-      </div>
-    </div>
-  </div>
-
   <!-- balance modal -->
   <div class="modal-backdrop" id="balModalBg">
     <div class="modal">
@@ -475,6 +440,7 @@
       commission: $("calcCommission"),
       ads: $("calcAds"),
       other: $("calcOther"),
+      vat: $("calcVat"),
       len: $("calcLen"),
       width: $("calcWidth"),
       height: $("calcHeight"),
@@ -489,12 +455,15 @@
       netPrice: $("calcNetPrice"),
       commissionAmt: $("calcCommissionAmt"),
       adsAmt: $("calcAdsAmt"),
+      vatAmt: $("calcVatAmt"),
       costs: $("calcCosts"),
       costLine: $("calcCostLine"),
       logisticsLine: $("calcLogisticsLine"),
       otherLine: $("calcOtherLine"),
       profit: $("calcProfit"),
       margin: $("calcMargin"),
+      roi: $("calcRoi"),
+      breakeven: $("calcBreakeven"),
     };
 
     const svdValueEl = $("svdValue");
@@ -505,9 +474,7 @@
     const dimsInputs = $("dimsInputs");
     const volumeInputs = $("volumeInputs");
     const categoryHintEl = $("categoryHint");
-    const categoryErrorEl = $("categoryError");
     const categoryListEl = $("categoryList");
-    const categorySuggestEl = $("categorySuggest");
     const fulfillmentButtons = document.querySelectorAll('.fulfillment-btn');
 
     const tabButtons = document.querySelectorAll('.tab-btn');
@@ -561,10 +528,30 @@
       return Number.isFinite(num) ? num : 0;
     }
 
-    let categories = [];
-    let categoriesLoading = false;
-    let commissionDirty = false;
-    let categorySuggestTimer = null;
+    const categories = [
+      { name: "Обогреватели · климатическая техника", keywords: ["обогрев", "обогреватель", "климат", "конвектор", "тепловентилятор"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Техника для кухни", keywords: ["кухня", "кухонная техника", "блендер", "миксер", "чайник", "мультиварка"], commission: { fbo: 10, fbs: 10.5 } },
+      { name: "Бытовые товары для дома", keywords: ["утюг", "пароочиститель", "пылесос", "дом", "уход"], commission: { fbo: 11, fbs: 11.5 } },
+      { name: "Смартфоны и гаджеты", keywords: ["смартфон", "телефон", "гаджет", "iphone", "android"], commission: { fbo: 5, fbs: 5.5 } },
+      { name: "Ноутбуки и компьютеры", keywords: ["ноутбук", "компьютер", "пк", "моноблок"], commission: { fbo: 6, fbs: 6.5 } },
+      { name: "Периферия и аксессуары", keywords: ["клавиатура", "мышь", "накопитель", "ssd", "hdd"], commission: { fbo: 8, fbs: 8.5 } },
+      { name: "Одежда", keywords: ["одежда", "футболка", "куртка", "джинсы", "брюки"], commission: { fbo: 15, fbs: 16 } },
+      { name: "Обувь", keywords: ["обувь", "кроссовки", "ботинки", "туфли"], commission: { fbo: 14, fbs: 15 } },
+      { name: "Спорт и отдых", keywords: ["спорт", "туризм", "тренировки", "гантели", "йога"], commission: { fbo: 10, fbs: 10.5 } },
+      { name: "Красота и здоровье", keywords: ["косметика", "крем", "уход", "бьюти", "маска"], commission: { fbo: 10, fbs: 10.5 } },
+      { name: "Детские товары", keywords: ["игрушка", "дети", "коляска", "подгузники", "конструктор"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Зоотовары", keywords: ["корм", "зоотовары", "кошки", "собаки"], commission: { fbo: 13, fbs: 13.5 } },
+      { name: "Дом и интерьер", keywords: ["дом", "интерьер", "декор", "постельное", "светильник"], commission: { fbo: 11, fbs: 11.5 } },
+      { name: "Инструменты и стройка", keywords: ["инструмент", "дрель", "шуруповёрт", "строительство", "ремонт"], commission: { fbo: 9, fbs: 9.5 } },
+      { name: "Автотовары", keywords: ["авто", "шины", "автомобиль", "аксессуары", "щётка"], commission: { fbo: 11, fbs: 11.5 } },
+      { name: "Канцелярия и хобби", keywords: ["канцелярия", "тетрадь", "хобби", "рукоделие", "краски"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Сад и дача", keywords: ["сад", "дача", "огород", "гриль", "шланг"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Товары для уборки", keywords: ["уборка", "швабра", "ведро", "губки", "перчатки"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Хранение и организация", keywords: ["контейнер", "органайзер", "короб", "полка"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Для творчества", keywords: ["краски", "пластилин", "рисование", "скрап"], commission: { fbo: 12, fbs: 12.5 } },
+      { name: "Аптека и медтовары", keywords: ["тонометр", "ингалятор", "мед", "аптечка"], commission: { fbo: 9.5, fbs: 10 } },
+      { name: "Кухонная посуда", keywords: ["сковорода", "кастрюля", "тарелка", "посуда", "кухонная утварь"], commission: { fbo: 11, fbs: 11.5 } },
+    ];
 
     const fulfillmentBase = {
       fbo: [
@@ -588,124 +575,34 @@
     };
 
     const norm = (s) => String(s || "").toLowerCase().trim();
-    let categoriesLoadedFrom = null;
-    let lastLiveCommission = null;
-    let lastLogisticsQuote = null;
-    let commissionFetchTs = 0;
-    let logisticsFetchTs = 0;
 
-    async function fetchCategoriesFromApi(){
-      if (categoriesLoading) return;
-      categoriesLoading = true;
-      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
-      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
-      const hasLocalCreds = !!(clientId && apiKey);
-      try {
-        categoryHintEl.textContent = hasLocalCreds
-          ? "Подтягиваем список категорий Ozon..."
-          : "Пробуем загрузить категории с сервера (если ключи сохранены).";
-        const resp = await fetch("/api/ozon/categories", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: hasLocalCreds ? JSON.stringify({ clientId, apiKey }) : undefined,
-        });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data?.error || resp.status);
-        categories = (data?.categories || []).map((c) => ({
-          name: c.path || c.name,
-          path: c.path || c.name,
-          category_id: c.category_id,
-          keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
-          commission: c.commission || {},
-        }));
-        categoriesLoadedFrom = data?.source || "Ozon API";
-        setCategoryOptions(categories.slice(0, 10));
-        categoryHintEl.textContent = `Категории подтянуты из ${categoriesLoadedFrom} (${categories.length} шт.)`;
-      } catch (e){
-        const msg = e?.message || e;
-        categoryHintEl.textContent = `Не удалось загрузить категории из Ozon API: ${msg}`;
-        setCategoryError(msg === "no_creds" ? "Нет доступа к каталогу Ozon: добавьте Client ID и Api-Key." : `Ошибка загрузки: ${msg}`);
-      } finally {
-        categoriesLoading = false;
-      }
-    }
-
-    async function fetchCategorySuggestions(query){
-      if (categoriesLoading) return;
-      const q = norm(query);
-      if (!q || q.length < 2){
-        renderCategorySuggest([]);
-        return;
-      }
-
-      categoriesLoading = true;
-      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
-      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
-      const hasLocalCreds = !!(clientId && apiKey);
-      try {
-        categoryHintEl.textContent = "Ищем категорию в каталоге Ozon...";
-        const body = hasLocalCreds ? { clientId, apiKey, query: q, limit: 20 } : { query: q, limit: 20 };
-        const resp = await fetch("/api/ozon/categories/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data?.error || resp.status);
-        categories = (data?.categories || []).map((c) => ({
-          name: c.path || c.name,
-          path: c.path || c.name,
-          category_id: c.category_id,
-          keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
-          commission: c.commission || {},
-        }));
-        categoriesLoadedFrom = data?.source || "Ozon API";
-        setCategoryOptions(categories);
-        categoryHintEl.textContent = categories.length
-          ? `Нашли ${categories.length} вариантов (источник: ${categoriesLoadedFrom}).`
-          : "Не нашли категорию в каталоге Ozon. Продолжайте печатать или уточните подкатегорию.";
-      } catch (e){
-        const msg = e?.message || e;
-        categoryHintEl.textContent = `Не удалось найти категории через Ozon API: ${msg}`;
-        setCategoryError(msg === "no_creds" ? "Нет доступа к каталогу Ozon: добавьте Client ID и Api-Key." : `Ошибка поиска: ${msg}`);
-        renderCategorySuggest([]);
-      } finally {
-        categoriesLoading = false;
-      }
-    }
-
-    function setCategoryError(msg){
-      if (!categoryErrorEl) return;
-      if (!msg){
-        categoryErrorEl.style.display = "none";
-        categoryErrorEl.textContent = "";
-        return;
-      }
-      categoryErrorEl.style.display = "block";
-      categoryErrorEl.textContent = msg;
-    }
-
-    function setCategoryOptions(list){
+    function buildCategoryList(){
       if (!categoryListEl) return;
-      categoryListEl.innerHTML = (list || []).map((c) => `<option value="${c.name}"></option>`).join("");
-      renderCategorySuggest(list);
-      if (list && list.length){
-        setCategoryError("");
-      }
+      categoryListEl.innerHTML = categories.map((c) => `<option value="${c.name}"></option>`).join("");
     }
 
-    function renderCategorySuggest(list){
-      if (!categorySuggestEl) return;
-      if (!list || !list.length){
-        categorySuggestEl.style.display = "none";
-        categorySuggestEl.innerHTML = "";
-        return;
-      }
-      categorySuggestEl.innerHTML = list.map((c) => {
-        const meta = c.path && c.path !== c.name ? `<div class="meta">${c.path}</div>` : "";
-        return `<div class="typeahead-item" data-id="${c.category_id}"><div>${c.name}</div>${meta}</div>`;
-      }).join("");
-      categorySuggestEl.style.display = "block";
+    function pickCategory(query){
+      const q = norm(query);
+      if (!q) return null;
+      let best = null;
+      let bestScore = 0;
+      const tokens = q.split(/\s+/).filter(Boolean);
+      categories.forEach((c) => {
+        const candidates = [c.name, ...(c.keywords || [])].map(norm);
+        let score = 0;
+        candidates.forEach((cand) => {
+          if (cand === q) score = Math.max(score, 5);
+          else if (cand.includes(q) || q.includes(cand)) score = Math.max(score, 4);
+          else tokens.forEach((t) => {
+            if (t.length > 2 && cand.includes(t)) score = Math.max(score, 3);
+          });
+        });
+        if (score > bestScore) {
+          bestScore = score;
+          best = c;
+        }
+      });
+      return bestScore ? best : null;
     }
 
     let fulfillmentMode = "fbo";
@@ -716,38 +613,6 @@
       if (!cat) return null;
       const rate = cat.commission?.[fulfillmentMode];
       return Number.isFinite(rate) ? rate : null;
-    }
-
-    async function fetchCommissionFromApi(price){
-          if (!selectedCategory?.category_id) return;
-          if (!Number.isFinite(price) || price <= 0) return;
-      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
-      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
-      const now = Date.now();
-      if (now - commissionFetchTs < 800) return; // троттлим
-      commissionFetchTs = now;
-      try {
-        categoryHintEl.textContent = "Запрашиваем реальную комиссию...";
-        const payload = { items: [{ price, category_id: Number(selectedCategory.category_id), delivery_schema: fulfillmentMode.toUpperCase() }] };
-        const body = clientId && apiKey ? { clientId, apiKey, payload } : { payload };
-        const resp = await fetch("/api/ozon/commission", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data?.error || resp.status);
-        const item = data?.result?.items?.[0] || data?.result?.result?.items?.[0] || null;
-        const rate = Number(item?.sales_percent || item?.commission_percent || 0);
-        if (Number.isFinite(rate) && rate > 0){
-          selectedCategory.commission = selectedCategory.commission || {};
-          selectedCategory.commission[fulfillmentMode] = rate;
-          lastLiveCommission = rate;
-          if (!commissionDirty) calcInputs.commission.value = rate;
-          categoryHintEl.textContent = `Комиссия из Ozon API (${data?.source || "commission"}): ${rate}%`;
-          updateCalc();
-        } else {
-          categoryHintEl.textContent = "Ozon API вернул ответ без комиссии, укажите вручную.";
-        }
-      } catch (e){
-        categoryHintEl.textContent = `Не удалось получить комиссию из Ozon API: ${e.message || e}`;
-      }
     }
 
     function computeVolumeAndWeight(){
@@ -776,50 +641,6 @@
       const reverse = tier.base * returnCoeff * returnShare;
       const total = forward + reverse;
       return { forward, reverse, total, volumetricWeight, tier, svdCoeff, returnShare };
-    }
-
-    async function fetchLogisticsFromApi({ price, volumeLiters, weightKg, svdValue, buyoutPct }){
-          if (!Number.isFinite(price) || price <= 0) return;
-          if (!volumeLiters || !weightKg) return;
-      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
-      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
-      const now = Date.now();
-      if (now - logisticsFetchTs < 800) return;
-      logisticsFetchTs = now;
-      try {
-        const payload = {
-          weight: weightKg,
-          dimensions: {
-            height: Math.max(0, parseNumber(calcInputs.height)),
-            length: Math.max(0, parseNumber(calcInputs.len)),
-            width: Math.max(0, parseNumber(calcInputs.width)),
-          },
-          volume: volumeLiters / 1000,
-          price,
-          delivery_schema: fulfillmentMode.toUpperCase(),
-          delivery_time: svdValue,
-          buyout_percent: buyoutPct,
-        };
-        const body = clientId && apiKey ? { clientId, apiKey, payload } : { payload };
-        const resp = await fetch("/api/ozon/logistics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data?.error || resp.status);
-        const res = data?.result?.delivery || data?.result || data;
-        const total = Number(res?.total || res?.price || res?.amount || 0);
-        if (Number.isFinite(total) && total > 0){
-          lastLogisticsQuote = { total, raw: res };
-          setLogisticsMeta({
-            volumeLiters,
-            volumetricWeight: weightKg,
-            tier: { base: total, maxWeight: weightKg, maxVolume: volumeLiters },
-            svdCoeff: 1,
-            returnShare: buyoutPct / 100,
-          });
-          updateCalc();
-        }
-      } catch (e){
-        logisticsMeta.innerHTML = `<span class="tag">Ozon API логистика: ${e.message || e}</span>`;
-      }
     }
 
     function setLogisticsMeta(info){
@@ -852,47 +673,23 @@
     function applyCategory(cat){
       selectedCategory = cat;
       if (cat){
+        calcInputs.category.value = cat.name;
         const rate = commissionForMode(cat);
-        if (rate !== null && !commissionDirty){
+        if (rate !== null){
           calcInputs.commission.value = rate;
+          categoryHintEl.textContent = `Нашли: ${cat.name}. Комиссия для ${fulfillmentMode.toUpperCase()}: ${rate}%`;
+        } else {
+          categoryHintEl.textContent = `Категория: ${cat.name}. Укажите комиссию вручную.`;
         }
-        categoryHintEl.textContent = rate !== null
-          ? `Нашли: ${cat.name}. Комиссия для ${fulfillmentMode.toUpperCase()}: ${rate}%`
-          : `Категория: ${cat.name}. Укажите комиссию вручную.`;
       } else {
-        if (!commissionDirty) calcInputs.commission.value = "";
         categoryHintEl.textContent = "Не нашли категорию. Попробуйте точнее написать название или подкатегорию.";
       }
     }
 
-    function chooseCategory(cat){
-      // фиксируем выбор категории и сразу подставляем "стандартную" комиссию из дерева категорий
-      commissionDirty = false;
-      lastLiveCommission = null;
-      if (calcInputs.category && cat?.name){
-        calcInputs.category.value = cat.name;
-      }
-      renderCategorySuggest([]);
-      applyCategory(cat); // внутри applyCategory комиссия проставляется из cat.commission
-      updateCalc();
-    }
-
     function handleCategoryInput(){
-      const query = calcInputs.category?.value || "";
-      if (!query.trim()){
-        selectedCategory = null;
-        setCategoryOptions([]);
-        renderCategorySuggest([]);
-        setCategoryError("");
-        if (!commissionDirty) calcInputs.commission.value = "";
-        categoryHintEl.textContent = "Начните вводить категорию так, как в кабинете Ozon.";
-        updateCalc();
-        return;
-      }
-
-      selectedCategory = null;
-      clearTimeout(categorySuggestTimer);
-      categorySuggestTimer = setTimeout(() => fetchCategorySuggestions(query), 200);
+      const cat = pickCategory(calcInputs.category.value);
+      applyCategory(cat);
+      updateCalc();
     }
 
     function setFulfillment(mode){
@@ -903,7 +700,7 @@
         btn.classList.toggle('active', isActive);
       });
       const rate = commissionForMode(selectedCategory);
-      if (rate !== null && !commissionDirty){
+      if (rate !== null){
         calcInputs.commission.value = rate;
         if (selectedCategory){
           categoryHintEl.textContent = `Категория: ${selectedCategory.name}. Комиссия ${mode.toUpperCase()}: ${rate}%`;
@@ -944,55 +741,51 @@
       const commissionPct = Math.max(0, parseNumber(calcInputs.commission));
       const adsPct = Math.max(0, parseNumber(calcInputs.ads));
       const other = Math.max(0, parseNumber(calcInputs.other));
+      const vatPct = Math.max(0, parseNumber(calcInputs.vat));
       const svdVal = Math.max(0, Math.min(100, parseNumber(calcInputs.svd)));
       const buyoutPct = Math.max(0, Math.min(100, parseNumber(calcInputs.buyout)));
 
       const { volumeLiters, weightKg } = computeVolumeAndWeight();
       const table = fulfillmentBase[fulfillmentMode] || fulfillmentBase.fbo;
       const logisticsInfo = computeLogistics(table, volumeLiters, weightKg, svdVal, buyoutPct);
-      let logistics = lastLogisticsQuote?.total || logisticsInfo.total;
-      if (!lastLogisticsQuote) setLogisticsMeta({ ...logisticsInfo, volumeLiters, svdValue: svdVal });
+      const logistics = logisticsInfo.total;
+      setLogisticsMeta({ ...logisticsInfo, volumeLiters, svdValue: svdVal });
 
       const discountFactor = Math.max(0, 1 - discount / 100);
       const netPrice = price * discountFactor;
       const commissionAmt = netPrice * (commissionPct / 100);
       const adsAmt = netPrice * (adsPct / 100);
+      const vatAmt = netPrice * (vatPct / 100);
 
-      if (!lastLogisticsQuote && weightKg && volumeLiters){
-        fetchLogisticsFromApi({ price: netPrice || price || 0, volumeLiters, weightKg, svdValue: svdVal, buyoutPct });
-      }
-
-      const totalCosts = cost + logistics + other + commissionAmt + adsAmt;
+      const totalCosts = cost + logistics + other + commissionAmt + adsAmt + vatAmt;
       const profit = netPrice - totalCosts;
       const marginPct = netPrice > 0 ? (profit / netPrice) * 100 : 0;
+      const roiPct = cost > 0 ? (profit / cost) * 100 : (profit === 0 ? 0 : null);
 
-      const variablePct = (commissionPct + adsPct) / 100;
+      const variablePct = (commissionPct + adsPct + vatPct) / 100;
       const fixedCosts = cost + logistics + other;
+      const breakevenNet = (1 - variablePct) > 0 ? fixedCosts / (1 - variablePct) : null;
+      const breakevenPrice = (breakevenNet !== null && discountFactor > 0) ? (breakevenNet / discountFactor) : null;
 
       setCalcValue(calcOutputs.netPrice, netPrice);
       setCalcValue(calcOutputs.commissionAmt, commissionAmt);
       setCalcValue(calcOutputs.adsAmt, adsAmt);
+      setCalcValue(calcOutputs.vatAmt, vatAmt);
       setCalcValue(calcOutputs.costLine, cost);
       setCalcValue(calcOutputs.logisticsLine, logistics);
       setCalcValue(calcOutputs.otherLine, other);
       setCalcValue(calcOutputs.costs, totalCosts);
       setCalcValue(calcOutputs.profit, profit);
       setCalcValue(calcOutputs.margin, marginPct, { isPercent: true });
+      setCalcValue(calcOutputs.roi, roiPct, { isPercent: true });
+      setCalcValue(calcOutputs.breakeven, breakevenPrice);
     }
 
     Object.values(calcInputs).forEach((el) => {
       el?.addEventListener("input", updateCalc);
     });
-    calcInputs.commission?.addEventListener("input", () => { commissionDirty = true; lastLiveCommission = null; });
     calcInputs.category?.addEventListener("input", handleCategoryInput);
     calcInputs.category?.addEventListener("change", handleCategoryInput);
-    categorySuggestEl?.addEventListener("click", (e) => {
-      const item = e.target.closest(".typeahead-item");
-      if (!item) return;
-      const id = item.getAttribute("data-id");
-      const cat = categories.find((c) => String(c.category_id) === String(id));
-      if (cat) chooseCategory(cat);
-    });
     calcInputs.svd?.addEventListener("input", () => {
       svdValueEl.textContent = calcInputs.svd.value || "0";
       updateModeMeta();
@@ -1002,13 +795,11 @@
     dimsTab?.addEventListener("click", () => setLogisticsMode("dims"));
     volumeTab?.addEventListener("click", () => setLogisticsMode("volume"));
 
-    setCategoryOptions([]);
-    fetchCategoriesFromApi();
+    buildCategoryList();
     setFulfillment("fbo");
     setLogisticsMode("dims");
     svdValueEl.textContent = calcInputs.svd?.value || "0";
     updateModeMeta();
-    calcInputs.category?.addEventListener("focus", () => { if (!categories.length) fetchCategoriesFromApi(); });
     handleCategoryInput();
     updateCalc();
 
