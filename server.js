@@ -1,1260 +1,311 @@
-import express from "express";
-import fs from "fs";
-import path from "path";
-import crypto from "crypto";
-import { DateTime } from "luxon";
-import { fileURLToPath } from "url";
+import 'dotenv/config';
+import express from 'express';
+import helmet from 'helmet';
+import path from 'path';
+import crypto from 'crypto';
+import axios from 'axios';
+import Database from 'better-sqlite3';
+import { DateTime } from 'luxon';
+import { Telegraf, Markup } from 'telegraf';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const {
+  PORT = '3000',
+  BASE_URL, // https://your-domain.tld (нужно для WebApp кнопки, можно оставить пустым и задать в .env)
+  BOT_TOKEN,
+  ENCRYPTION_KEY_B64,
+  OZON_API_BASE = 'https://api-seller.ozon.ru',
+  SALES_TIMEZONE = 'Europe/Moscow'
+} = process.env;
+
+if (!BOT_TOKEN) {
+  console.error('❌ Не задан BOT_TOKEN в .env');
+  process.exit(1);
+}
+if (!ENCRYPTION_KEY_B64) {
+  console.error('❌ Не задан ENCRYPTION_KEY_B64 в .env');
+  process.exit(1);
+}
+
+// 32 bytes key (base64)
+const ENC_KEY = Buffer.from(ENCRYPTION_KEY_B64, 'base64');
+if (ENC_KEY.length !== 32) {
+  console.error('❌ ENCRYPTION_KEY_B64 должен быть base64 от 32 байт (AES-256).');
+  process.exit(1);
+}
 
 const app = express();
-app.use(express.json());
+app.use(helmet({
+  contentSecurityPolicy: false // иначе WebApp скрипт Telegram может конфликтовать
+}));
+app.use(express.json({ limit: '100kb' }));
 
-// ====== MINI APP (страница + статика из /Public) ======
-app.use("/public", express.static(path.join(__dirname, "Public")));
+const __dirname = path.dirname(new URL(import.meta.url).pathname);
+const publicDir = path.join(__dirname, 'public');
+app.use('/', express.static(publicDir, { extensions: ['html'] }));
 
-// если кто-то открывает кривой путь вида "/https://....." — редиректим на главную
-app.get(/^\/https?:\/\//, (req, res) => res.redirect(302, "/"));
+// --- DB (SQLite) ---
+const dbPath = path.join(__dirname, 'data', 'app.db');
+const db = new Database(dbPath);
+db.pragma('journal_mode = WAL');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    tg_user_id INTEGER PRIMARY KEY,
+    ozon_client_id TEXT NOT NULL,
+    ozon_api_key_enc TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+`);
 
-// главная Mini App
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "Public", "index.html"));
-});
-app.get("/index.html", (req, res) => {
-  res.sendFile(path.join(__dirname, "Public", "index.html"));
-});
+const upsertUser = db.prepare(`
+  INSERT INTO users (tg_user_id, ozon_client_id, ozon_api_key_enc, created_at, updated_at)
+  VALUES (@tg_user_id, @ozon_client_id, @ozon_api_key_enc, @created_at, @updated_at)
+  ON CONFLICT(tg_user_id) DO UPDATE SET
+    ozon_client_id=excluded.ozon_client_id,
+    ozon_api_key_enc=excluded.ozon_api_key_enc,
+    updated_at=excluded.updated_at
+`);
 
-app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
+const getUser = db.prepare(`SELECT * FROM users WHERE tg_user_id = ?`);
+const deleteUser = db.prepare(`DELETE FROM users WHERE tg_user_id = ?`);
 
-const PORT = process.env.PORT || 8080;
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
-
-// “Сегодня” считаем по МСК (или поменяй через ENV SALES_TZ)
-const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
-
-const DATA_DIR = process.env.DATA_DIR || ".";
-const STORE_PATH = path.join(DATA_DIR, "store.json");
-const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
-const pending = new Map();
-
-// ---------------- store helpers ----------------
-function loadStore() {
-  try {
-    if (!fs.existsSync(STORE_PATH)) return { users: {} };
-    return JSON.parse(fs.readFileSync(STORE_PATH, "utf-8"));
-  } catch {
-    return { users: {} };
-  }
-}
-function saveStore(store) {
-  fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2), "utf-8");
-}
-function getUserCreds(userId) {
-  const store = loadStore();
-  return store.users?.[String(userId)] || null;
-}
-function setUserCreds(userId, creds) {
-  const store = loadStore();
-  store.users = store.users || {};
-  store.users[String(userId)] = creds;
-  saveStore(store);
-}
-function deleteUserCreds(userId) {
-  const store = loadStore();
-  if (store.users) delete store.users[String(userId)];
-  saveStore(store);
-}
-
-// ---------------- crypto helpers ----------------
-function encrypt(text) {
-  if (!ENCRYPTION_KEY_B64) return { mode: "plain", value: text };
-  const key = Buffer.from(ENCRYPTION_KEY_B64, "base64");
-  if (key.length !== 32) return { mode: "plain", value: text };
-
+// --- Crypto helpers (AES-256-GCM) ---
+function encryptString(plain) {
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-  const enc = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENC_KEY, iv);
+  const enc = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
-  return {
-    mode: "aes-256-gcm",
-    iv: iv.toString("base64"),
-    tag: tag.toString("base64"),
-    value: enc.toString("base64"),
-  };
+  return Buffer.concat([iv, tag, enc]).toString('base64');
 }
-function decrypt(obj) {
-  if (!obj) return null;
-  if (obj.mode === "plain") return obj.value;
 
-  const key = Buffer.from(ENCRYPTION_KEY_B64 || "", "base64");
-  const iv = Buffer.from(obj.iv, "base64");
-  const tag = Buffer.from(obj.tag, "base64");
-  const data = Buffer.from(obj.value, "base64");
-
-  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+function decryptString(encB64) {
+  const raw = Buffer.from(encB64, 'base64');
+  const iv = raw.subarray(0, 12);
+  const tag = raw.subarray(12, 28);
+  const enc = raw.subarray(28);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', ENC_KEY, iv);
   decipher.setAuthTag(tag);
-  const dec = Buffer.concat([decipher.update(data), decipher.final()]);
-  return dec.toString("utf8");
+  const plain = Buffer.concat([decipher.update(enc), decipher.final()]);
+  return plain.toString('utf8');
 }
 
-// ---------------- telegram helpers ----------------
-async function tgSendMessage(chatId, text, opts = {}) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-  const payload = { chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true, ...opts };
-  const resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-  const data = await resp.json().catch(() => null);
-  if (!data?.ok) console.error("❌ sendMessage failed:", data);
-  return data;
-}
-async function tgEditMessage(chatId, messageId, text, opts = {}) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`;
-  const payload = { chat_id: chatId, message_id: messageId, text, parse_mode: "HTML", disable_web_page_preview: true, ...opts };
-  const resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-  const data = await resp.json().catch(() => null);
-  if (!data?.ok) {
-    const descr = String(data?.description || "");
-    if (!descr.includes("message is not modified")) console.error("❌ editMessageText failed:", data);
-  }
-  return data;
-}
-async function tgAnswerCallback(callbackQueryId) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`;
-  await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: callbackQueryId }) });
+// --- Telegram initData verification (защита от подмены user_id) ---
+function parseInitData(initData) {
+  const params = new URLSearchParams(initData);
+  const obj = {};
+  for (const [k, v] of params.entries()) obj[k] = v;
+  return obj;
 }
 
-// ---------------- ozon helpers ----------------
-async function ozonPost(pathname, { clientId, apiKey, body }) {
-  const resp = await fetch(`${OZON_API_BASE}${pathname}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Client-Id": String(clientId), "Api-Key": String(apiKey) },
-    body: JSON.stringify(body),
-  });
+function verifyInitData(initData, botToken) {
+  // Telegram docs: build data_check_string from sorted key=value excluding hash
+  const data = parseInitData(initData);
+  const hash = data.hash;
+  if (!hash) return { ok: false, reason: 'no hash' };
+  delete data.hash;
 
-  const data = await resp.json().catch(() => null);
-  if (!resp.ok) {
-    const msg = data?.message || data?.error || JSON.stringify(data);
-    throw new Error(`Ozon API ${pathname} (${resp.status}): ${msg}`);
-  }
-  return data;
-}
+  const keys = Object.keys(data).sort();
+  const dataCheckString = keys.map(k => `${k}=${data[k]}`).join('\n');
 
-// ---------------- date helpers ----------------
-function todayDateStr() {
-  return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
-}
-function dayBoundsUtcFromLocal(dateStr) {
-  const fromLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
-  const toLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
-  return {
-    since: fromLocal.toUTC().toISO({ suppressMilliseconds: false }),
-    to: toLocal.toUTC().toISO({ suppressMilliseconds: false }),
-  };
-}
-function isSameDayLocal(iso, dateStr) {
-  if (!iso) return false;
-  const d = DateTime.fromISO(iso, { setZone: true }).setZone(SALES_TZ);
-  return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
-}
+  const secret = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+  const computed = crypto.createHmac('sha256', secret).update(dataCheckString).digest('hex');
 
-// ---------------- money helpers (без float) ----------------
-function toCents(val) {
-  if (val === null || val === undefined) return 0;
-  let s = String(val).trim().replace(",", ".");
-  if (!s) return 0;
+  if (computed !== hash) return { ok: false, reason: 'hash mismatch' };
 
-  let sign = 1;
-  if (s.startsWith("-")) {
-    sign = -1;
-    s = s.slice(1);
-  } else if (s.startsWith("+")) {
-    s = s.slice(1);
+  // (опционально) проверка auth_date, чтобы не было слишком старых initData
+  const authDate = Number(data.auth_date || '0');
+  const now = Math.floor(Date.now() / 1000);
+  if (authDate && (now - authDate) > 24 * 3600) {
+    return { ok: false, reason: 'initData too old' };
   }
 
-  const parts = s.split(".");
-  const rub = parseInt(parts[0] || "0", 10) || 0;
-  const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10) || 0;
-  return sign * (rub * 100 + kop);
-}
-function rubToCents(val) {
-  return toCents(val);
-}
-const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-function centsToRubString(cents) {
-  return `${rubFmt.format(cents / 100)} ₽`;
+  return { ok: true, data };
 }
 
-function postingAmountCents(posting) {
-  const qtyBySku = new Map();
-  for (const pr of posting?.products || []) {
-    qtyBySku.set(String(pr.sku), Number(pr.quantity || 0));
+function getTgUserIdFromInitData(initData) {
+  const parsed = parseInitData(initData);
+  if (!parsed.user) return null;
+  try {
+    const userObj = JSON.parse(parsed.user);
+    return userObj.id;
+  } catch {
+    return null;
   }
-
-  const finProds = posting?.financial_data?.products || [];
-  if (Array.isArray(finProds) && finProds.length > 0) {
-    let sum = 0;
-    for (const fp of finProds) {
-      const id = String(fp.product_id);
-      const qty = qtyBySku.get(id) ?? 1;
-      sum += toCents(fp.price) * qty;
-    }
-    if (sum > 0) return sum;
-  }
-
-  let sum2 = 0;
-  for (const pr of posting?.products || []) {
-    sum2 += toCents(pr.price) * Number(pr.quantity || 0);
-  }
-  return sum2;
 }
 
-// ---------------- Core: FBO fetch + stats ----------------
-function extractPostings(data) {
-  if (Array.isArray(data?.result)) return { postings: data.result, hasNext: false };
-  const r = data?.result || {};
-  if (Array.isArray(r?.postings)) return { postings: r.postings, hasNext: Boolean(r.has_next) };
-  if (Array.isArray(data?.postings)) return { postings: data.postings, hasNext: Boolean(data?.has_next) };
-  return { postings: [], hasNext: false };
+function requireTelegram(req, res, next) {
+  const initData = req.header('x-telegram-init-data') || '';
+  const v = verifyInitData(initData, BOT_TOKEN);
+  if (!v.ok) return res.status(401).json({ error: 'Unauthorized', reason: v.reason });
+
+  const tgUserId = getTgUserIdFromInitData(initData);
+  if (!tgUserId) return res.status(401).json({ error: 'Unauthorized', reason: 'no user id' });
+
+  req.tgUserId = tgUserId;
+  next();
 }
 
-async function fetchFboAllForDay({ clientId, apiKey, dateStr }) {
-  const { since, to } = dayBoundsUtcFromLocal(dateStr);
+// --- Ozon: fetch FBO postings for today ---
+async function fetchFboPostingsForToday({ clientId, apiKey }) {
+  const now = DateTime.now().setZone(SALES_TIMEZONE);
+  const since = now.startOf('day').toUTC().toISO({ suppressMilliseconds: true });
+  const to = now.endOf('day').toUTC().toISO({ suppressMilliseconds: true });
 
-  let offset = 0;
   const limit = 1000;
-  const all = [];
+  let offset = 0;
+  let all = [];
 
   while (true) {
     const body = {
-      dir: "ASC",
-      filter: { since, to, status: "" },
+      filter: { since, to },
       limit,
       offset,
-      translit: true,
-      with: { analytics_data: true, financial_data: true, legal_info: false },
+      with: { financial_data: true }
     };
 
-    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
-    const { postings, hasNext } = extractPostings(data);
+    const resp = await axios.post(`${OZON_API_BASE}/v2/posting/fbo/list`, body, {
+      headers: {
+        'Client-Id': clientId,
+        'Api-Key': apiKey,
+        'Content-Type': 'application/json'
+      },
+      timeout: 25000
+    });
 
-    all.push(...postings);
-    if (!hasNext) break;
+    const postings = resp?.data?.result || resp?.data?.result?.postings || resp?.data?.result?.postings || resp?.data?.result;
+    // В документации result = postings[], но встречаются разные обертки в SDK/примерах — страхуемся:
+    const list = Array.isArray(postings) ? postings : (resp?.data?.result?.postings || []);
+    all.push(...list);
 
+    if (list.length < limit) break;
     offset += limit;
-    if (offset > 200000) break;
+    if (offset > 100000) break; // safety
   }
 
-  return all;
+  return { since, to, postings: all };
 }
 
-async function calcTodayStats({ clientId, apiKey, dateStr }) {
-  const postings = await fetchFboAllForDay({ clientId, apiKey, dateStr });
+function isCancelledStatus(status) {
+  const s = String(status || '').toLowerCase();
+  return s.includes('cancel') || s.includes('cancell') || s.includes('отмен');
+}
 
-  let ordersCount = 0;
-  let ordersAmount = 0;
-
-  let cancelsCount = 0;
-  let cancelsAmount = 0;
+function calcTotals(postings) {
+  let units = 0;
+  let sum = 0;
+  let cancelledUnits = 0;
+  let cancelledSum = 0;
 
   for (const p of postings) {
-    if (!isSameDayLocal(p?.created_at, dateStr)) continue;
+    const status = p.status;
+    const products = p?.financial_data?.products || [];
+    let postingUnits = 0;
+    let postingSum = 0;
 
-    const amt = postingAmountCents(p);
+    for (const pr of products) {
+      const qty = Number(pr.quantity || 0);
+      const price = Number(pr.price || 0); // как правило, это "цена продажи" с учетом скидок
+      postingUnits += qty;
+      postingSum += price * qty;
+    }
 
-    ordersCount += 1;
-    ordersAmount += amt;
+    units += postingUnits;
+    sum += postingSum;
 
-    if (String(p?.status || "").toLowerCase() === "cancelled") {
-      cancelsCount += 1;
-      cancelsAmount += amt;
+    if (isCancelledStatus(status)) {
+      cancelledUnits += postingUnits;
+      cancelledSum += postingSum;
     }
   }
 
-  return { dateStr, ordersCount, ordersAmount, cancelsCount, cancelsAmount };
-}
-
-
-// ---------------- Core: buyouts (delivered today) + returns (today) ----------------
-async function fetchFboAllForPeriod({ clientId, apiKey, sinceIso, toIso }) {
-  let offset = 0;
-  const limit = 1000;
-  const all = [];
-
-  while (true) {
-    const body = {
-      dir: "ASC",
-      filter: { since: sinceIso, to: toIso, status: "delivered" },
-      limit,
-      offset,
-      translit: true,
-      with: { analytics_data: true, financial_data: false, legal_info: false },
-    };
-
-    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
-    const { postings, hasNext } = extractPostings(data);
-
-    all.push(...postings);
-    if (!hasNext) break;
-
-    offset += limit;
-    if (offset > 200000) break;
-  }
-
-  return all;
-}
-
-function pickDeliveredIso(posting) {
-  // Считаем момент "выкупа" как момент смены статуса на DELIVERED (обычно это status_updated_at).
-  // Поля в разных версиях API могут отличаться — пробуем максимально широко.
-  return (
-    posting?.status_updated_at ||
-    posting?.delivered_at ||
-    posting?.analytics_data?.delivered_at ||
-    posting?.analytics_data?.delivering_date ||
-    posting?.analytics_data?.delivery_date ||
-    posting?.analytics_data?.shipment_date ||
-    posting?.delivering_date ||
-    posting?.delivery_date ||
-    null
-  );
-}
-
-async function calcBuyoutsTodayByOffer({ clientId, apiKey, dateStr }) {
-  // "Выкуплено сегодня" = отправления, у которых СТАТУС сменился на DELIVERED сегодня (по МСК).
-  // Важно: /v2/posting/fbo/list фильтрует по created_at, поэтому берём широкий диапазон по созданию
-  // и уже в коде отбираем по статусным датам.
-  const day = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ });
-  const sinceCreated = day.minus({ days: 30 }).startOf("day").toUTC().toISO({ suppressMilliseconds: false });
-  const toCreated = day.endOf("day").toUTC().toISO({ suppressMilliseconds: false });
-
-  let offset = 0;
-  const limit = 1000;
-
-  const byOffer = new Map();
-  let totalQty = 0;
-
-  while (true) {
-    const body = {
-      dir: "ASC",
-      filter: { since: sinceCreated, to: toCreated, status: "" },
-      limit,
-      offset,
-      translit: true,
-      with: { analytics_data: true, financial_data: false, legal_info: false },
-    };
-
-    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
-    const { postings, hasNext } = extractPostings(data);
-
-    for (const p of postings) {
-      // берём момент смены статуса на delivered
-      const deliveredIso = pickDeliveredIso(p);
-      if (!isSameDayLocal(deliveredIso, dateStr)) continue;
-      if (String(p?.status || "").toLowerCase() !== "delivered") continue;
-
-      for (const pr of p?.products || []) {
-        const offerId = pr?.offer_id != null ? String(pr.offer_id) : null;
-        const qty = Number(pr?.quantity || 0) || 0;
-        if (!offerId || qty <= 0) continue;
-
-        totalQty += qty;
-        byOffer.set(offerId, (byOffer.get(offerId) || 0) + qty);
-      }
-    }
-
-    if (!hasNext) break;
-    offset += limit;
-    if (offset > 200000) break;
-  }
-
-  const list = Array.from(byOffer.entries())
-    .map(([offer_id, qty]) => ({ offer_id, qty }))
-    .sort((a, b) => b.qty - a.qty);
-
-  return { buyouts_total_qty: totalQty, buyouts_list: list };
-}
-
-async function calcReturnsTodayByOffer({ clientId, apiKey, dateStr }) {
-  // Возвраты сегодня: /v1/returns/list требует filter.status, но "all" у некоторых аккаунтов не работает.
-  // Поэтому передаём status = "" (как "все"), и берём широкий период, затем фильтруем по дате обновления.
-  const day = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ });
-  const fromStr = day.minus({ days: 30 }).toFormat("yyyy-LL-dd");
-  const toStr = day.toFormat("yyyy-LL-dd");
-
-  const byOffer = new Map();
-  let totalQty = 0;
-
-  let offset = 0;
-  const limit = 1000;
-
-  while (true) {
-    const body = {
-      filter: { date_from: fromStr, date_to: toStr, status: "" },
-      limit,
-      offset,
-    };
-
-    const data = await ozonPost("/v1/returns/list", { clientId, apiKey, body });
-
-    const root = data?.result ?? data ?? {};
-    const items =
-      root?.returns ||
-      root?.items ||
-      root?.result ||
-      root ||
-      [];
-
-    const arr = Array.isArray(items) ? items : [];
-    if (arr.length === 0) break;
-
-    for (const r of arr) {
-      // дата изменения статуса/обновления
-      const iso =
-        r?.updated_at ||
-        r?.status_updated_at ||
-        r?.last_updated_at ||
-        r?.last_changed_at ||
-        r?.created_at ||
-        null;
-
-      if (!isSameDayLocal(iso, dateStr)) continue;
-
-      const prods = Array.isArray(r?.products) ? r.products : [];
-      if (prods.length) {
-        for (const pr of prods) {
-          const offerId = pr?.offer_id != null ? String(pr.offer_id) : null;
-          const qty = Number(pr?.quantity || 0) || 0;
-          if (!offerId || qty <= 0) continue;
-
-          totalQty += qty;
-          byOffer.set(offerId, (byOffer.get(offerId) || 0) + qty);
-        }
-      } else {
-        // fallback если products нет
-        const offerId = r?.offer_id != null ? String(r.offer_id) : null;
-        const qty = Number(r?.quantity || 0) || 0;
-        if (!offerId || qty <= 0) continue;
-
-        totalQty += qty;
-        byOffer.set(offerId, (byOffer.get(offerId) || 0) + qty);
-      }
-    }
-
-    offset += limit;
-    if (arr.length < limit) break;
-  }
-
-  const list = Array.from(byOffer.entries())
-    .map(([offer_id, qty]) => ({ offer_id, qty }))
-    .sort((a, b) => b.qty - a.qty);
-
-  return { returns_total_qty: totalQty, returns_list: list };
-}
-
-
-
-// ---------------- Core: balance (today) ----------------
-async function calcBalanceToday({ clientId, apiKey, dateStr }) {
-  // Самый прямой метод (у тебя он работает): /v1/finance/balance
-  // Запрос должен быть в формате YYYY-MM-DD
-  try {
-    const data = await ozonPost("/v1/finance/balance", {
-      clientId,
-      apiKey,
-      body: { date_from: dateStr, date_to: dateStr },
-    });
-
-    const total = data?.total || data?.result?.total;
-    const opening = total?.opening_balance?.value ?? total?.opening_balance ?? null;
-    const closing = total?.closing_balance?.value ?? total?.closing_balance ?? null;
-
-    if (closing !== null && closing !== undefined) {
-      const cents = toCents(closing);
-      const salesVal = data?.cashflows?.sales?.amount?.value ?? null;
-      const returnsVal = data?.cashflows?.returns?.amount?.value ?? null;
-
-      const buyouts_sum_cents = salesVal === null ? null : toCents(salesVal);
-      const returns_sum_cents = returnsVal === null ? null : toCents(returnsVal);
-
-      return {
-        // совместимость: balance_* = closing
-        balance_cents: cents,
-        balance_text: centsToRubString(cents),
-
-        // для динамики: opening/closing отдельно
-        balance_opening_cents: opening === null || opening === undefined ? null : toCents(opening),
-        balance_opening_text: (opening === null || opening === undefined) ? "—" : centsToRubString(toCents(opening)),
-        balance_closing_cents: cents,
-        balance_closing_text: centsToRubString(cents),
-
-        buyouts_sum_cents,
-        buyouts_sum_text: buyouts_sum_cents === null ? "—" : centsToRubString(buyouts_sum_cents),
-        returns_sum_cents,
-        returns_sum_text: returns_sum_cents === null ? "—" : centsToRubString(returns_sum_cents),
-      };
-    }
-  } catch (e) {
-    // пойдём дальше (фолбэки)
-  }
-
-  // Фолбэк 1: некоторые аккаунты имеют /v2/finance/balance
-  try {
-    const data = await ozonPost("/v2/finance/balance", {
-      clientId,
-      apiKey,
-      body: { date_from: dateStr, date_to: dateStr },
-    });
-
-    const root = data?.result ?? data ?? {};
-    const total = root?.total ?? root;
-    const closing = total?.closing_balance?.value ?? total?.closing_balance ?? root?.balance ?? null;
-
-    if (closing !== null && closing !== undefined) {
-      const cents = toCents(closing);
-      return { balance_cents: cents, balance_text: centsToRubString(cents) };
-    }
-  } catch (e) {}
-
-  // Фолбэк 2: cash-flow (может быть неактуален по балансу, но лучше чем ничего)
-  const { since, to } = dayBoundsUtcFromLocal(dateStr);
-  try {
-    const data = await ozonPost("/v1/finance/cash-flow-statement/list", {
-      clientId,
-      apiKey,
-      body: { filter: { date_from: since, date_to: to } },
-    });
-    const r = data?.result ?? data ?? {};
-    const balance =
-      r?.summary?.closing_balance ??
-      r?.summary?.end_balance ??
-      r?.header?.closing_balance ??
-      r?.header?.end_balance ??
-      null;
-
-    if (balance !== null && balance !== undefined) {
-      const cents = toCents(balance);
-      return { balance_cents: cents, balance_text: centsToRubString(cents) };
-    }
-  } catch (e) {}
-
-  return { balance_cents: null, balance_text: "—" };
-}
-
-// ---------------- Core: balance (cabinet) ----------------
-async function calcBalanceNowCents({ clientId, apiKey, dateStr }) {
-  // В Seller API нет одного “идеального” метода баланса, поэтому делаем 2 попытки:
-  // 1) /v1/finance/mutual-settlement (отчёт взаиморасчётов) — часто содержит итоговую задолженность/баланс.
-  // 2) /v1/finance/cash-flow-statement/list (финансовый отчёт) — как запасной вариант.
-  // Возвращаем копейки. Если не получилось — null (чтобы фронт показывал "—", а не 0).
-  const fromMonth = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("month").toUTC().toISO({ suppressMilliseconds: false });
-  const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day").toUTC().toISO({ suppressMilliseconds: false });
-
-  // 1) mutual-settlement
-  try {
-    const body = { date_from: fromMonth, date_to: to };
-    const data = await ozonPost("/v1/finance/mutual-settlement", { clientId, apiKey, body });
-    const r = data?.result || data;
-
-    const candidates = [
-      r?.summary?.ending_balance,
-      r?.summary?.end_balance,
-      r?.summary?.closing_balance,
-      r?.header?.ending_balance,
-      r?.header?.end_balance,
-      r?.header?.closing_balance,
-      r?.balance,
-      r?.result?.balance,
-    ];
-
-    for (const c of candidates) {
-      const cents = toCents(c);
-      if (cents !== 0) return cents; // если реально есть баланс — возвращаем
-    }
-  } catch (_) {}
-
-  // 2) cash-flow-statement
-  try {
-    const body = { filter: { date_from: fromMonth, date_to: to }, page: 1, page_size: 1000 };
-    const data = await ozonPost("/v1/finance/cash-flow-statement/list", { clientId, apiKey, body });
-    const r = data?.result || data;
-
-    const candidates = [
-      r?.summary?.closing_balance,
-      r?.summary?.end_balance,
-      r?.summary?.ending_balance,
-      r?.header?.closing_balance,
-      r?.header?.end_balance,
-      r?.header?.ending_balance,
-      r?.balance,
-    ];
-
-    for (const c of candidates) {
-      const cents = toCents(c);
-      if (cents !== 0) return cents;
-    }
-  } catch (_) {}
-
-  return null;
-}
-// ====== API: получить ключи из (query → user_id → первый юзер) ======
-function resolveCredsFromRequest(req) {
-  const qClient = req.query.clientId || req.query.client_id;
-  const qKey = req.query.apiKey || req.query.api_key;
-
-  // 1) Если MiniApp передал ключи прямо в запросе
-  if (qClient && qKey) {
-    return { clientId: String(qClient), apiKey: String(qKey), source: "query" };
-  }
-
-  // 2) Если передан user_id (telegram id)
-  const qUserId = req.query.user_id || req.query.userId;
-  if (qUserId) {
-    const creds = getUserCreds(String(qUserId));
-    if (creds?.clientId && creds?.apiKey) {
-      return { clientId: creds.clientId, apiKey: decrypt(creds.apiKey), source: "user_id" };
-    }
-  }
-
-  // 3) Иначе — первый пользователь в store.json
-  const store = loadStore();
-  const firstUserId = Object.keys(store.users || {})[0];
-  if (firstUserId) {
-    const creds = getUserCreds(firstUserId);
-    if (creds?.clientId && creds?.apiKey) {
-      return { clientId: creds.clientId, apiKey: decrypt(creds.apiKey), source: "first_user" };
-    }
-  }
-
-  return null;
-}
-
-async function handleToday(req, res) {
-  try {
-    const resolved = resolveCredsFromRequest(req);
-    if (!resolved) return res.status(400).json({ error: "no_creds" });
-
-    const dateStr = todayDateStr();
-    const s = await calcTodayStats({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr });
-
-    const [buyoutsR, balanceR] = await Promise.allSettled([
-      calcBuyoutsTodayByOffer({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
-      calcBalanceToday({ clientId: resolved.clientId, apiKey: resolved.apiKey, dateStr }),
-    ]);
-
-    // Возвраты по offer_id за «сегодня» через posting/substatus Ozon корректно не отдаёт (нет даты события).
-    // Поэтому по артикулам не считаем, а показываем только сумму возвратов из finance/balance.
-    const returnsData = { returns_total_qty: 0, returns_list: [] };
-
-    const buyouts = buyoutsR.status === "fulfilled" ? buyoutsR.value : { buyouts_total_qty: 0, buyouts_list: [] };
-    const balance = balanceR.status === "fulfilled" ? balanceR.value : { balance_cents: null, balance_text: "—" };
-
-    return res.json({
-      title: `FBO: за сегодня ${s.dateStr} (${SALES_TZ})`,
-      tz: SALES_TZ,
-      date: s.dateStr,
-
-      // для совместимости — и так и так
-      orders: s.ordersCount,
-      ordersCount: s.ordersCount,
-
-      orders_sum: s.ordersAmount,          // копейки
-      ordersAmount: s.ordersAmount,        // копейки
-      orders_sum_text: centsToRubString(s.ordersAmount),
-
-      cancels: s.cancelsCount,
-      cancelsCount: s.cancelsCount,
-
-      cancels_sum: s.cancelsAmount,        // копейки
-      cancelsAmount: s.cancelsAmount,      // копейки
-      cancels_sum_text: centsToRubString(s.cancelsAmount),
-
-      // новые виджеты
-      buyouts_total_qty: buyouts.buyouts_total_qty,
-      buyouts_list: buyouts.buyouts_list,
-      returns_total_qty: returnsData.returns_total_qty,
-      returns_list: returnsData.returns_list,
-
-
-      // деньги по факту за сегодня (по /v1/finance/balance) — совпадает с кабинетом
-      buyouts_sum_cents: balance.buyouts_sum_cents ?? null,
-      buyouts_sum_text: balance.buyouts_sum_text ?? "—",
-      returns_sum_cents: balance.returns_sum_cents ?? null,
-      returns_sum_text: balance.returns_sum_text ?? "—",
-
-      balance_cents: balance.balance_cents,
-      balance_text: balance.balance_text,
-      balance_opening_cents: balance.balance_opening_cents ?? null,
-      balance_opening_text: balance.balance_opening_text ?? "—",
-      balance_closing_cents: balance.balance_closing_cents ?? balance.balance_cents ?? null,
-      balance_closing_text: balance.balance_closing_text ?? balance.balance_text ?? "—",
-
-      widgets_errors: {
-        buyouts: buyoutsR.status === "rejected" ? String(buyoutsR.reason?.message || buyoutsR.reason) : null,
-        returns: null,
-        balance: balanceR.status === "rejected" ? String(balanceR.reason?.message || balanceR.reason) : null,
-      },
-
-      updated_at: DateTime.now().setZone(SALES_TZ).toISO(),
-      source: resolved.source
-    });
-  } catch (e) {
-    return res.status(500).json({ error: String(e.message || e) });
-  }
-}
-
-// ТРИ URL (на случай, что фронт зовёт другой путь)
-app.get("/api/dashboard/today", handleToday);
-app.get("/api/today", handleToday);
-app.get("/api/stats/today", handleToday);
-
-// ---------------- balance operations (Mini App) ----------------
-function extractTransactionsList(data){
-  const r = data?.result ?? data;
-  const candidates = [
-    r?.operations, r?.transactions, r?.items, r?.rows, r?.list, r?.result
-  ];
-  for (const c of candidates){
-    if (Array.isArray(c)) return c;
-  }
-  // иногда result может быть объектом с полем "operations"
-  if (Array.isArray(data?.result?.operations)) return data.result.operations;
-  return [];
-}
-
-function normalizeAmountToCents(v){
-  if (v === null || v === undefined) return 0;
-  if (typeof v === "number") return Math.round(v * 100);
-  if (typeof v === "string") return toCents(v);
-  if (typeof v === "object"){
-    // {value: 123.45, currency_code:"RUB"} или {value:"123.45"}
-    if ("value" in v) return normalizeAmountToCents(v.value);
-    if ("amount" in v) return normalizeAmountToCents(v.amount);
-  }
-  return 0;
-}
-
-function serviceTitle(rawKey) {
-  const map = {
-    marketplace_service_item_fulfillment: "Логистика",
-    marketplace_service_item_pickup: "Логистика",
-    marketplace_service_item_dropoff_pvz: "Логистика",
-    marketplace_service_item_dropoff_ff: "Логистика",
-    marketplace_service_item_direct_flow_trans: "Логистика",
-    marketplace_service_item_deliv_to_customer: "Логистика",
-    marketplace_service_payment_processing: "Эквайринг",
-    marketplace_service_item_return_flow: "Возврат",
-    marketplace_service_item_return_after_deliv_to_customer: "Возврат после доставки",
-    marketplace_service_item_dropoff_sc: "Доставка на сортировочный центр",
-    marketplace_service_item_customer_pickup: "Самовывоз покупателем",
-    marketplace_service_item_defect_commission: "Комиссия за брак",
-    marketplace_service_item_return_not_deliv_to_customer: "Невыкуп",
+  return {
+    units,
+    sum,
+    cancelledUnits,
+    cancelledSum
   };
-
-  if (map[rawKey]) return map[rawKey];
-  const cleaned = String(rawKey || "").replace(/marketplace_service_/g, "").replace(/item_/g, "");
-  return cleaned ? cleaned.replace(/_/g, " ").trim() : "Услуга";
 }
 
-function extractServiceAmount(val) {
-  if (val === null || val === undefined) return 0;
-  if (typeof val === "number" || typeof val === "string") return normalizeAmountToCents(val);
-  if (Array.isArray(val)) return val.reduce((s, v) => s + extractServiceAmount(v), 0);
-
-  if (typeof val === "object") {
-    const preferred = ["total", "price", "amount", "value", "payout"];
-    for (const key of preferred) {
-      if (key in val) {
-        const v = extractServiceAmount(val[key]);
-        if (v) return v;
-      }
-    }
-
-    if (Array.isArray(val.items)) {
-      const itemsSum = val.items.reduce((s, v) => s + extractServiceAmount(v), 0);
-      if (itemsSum) return itemsSum;
-    }
-
-    // попытка извлечь из вложенных полей, если нет явных ключей
-    let nestedSum = 0;
-    for (const v of Object.values(val)) nestedSum += extractServiceAmount(v);
-    return nestedSum;
-  }
-
-  return 0;
-}
-
-async function fetchFinanceTransactions({ clientId, apiKey, fromUtcIso, toUtcIso, postingNumber = "" }) {
-  // Вытягиваем ВСЕ транзакции за период (постранично), чтобы список операций был полным.
-  const bodyBase = {
-    filter: {
-      date: { from: fromUtcIso, to: toUtcIso },
-      operation_type: [],
-      posting_number: postingNumber || "",
-      transaction_type: "all",
-    },
-    page: 1,
-    page_size: 500,
-  };
-
-  let page = 1;
-  let pageCount = 1;
-  const all = [];
-
-  while (page <= pageCount) {
-    const body = { ...bodyBase, page };
-    const data = await ozonPost("/v3/finance/transaction/list", { clientId, apiKey, body });
-
-    const items = extractTransactionsList(data);
-    if (Array.isArray(items) && items.length) all.push(...items);
-
-    const pc = data?.result?.page_count ?? data?.page_count ?? data?.result?.pages ?? null;
-    if (typeof pc === "number" && pc > 0) pageCount = pc;
-
-    // если page_count не отдали — выходим по факту пустой страницы
-    if ((!pc || pc < 1) && (!items || items.length === 0)) break;
-
-    page += 1;
-    if (page > 200) break; // защита
-  }
-
-  return all;
-}
-
-function buildOpsRows(transactions) {
-  const rows = [];
-
-  for (const t of transactions) {
-    const title =
-      t?.operation_type_name ||
-      t?.operation_type ||
-      t?.type_name ||
-      t?.type ||
-      t?.name ||
-      "Операция";
-
-    // posting_number иногда приходит объектом
-    let postingVal =
-      t?.posting_number ||
-      t?.posting?.posting_number ||
-      t?.posting;
-
-    if (postingVal && typeof postingVal === "object") {
-      postingVal = postingVal.posting_number || postingVal.postingNumber || postingVal.number || null;
-    }
-
-    const amountCents = normalizeAmountToCents(
-      t?.amount ?? t?.accrual ?? t?.price ?? t?.sum ?? t?.total ?? t?.value ?? t?.payout
-    );
-
-    // время операции (если Ozon отдал)
-    const occurredAt = (()=>{
-      const cands = [
-        t?.operation_date_time,
-        t?.operation_datetime,
-        t?.occurred_at,
-        t?.created_at,
-        t?.moment,
-        t?.operation_date,
-        t?.date,
-      ].filter(Boolean).map(v=>String(v));
-
-      // сначала ищем ISO со временем (есть 'T')
-      for (const s of cands) if (s.includes("T")) return s;
-
-      // иначе возвращаем хоть дату (будет 00:00)
-      return cands[0] || null;
-    })();
-
-    // сортируем по времени операции, но на фронт отдаём уже в МСК
-    let ts = 0;
-    let occurred_at_msk = null;
-    if (occurredAt) {
-      const dt = DateTime.fromISO(String(occurredAt), { setZone: true });
-      if (dt.isValid) {
-        ts = dt.toMillis();
-        occurred_at_msk = dt.setZone(SALES_TZ).toISO();
-      }
-    }
-
-    // если нет валидного времени — хотя бы сортируем по id транзакции
-    if (!ts) {
-      const fallback = Number(t?.operation_id || t?.transaction_id || t?.id || 0);
-      if (Number.isFinite(fallback)) ts = fallback;
-    }
-
-    const titleLc = String(title).toLowerCase();
-    const isSaleDelivery = titleLc.includes("доставка покупателю");
-
-    rows.push({
-      id: String(t?.operation_id || t?.transaction_id || t?.id || crypto.randomUUID()),
-      title: String(title),
-      subtitle: "",
-      posting_number: postingVal ? String(postingVal) : null,
-      offer_id: null,
-      amount_cents: amountCents,
-      occurred_at: occurred_at_msk,
-      ts,
-      is_sale_delivery: isSaleDelivery,
-    });
-  }
-
-  const cleaned = rows.filter(r => Number(r.amount_cents || 0) !== 0);
-
-  // сортировка: сначала самые свежие
-  cleaned.sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
-
-  return cleaned; // все операции (без лимита)
-}
-
-app.get("/api/balance/ops/today", async (req, res) => {
-  try {
-    const resolved = resolveCredsFromRequest(req);
-    if (!resolved) return res.status(400).json({ error: "no_creds" });
-
-    const dateStr = todayDateStr();
-    const { since, to } = dayBoundsUtcFromLocal(dateStr);
-
-    const tx = await fetchFinanceTransactions({
-      clientId: resolved.clientId,
-      apiKey: resolved.apiKey,
-      fromUtcIso: since,
-      toUtcIso: to,
-    });
-
-    const ops = buildOpsRows(tx);
-
-    return res.json({
-      date: dateStr,
-      tz: SALES_TZ,
-      title: `Сегодня ${dateStr} (${SALES_TZ})`,
-      ops,
-    });
-  } catch (e) {
-    return res.status(500).json({ error: String(e.message || e) });
-  }
+// --- API ---
+app.get('/api/me', requireTelegram, (req, res) => {
+  const row = getUser.get(req.tgUserId);
+  res.json({ connected: !!row, ozon_client_id: row?.ozon_client_id || null });
 });
 
-app.get("/api/balance/sale/detail", async (req, res) => {
+app.post('/api/connect', requireTelegram, (req, res) => {
+  const { clientId, apiKey } = req.body || {};
+  if (!clientId || !apiKey) return res.status(400).json({ error: 'clientId and apiKey required' });
+
+  const now = new Date().toISOString();
+  upsertUser.run({
+    tg_user_id: req.tgUserId,
+    ozon_client_id: String(clientId).trim(),
+    ozon_api_key_enc: encryptString(String(apiKey).trim()),
+    created_at: now,
+    updated_at: now
+  });
+
+  res.json({ ok: true });
+});
+
+app.post('/api/disconnect', requireTelegram, (req, res) => {
+  deleteUser.run(req.tgUserId);
+  res.json({ ok: true });
+});
+
+app.get('/api/today', requireTelegram, async (req, res) => {
   try {
-    const resolved = resolveCredsFromRequest(req);
-    if (!resolved) return res.status(400).json({ error: "no_creds" });
+    const row = getUser.get(req.tgUserId);
+    if (!row) return res.status(400).json({ error: 'not connected' });
 
-    const posting = String(req.query.posting_number || "").trim();
-    if (!posting) return res.status(400).json({ error: "no_posting_number" });
+    const clientId = row.ozon_client_id;
+    const apiKey = decryptString(row.ozon_api_key_enc);
 
-    // 1) Берем постинг: получаем "полную сумму продажи" (gross) по товарам
-    const pg = await ozonPost("/v2/posting/fbo/get", {
-      clientId: resolved.clientId,
-      apiKey: resolved.apiKey,
-      body: {
-        posting_number: posting,
-        translit: true,
-        with: { analytics_data: true, financial_data: true, legal_info: false },
-      },
-    });
-
-    const pRes = pg?.result || pg;
-    const products = Array.isArray(pRes?.products) ? pRes.products : [];
-    const items = products.map((p) => {
-      const qty = Number(p?.quantity || 0) || 0;
-      const price = Number(p?.price || 0) || 0;
-      return {
-        offer_id: p?.offer_id || null,
-        name: p?.name || null,
-        qty,
-        price_cents: rubToCents(price),
-        total_cents: rubToCents(price) * (qty || 1),
-      };
-    });
-
-    const gross = items.reduce((s, it) => s + Number(it.total_cents || 0), 0);
-
-    // 2) Тянем транзакции по этому отправлению и собираем услуги/расходы
-    // Отталкиваемся от даты доставки/создания конкретного постинга и берём узкое окно,
-    // чтобы не тащить все транзакции за месяц и не упираться в лимиты API.
-    const deliveredIso = pickDeliveredIso(pRes);
-    const createdIso = pRes?.created_at || pRes?.in_process_at || null;
-    const anchorIso = deliveredIso || createdIso || todayDateStr();
-
-    let anchor = DateTime.fromISO(anchorIso, { setZone: true });
-    if (!anchor.isValid) anchor = DateTime.fromFormat(todayDateStr(), "yyyy-LL-dd", { zone: SALES_TZ });
-
-    // берём 15 дней до и после якорной даты
-    const fromLocal = anchor.minus({ days: 15 }).startOf("day");
-    const toLocal = anchor.plus({ days: 15 }).endOf("day");
-    const since = fromLocal.toUTC().toISO({ suppressMilliseconds: false });
-    const to = toLocal.toUTC().toISO({ suppressMilliseconds: false });
-
-    // Постранично (на всякий случай)
-    const allTx = await fetchFinanceTransactions({
-      clientId: resolved.clientId,
-      apiKey: resolved.apiKey,
-      fromUtcIso: since,
-      toUtcIso: to,
-      postingNumber: posting,
-    });
-
-    // фильтруем по posting_number
-    const tx = allTx.filter((t) => {
-      const pn =
-        t?.posting_number ||
-        t?.posting?.posting_number ||
-        t?.posting;
-      if (!pn) return false;
-      if (typeof pn === "object") return String(pn.posting_number || "") === posting;
-      return String(pn) === posting;
-    });
-
-    // группируем расходы/услуги по названию операции
-    let netFromSaleCents = null;
-    const group = new Map(); // name -> cents
-    for (const t of tx) {
-      const name =
-        t?.operation_type_name ||
-        t?.operation_type ||
-        t?.type_name ||
-        t?.type ||
-        t?.name ||
-        "Операция";
-      const cents = normalizeAmountToCents(
-        t?.amount ?? t?.accrual ?? t?.price ?? t?.sum ?? t?.total ?? t?.value ?? t?.payout
-      );
-      if (!cents) continue;
-
-      const nameLc = String(name).toLowerCase();
-
-      // сохраняем сумму чистого начисления по доставке (net)
-      if (nameLc.includes("доставка покупателю")) {
-        if (netFromSaleCents === null) netFromSaleCents = cents;
-        continue; // в детализации показываем разложение без самого начисления
-      }
-
-      group.set(String(name), (group.get(String(name)) || 0) + cents);
-    }
-
-    // Комиссия из financial_data постинга (если вдруг нет в транзакциях)
-    const finData = pRes?.financial_data || {};
-    const finProds = Array.isArray(finData?.products) ? finData.products : [];
-    const commissionFromPosting = finProds.reduce((s, fp) => s + (normalizeAmountToCents(fp?.commission_amount) || 0), 0);
-    if (commissionFromPosting && ![...group.keys()].some(k => k.toLowerCase().includes("комис"))) {
-      group.set("Комиссия", (group.get("Комиссия") || 0) + commissionFromPosting);
-    }
-
-    // Услуги/удержания из financial_data (логистика, эквайринг и т.п.)
-    const serviceBuckets = [finData?.services, finData?.posting_services, finData?.additional_services];
-    for (const bucket of serviceBuckets) {
-      if (!bucket || typeof bucket !== "object") continue;
-      for (const [rawKey, svc] of Object.entries(bucket)) {
-        const keyLc = String(rawKey || "").toLowerCase();
-
-        // Пытаемся забрать net по доставке из payout/amount, но в расходы не кладём
-        if (keyLc.includes("marketplace_service_item_deliv_to_customer")) {
-          const payoutFromSvc = normalizeAmountToCents(
-            svc?.payout ?? svc?.total ?? svc?.amount ?? svc?.value ?? svc
-          );
-          if (netFromSaleCents === null && payoutFromSvc) netFromSaleCents = payoutFromSvc;
-          continue;
-        }
-
-        const title = serviceTitle(rawKey);
-        const amount = extractServiceAmount(svc);
-        if (!amount) continue;
-        group.set(title, (group.get(title) || 0) + amount);
-      }
-    }
-
-    // если не нашли net в транзакциях — возьмём из payout услуги доставки
-    if (netFromSaleCents === null) {
-      const deliverySvc =
-        finData?.posting_services?.marketplace_service_item_deliv_to_customer ||
-        finData?.services?.marketplace_service_item_deliv_to_customer ||
-        null;
-      if (deliverySvc) {
-        const payoutFromSvc = normalizeAmountToCents(
-          deliverySvc?.payout ?? deliverySvc?.total ?? deliverySvc?.amount ?? deliverySvc?.value ?? deliverySvc
-        );
-        if (payoutFromSvc) netFromSaleCents = payoutFromSvc;
-      }
-    }
-
-    // собираем строки
-    const lines = [];
-
-    // верхняя строка: gross продажа (полная)
-    lines.push({
-      title: "Продажа",
-      amount_cents: gross,
-      percent: gross > 0 ? 100 : null,
-      kind: "gross",
-    });
-
-    // услуги/расходы
-    const feeLines = Array.from(group.entries())
-      .map(([title, amount_cents]) => {
-        const pct = gross ? Math.round((Math.abs(amount_cents) / gross) * 1000) / 10 : null;
-        return { title, amount_cents, percent: pct, kind: "fee" };
-      })
-      .filter(l => Number(l.amount_cents || 0) !== 0)
-      .sort((a, b) => Math.abs(Number(b.amount_cents)) - Math.abs(Number(a.amount_cents)));
-
-    lines.push(...feeLines);
-
-    // если сумма по "Доставка покупателю" не совпадает с gross + услуги, добавляем остаток как прочие удержания
-    if (netFromSaleCents !== null) {
-      const feesTotal = feeLines.reduce((s, f) => s + Number(f.amount_cents || 0), 0);
-      const residual = netFromSaleCents - gross - feesTotal;
-      if (Math.abs(residual) > 0) {
-        const pct = gross ? Math.round((Math.abs(residual) / gross) * 1000) / 10 : null;
-        lines.push({ title: "Прочие удержания", amount_cents: residual, percent: pct, kind: "residual" });
-      }
-    }
-
-    // отдельная подсказка "Оплата за заказ"
-    const payForOrderLine = feeLines.find(l => String(l.title).toLowerCase().includes("оплата за заказ"));
-    const note = payForOrderLine
-      ? {
-          title: "Данный заказ был продан по оплате за заказ",
-          amount_cents: payForOrderLine.amount_cents,
-          percent: payForOrderLine.percent,
-          kind: "note",
-        }
-      : null;
+    const { since, to, postings } = await fetchFboPostingsForToday({ clientId, apiKey });
+    const totals = calcTotals(postings);
 
     res.json({
-      posting_number: posting,
-      items,
-      gross_cents: gross,
-      lines,
-      note,
+      ok: true,
+      timezone: SALES_TIMEZONE,
+      since,
+      to,
+      postings_count: postings.length,
+      ...totals,
+      updated_at: new Date().toISOString()
     });
   } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
+    const msg = e?.response?.data ? JSON.stringify(e.response.data) : (e?.message || 'unknown error');
+    res.status(500).json({ error: 'ozon_fetch_failed', details: msg });
   }
 });
 
+// --- Telegram bot ---
+const bot = new Telegraf(BOT_TOKEN);
 
-// ---------------- widget (чат) ----------------
-function widgetText(s) {
-  return [
-    `📅 <b>FBO: за сегодня</b> <b>${s.dateStr}</b> (${SALES_TZ})`,
-    ``,
-    `📦 Заказы: <b>${s.ordersCount}</b>`,
-    `💰 Сумма заказов: <b>${centsToRubString(s.ordersAmount)}</b>`,
-    ``,
-    `❌ Отмены: <b>${s.cancelsCount}</b>`,
-    `💸 Сумма отмен: <b>${centsToRubString(s.cancelsAmount)}</b>`,
-  ].join("\n");
-}
-
-function widgetKeyboard(dateStr) {
-  return {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "🔄 Обновить", callback_data: `refresh:${dateStr}` }],
-        [{ text: "🔑 Сменить ключи", callback_data: "reset_keys" }],
-      ],
-    },
-  };
-}
-
-async function showWidget(chatId, userId, dateStr, editMessageId = null) {
-  const creds = getUserCreds(userId);
-  if (!creds?.clientId || !creds?.apiKey) {
-    await tgSendMessage(chatId, "❗ Ключи Ozon не настроены. Напиши /start.");
-    return;
-  }
-
-  const apiKey = decrypt(creds.apiKey);
-  const clientId = creds.clientId;
-
-  try {
-    const s = await calcTodayStats({ clientId, apiKey, dateStr });
-    const text = widgetText(s);
-    if (editMessageId) await tgEditMessage(chatId, editMessageId, text, widgetKeyboard(dateStr));
-    else await tgSendMessage(chatId, text, widgetKeyboard(dateStr));
-  } catch (e) {
-    const msg = `❌ Не смог получить данные за <b>${dateStr}</b>.\n\n<code>${String(e.message || e)}</code>`;
-    if (editMessageId) await tgEditMessage(chatId, editMessageId, msg, widgetKeyboard(dateStr));
-    else await tgSendMessage(chatId, msg, widgetKeyboard(dateStr));
-  }
-}
-
-// ---------------- webhook ----------------
-app.post("/telegram-webhook", async (req, res) => {
-  res.sendStatus(200);
-
-  try {
-    const update = req.body;
-    const msg = update?.message;
-    const cb = update?.callback_query;
-
-    if (cb) {
-      const chatId = cb.message?.chat?.id;
-      const userId = cb.from?.id;
-      const messageId = cb.message?.message_id;
-      const data = cb.data;
-
-      await tgAnswerCallback(cb.id);
-      if (!chatId || !userId) return;
-
-      if (data?.startsWith("refresh:")) {
-        const dateStr = data.split(":")[1] || todayDateStr();
-        await showWidget(chatId, userId, dateStr, messageId);
-        return;
-      }
-
-      if (data === "reset_keys") {
-        deleteUserCreds(userId);
-        pending.set(userId, { step: "clientId" });
-        await tgEditMessage(chatId, messageId, "🔑 Ок, заново.\n\nОтправь <b>Client ID</b>.");
-        return;
-      }
-      return;
-    }
-
-    const chatId = msg?.chat?.id;
-    const userId = msg?.from?.id;
-    const text = msg?.text?.trim();
-    if (!chatId || !userId || !text) return;
-
-    if (text === "/start") {
-      const creds = getUserCreds(userId);
-      if (creds?.clientId && creds?.apiKey) {
-        await tgSendMessage(chatId, "✅ Ключи уже сохранены. Показываю статистику за сегодня:");
-        await showWidget(chatId, userId, todayDateStr());
-        return;
-      }
-      pending.set(userId, { step: "clientId" });
-      await tgSendMessage(chatId, "Отправь <b>Client ID</b>.");
-      return;
-    }
-
-    if (text === "/reset") {
-      deleteUserCreds(userId);
-      pending.set(userId, { step: "clientId" });
-      await tgSendMessage(chatId, "Ок. Отправь <b>Client ID</b>.");
-      return;
-    }
-
-    const st = pending.get(userId);
-    if (st?.step === "clientId") {
-      pending.set(userId, { step: "apiKey", clientId: text });
-      await tgSendMessage(chatId, "Теперь отправь <b>Api-Key</b>.");
-      return;
-    }
-    if (st?.step === "apiKey") {
-      setUserCreds(userId, { clientId: st.clientId, apiKey: encrypt(text), savedAt: Date.now() });
-      pending.delete(userId);
-      await tgSendMessage(chatId, "✅ Сохранил. Открываю статистику за сегодня:");
-      await showWidget(chatId, userId, todayDateStr());
-      return;
-    }
-
-    await tgSendMessage(chatId, "Команды:\n/start\n/reset");
-  } catch (err) {
-    console.error("Webhook handler error:", err);
-  }
+bot.start(async (ctx) => {
+  const webAppUrl = (BASE_URL || '').replace(/\/$/, '') || 'https://YOUR-DOMAIN.TLD';
+  await ctx.reply(
+    'Открой мини‑приложение и подключи Ozon (Client-Id + Api-Key) один раз.\n\nДальше будет показывать “Продажи за сегодня” и сумму.',
+    Markup.inlineKeyboard([
+      Markup.button.webApp('📊 Открыть продажи', `${webAppUrl}/`)
+    ])
+  );
 });
 
-app.listen(PORT, () => console.log(`✅ Server started on :${PORT}`));
+bot.command('sales', async (ctx) => {
+  const webAppUrl = (BASE_URL || '').replace(/\/$/, '') || 'https://YOUR-DOMAIN.TLD';
+  await ctx.reply(
+    'Открывай:',
+    Markup.inlineKeyboard([Markup.button.webApp('📊 Продажи за сегодня', `${webAppUrl}/`)])
+  );
+});
+
+bot.launch().then(() => console.log('✅ Telegram bot started'));
+
+// graceful shutdown
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+app.listen(Number(PORT), () => {
+  console.log(`✅ Server started on :${PORT}`);
+});

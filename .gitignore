@@ -1,5 +1,0 @@
-.env
-data/*.db
-data/*.db-wal
-data/*.db-shm
-node_modules
