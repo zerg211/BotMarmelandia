@@ -191,6 +191,69 @@ function scoreCategory(cat, qTokens) {
 
 const CATEGORY_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 часов
 
+// --- Commission table (fixed percent per category/type, independent of price) ---
+const COMMISSION_TABLE_PATH = path.join(process.cwd(), "ozon-commission-table.json");
+
+let commissionTable = { entries: [] };
+
+function loadCommissionTable() {
+  try {
+    const raw = fs.readFileSync(COMMISSION_TABLE_PATH, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.entries)) commissionTable = parsed;
+  } catch (e) {
+    console.warn("Commission table not loaded:", e?.message || e);
+    commissionTable = { entries: [] };
+  }
+}
+
+function normRu(s) {
+  return String(s || "")
+    .toLowerCase()
+    .trim()
+    .replace(/ё/g, "е")
+    .replace(/\s+/g, " ")
+    .replace(/[\"'`“”«»]/g, "");
+}
+
+function bestCommissionForCategoryPath(pathOrName) {
+  if (!commissionTable?.entries?.length) return null;
+  const src = normRu(pathOrName);
+  if (!src) return null;
+
+  const parts = src.split(/[>/]/).map((p) => p.trim()).filter(Boolean);
+  const leaf = parts.length ? parts[parts.length - 1] : src;
+
+  let best = null;
+  let bestScore = 0;
+
+  for (const e of commissionTable.entries) {
+    const kType = e.k_type || "";
+    const kCat = e.k_cat || "";
+    let score = 0;
+
+    if (kType && kType === leaf) score = 240;
+    else if (kType && src.startsWith(kType)) score = Math.max(score, 210);
+    else if (kType && src.includes(kType)) score = Math.max(score, 190);
+
+    if (kCat && kCat === leaf) score = Math.max(score, 180);
+    else if (kCat && src.includes(kCat)) score = Math.max(score, 140);
+
+    if (kType && kCat && src.includes(kType) && src.includes(kCat)) score += 20;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = e;
+    }
+  }
+
+  if (!best || bestScore < 140) return null;
+  return best.commission || null;
+}
+
+// Load once on boot
+loadCommissionTable();
+
 async function ensureCategoryCache({ clientId, apiKey, source }) {
   loadCategoryCacheFromDisk();
 
@@ -227,7 +290,7 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
     name: c.name,
     path: c.path || c.name,
     keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
-    commission: commissionById.get(String(c.category_id)) || {},
+    commission: bestCommissionForCategoryPath(c.path || c.name) || commissionById.get(String(c.category_id)) || {},
   }));
 
   categoryCache.list = flat;
@@ -295,7 +358,7 @@ function seedCategoryCacheFromFallback() {
         .split(/[>/]/)
         .map((p) => p.trim())
         .filter(Boolean),
-      commission: c.commission || {},
+      commission: bestCommissionForCategoryPath(c.path || c.name) || c.commission || {},
     }));
     categoryCache.source = "fallback";
     categoryCache.updatedAt = Date.now();
