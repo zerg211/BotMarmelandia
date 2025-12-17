@@ -1,0 +1,1325 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Моя аналитика</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root{
+      --bg:#0B0F14; --card:#121923; --text:#EAF0FF; --muted:#93A4C7;
+      --accent:#4DA3FF; --danger:#FF5A6A; --success:#3CCB7F; --line: rgba(255,255,255,.08);
+
+      /* ✅ ВЕРХНИЙ "ФУТЕР" (опустить контент ниже шапки Telegram) */
+      --top-gap: 44px;            /* если мало/много — меняй только это */
+    }
+    *{box-sizing:border-box;}
+
+    html, body { height: 100%; overflow: auto; }
+    body{
+      margin:0;background:var(--bg);color:var(--text);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    }
+
+    .app{
+      height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100dvh));
+      min-height: var(--tg-viewport-stable-height, var(--tg-viewport-height, 100dvh));
+
+      /* ✅ добавили top-gap */
+      padding:
+        calc(var(--top-gap) + env(safe-area-inset-top) + 16px)
+        calc(16px + env(safe-area-inset-right))
+        calc(16px + env(safe-area-inset-bottom))
+        calc(16px + env(safe-area-inset-left));
+
+      display:flex;flex-direction:column;gap:14px;overflow-y:auto;
+    }
+
+    .top{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;}
+    .title{font-size:20px;font-weight:900;letter-spacing:.2px;}
+    .sub{font-size:12px;color:var(--muted);}
+    .badge{font-size:11px;padding:4px 8px;border-radius:999px;background:rgba(77,163,255,.15);color:var(--accent);white-space:nowrap;}
+    .badge.danger{background:rgba(255,90,106,.15);color:var(--danger);}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}
+    .card{ 
+      background:var(--card);border-radius:16px;padding:14px;
+      box-shadow:0 8px 24px rgba(0,0,0,.25);
+      display:flex;flex-direction:column;gap:10px;min-height:110px;border:1px solid var(--line);
+    }
+    .label{font-size:12px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;gap:8px;}
+    .value{font-size:28px;font-weight:900;letter-spacing:.2px;}
+    .value.small{font-size:22px;}
+    .value.pos{color:var(--success);}
+    .value.neg{color:var(--danger);}
+
+    /* баланс: динамика к началу дня */
+    .delta{font-size:12px;color:var(--muted);line-height:1.2;margin-top:-6px;}
+    .delta.pos{color:var(--success);}
+    .delta.neg{color:var(--danger);}
+    .footer{
+      margin-top:auto;display:flex;justify-content:space-between;align-items:center;gap:12px;
+      color:var(--muted);font-size:12px;
+    }
+    .btn{
+      border:1px solid var(--line);background:rgba(77,163,255,.18);color:var(--text);
+      padding:10px 12px;border-radius:14px;font-weight:800;cursor:pointer;
+      display:flex;align-items:center;gap:8px;
+    }
+    .btn.secondary{background:rgba(255,255,255,.06);}
+    .btn:active{transform:scale(.99);}
+    .spin{animation:spin .8s linear infinite;}
+    @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+
+
+.mini-list{
+  font-size:12px;color:var(--muted);line-height:1.35;
+  max-height:72px;overflow:auto;padding-right:4px;
+}
+.mini-list .row{display:flex;justify-content:space-between;gap:10px;}
+.mini-list .k{color:var(--text);font-weight:700;}
+
+
+/* баланс кликабельный */
+.card.clickable{cursor:pointer;}
+.card.clickable:active{transform:scale(.99);}
+
+/* операции по балансу (модалка) */
+.ops-meta{font-size:12px;color:var(--muted);}
+.ops-list{display:flex;flex-direction:column;gap:10px;max-height:60vh;overflow:auto;padding-right:4px;}
+.op{
+  border:1px solid var(--line);border-radius:14px;padding:10px 10px;
+  background:rgba(255,255,255,.03);
+  display:flex;flex-direction:column;gap:6px;
+}
+.op-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;}
+.op-title{font-size:13px;font-weight:800;line-height:1.2;}
+.op-sub{font-size:12px;color:var(--muted);line-height:1.2;}
+.op-amt{font-size:13px;font-weight:900;white-space:nowrap;}
+.op-amt.pos{color:var(--success);}
+.op-amt.neg{color:var(--danger);}
+.op-foot{display:flex;flex-wrap:wrap;gap:8px;}
+.pill{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);}
+
+    /* modal */
+    .modal-backdrop{
+      position:fixed;inset:0;background:rgba(0,0,0,.55);
+      display:none;align-items:center;justify-content:center;padding:16px;
+    }
+    .modal{
+      width:min(520px,100%);
+      background:var(--card);border:1px solid var(--line);
+      border-radius:18px;box-shadow:0 18px 60px rgba(0,0,0,.5);
+      padding:16px;display:flex;flex-direction:column;gap:12px;
+    }
+    .modal h3{margin:0;font-size:16px;}
+    .field{display:flex;flex-direction:column;gap:6px;}
+    .field label{font-size:12px;color:var(--muted);}
+    .field input{
+      width:100%;padding:12px 12px;border-radius:12px;
+      border:1px solid var(--line);background:rgba(255,255,255,.04);
+      color:var(--text);outline:none;
+    }
+    .row{display:flex;gap:10px;flex-wrap:wrap;}
+    .row .btn{flex:1;}
+    .err{font-size:12px;color:var(--danger);display:none;}
+    @media (max-width:380px){.value{font-size:24px}.card{min-height:96px}}
+  
+.op.clickable{cursor:pointer;}
+.op-time{font-size:12px;color:var(--muted);margin-top:4px;}
+.op-details{margin-top:10px;border-top:1px solid var(--line);padding-top:10px;display:none;flex-direction:column;gap:6px;}
+.op-line{display:flex;justify-content:space-between;gap:10px;font-size:13px;}
+.op-line .t{color:var(--text);font-weight:700;}
+.op-line .a{font-weight:900;}
+.op-line .a.pos{color:var(--success);}
+.op-line .a.neg{color:var(--danger);}
+.op-note{margin-top:8px;font-size:12px;color:var(--muted);}
+
+    /* tabs */
+    .tabs{display:flex;gap:8px;flex-wrap:wrap;}
+    .tab-btn{flex:1;min-width:140px;border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--text);padding:10px 12px;border-radius:12px;font-weight:800;cursor:pointer;}
+    .tab-btn.active{background:rgba(77,163,255,.18);border-color:rgba(77,163,255,.6);}
+    .tab-content{display:none;flex-direction:column;gap:14px;}
+    .tab-content.active{display:flex;}
+
+    /* ozon calc */
+    .section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;}
+    .title.sm{font-size:18px;}
+    .calc{display:flex;flex-direction:column;gap:12px;}
+    .calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;}
+    .calc-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:12px;}
+    .calc .field-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+    .calc label{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:6px;}
+    .calc input{width:100%;margin-top:6px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);outline:none;}
+    .calc input:focus{border-color:rgba(77,163,255,.6);}
+    .calc select{width:100%;margin-top:6px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);outline:none;}
+    .calc .fieldset{display:flex;flex-direction:column;gap:8px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:rgba(255,255,255,.02);}
+    .calc .fieldset legend{font-size:11px;color:var(--muted);padding:0 4px;}
+    .calc .tags{display:flex;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--muted);}
+    .calc .tag{padding:4px 8px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.04);}
+    .calc-hint{font-size:12px;color:var(--muted);line-height:1.4;}
+    .calc-note{font-size:11px;color:var(--muted);line-height:1.4;background:rgba(255,255,255,.03);border:1px dashed var(--line);border-radius:12px;padding:8px 10px;}
+    .calc-summary{display:flex;flex-direction:column;gap:10px;}
+    .calc-metric{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid var(--line);}
+    .calc-metric .k{color:var(--muted);font-size:12px;}
+    .calc-metric .v{font-weight:900;}
+    .calc-metric .v.pos{color:var(--success);}
+    .calc-metric .v.neg{color:var(--danger);}
+    .calc-badge{font-size:11px;padding:3px 8px;border-radius:999px;background:rgba(77,163,255,.14);color:var(--accent);}
+    .calc-breakdown{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;font-size:12px;color:var(--muted);}
+    .calc-breakdown .line{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.02);border:1px solid var(--line);}
+    .calc-breakdown .line .v{font-weight:800;color:var(--text);}
+    .svd-row{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted);}
+    .svd-row input[type="range"]{flex:1;accent-color:var(--accent);}
+    .toggle-row{display:flex;gap:8px;flex-wrap:wrap;}
+    .toggle-row .toggle-btn{flex:0 0 auto;min-width:120px;}
+    .toggle-btn{border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--text);padding:8px 12px;border-radius:12px;font-weight:800;cursor:pointer;}
+    .toggle-btn.active{background:rgba(77,163,255,.18);border-color:rgba(77,163,255,.6);}
+    .pill-radio{display:flex;gap:8px;flex-wrap:wrap;}
+    .pill-radio button{border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--text);padding:8px 12px;border-radius:12px;font-weight:800;cursor:pointer;}
+    .pill-radio button.active{background:rgba(77,163,255,.18);border-color:rgba(77,163,255,.6);}
+    .inline-note{font-size:11px;color:var(--muted);}
+    .hero-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;}
+    .mode-card{background:linear-gradient(135deg, rgba(77,163,255,.16), rgba(60,203,127,.08));border:1px solid rgba(77,163,255,.35);}
+    .mode-pill{padding:6px 10px;border-radius:12px;font-size:12px;background:rgba(0,0,0,.16);border:1px solid var(--line);color:var(--text);}
+    .svd-legend{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted);}
+    .svd-value{font-weight:800;color:var(--accent);}
+    .badge-row{display:flex;flex-wrap:wrap;gap:8px;font-size:12px;color:var(--muted);}
+    .badge-row .pill{border-color:rgba(255,255,255,.08);}
+    .typeahead{position:relative;}
+    .typeahead-list{position:absolute;left:0;right:0;top:100%;margin-top:6px;border:1px solid var(--line);background:rgba(16,22,31,.96);
+      border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.35);max-height:220px;overflow:auto;display:none;z-index:20;}
+    .typeahead-item{padding:10px 12px;font-size:13px;color:var(--text);cursor:pointer;display:flex;flex-direction:column;gap:2px;}
+    .typeahead-item:hover,.typeahead-item:active{background:rgba(77,163,255,.14);}
+    .typeahead-item .meta{font-size:11px;color:var(--muted);}
+
+</style>
+</head>
+<body>
+  <div class="app">
+    <div class="top">
+      <div>
+        <div class="title" id="title">Моя аналитика</div>
+        <div class="sub" id="subtitle">FBO · Сегодня · Europe/Moscow</div>
+      </div>
+      <div class="badge" id="status">готово</div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="dashboard">Дашборд</button>
+      <button class="tab-btn" data-tab="calc">Калькулятор Ozon</button>
+    </div>
+
+    <div id="dashboardTab" class="tab-content active">
+      <div class="grid">
+        <div class="card">
+          <div class="label">Заказы <span class="badge">шт</span></div>
+          <div class="value" id="orders">—</div>
+        </div>
+        <div class="card">
+          <div class="label">Сумма заказов <span class="badge">₽</span></div>
+          <div class="value small" id="ordersSum">—</div>
+        </div>
+        <div class="card">
+          <div class="label">Отмены <span class="badge danger">шт</span></div>
+          <div class="value" id="cancels">—</div>
+        </div>
+        <div class="card">
+          <div class="label">Сумма отмен <span class="badge danger">₽</span></div>
+          <div class="value small" id="cancelsSum">—</div>
+        </div>
+
+        <div class="card">
+          <div class="label">Выкупы сегодня <span class="badge">₽</span></div>
+          <div class="value small pos" id="buyoutsSum">—</div>
+        </div>
+        <div class="card">
+          <div class="label">Возвраты сегодня <span class="badge danger">₽</span></div>
+          <div class="value small neg" id="returnsSum">—</div>
+        </div>
+
+        <div class="card" id="balanceCard">
+          <div class="label">Баланс кабинета <span class="badge">₽</span></div>
+          <div class="value small" id="balance">—</div>
+          <div class="delta" id="balanceDelta"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="calcTab" class="tab-content">
+      <div class="calc">
+        <div class="section-head">
+          <div>
+            <div class="title sm">Калькулятор Ozon</div>
+            <div class="sub">Повторяет UX ecomunit: автоподбор категории и комиссий, логистика FBO/FBS с ползунком СВД.</div>
+          </div>
+          <span class="calc-badge">⚡ обновлён</span>
+        </div>
+
+        <div class="hero-row">
+          <div class="calc-card mode-card">
+            <div class="label" style="color:var(--text);font-weight:800;">Схема работы</div>
+            <div class="pill-radio" role="group" aria-label="Модель исполнения" style="gap:10px;">
+              <button type="button" class="fulfillment-btn active" data-mode="fbo">FBO · склад Ozon</button>
+              <button type="button" class="fulfillment-btn" data-mode="fbs">FBS · склад продавца</button>
+            </div>
+            <div class="badge-row" id="modeMeta"></div>
+            <div class="svd-legend">
+              <span>Среднее время доставки (СВД)</span>
+              <span class="svd-value" id="svdValue">50</span>
+            </div>
+            <div class="svd-row">
+              <span>0</span>
+              <input id="calcSvd" type="range" min="0" max="100" value="50" />
+              <span>100</span>
+            </div>
+            <div class="inline-note">Чем выше СВД, тем дороже логистика. Ближе к логике калькулятора Ozon: учитываем обратную доставку через процент выкупа.</div>
+            <div class="field-row">
+              <label>Процент выкупа, %<input id="calcBuyout" type="number" inputmode="decimal" placeholder="95" value="95" /></label>
+              <label>Скидка, %<input id="calcDiscount" type="number" inputmode="decimal" placeholder="10" value="0" /></label>
+            </div>
+          </div>
+
+          <div class="calc-card">
+            <div class="fieldset">
+              <legend>Категория и тип товара</legend>
+              <label>Категория или тип, как в кабинете Ozon
+                <div class="typeahead">
+                  <input id="calcCategory" type="text" placeholder="например: обогрев" autocomplete="off" list="categoryList" />
+                  <div class="typeahead-list" id="categorySuggest"></div>
+                </div>
+              </label>
+              <datalist id="categoryList"></datalist>
+              <div class="inline-note" id="categoryHint">Начните вводить название — покажем ближайшую категорию, а комиссию подставим автоматически.</div>
+              <div class="err" id="categoryError" style="display:none;"></div>
+              <label>Комиссия маркетплейса, %
+                <input id="calcCommission" type="number" inputmode="decimal" placeholder="15" />
+              </label>
+            </div>
+            <div class="fieldset">
+              <legend>Финансы</legend>
+              <div class="field-row">
+                <label>Цена продажи, ₽<input id="calcPrice" type="number" inputmode="decimal" placeholder="1499" /></label>
+                <label>Себестоимость, ₽<input id="calcCost" type="number" inputmode="decimal" placeholder="650" /></label>
+              </div>
+              <div class="field-row">
+                <label>Реклама, % от цены<input id="calcAds" type="number" inputmode="decimal" placeholder="8" value="0" /></label>
+                <label>Доп. расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="calc-grid">
+          <div class="calc-card">
+            <div class="fieldset">
+              <legend>Логистика и габариты</legend>
+              <div class="toggle-row">
+                <button type="button" class="toggle-btn active" id="dimsTab">Габариты</button>
+                <button type="button" class="toggle-btn" id="volumeTab">Объём (л) + вес</button>
+              </div>
+              <div id="dimsInputs">
+                <div class="field-row">
+                  <label>Длина, см<input id="calcLen" type="number" inputmode="decimal" placeholder="20" /></label>
+                  <label>Ширина, см<input id="calcWidth" type="number" inputmode="decimal" placeholder="15" /></label>
+                </div>
+                <div class="field-row">
+                  <label>Высота, см<input id="calcHeight" type="number" inputmode="decimal" placeholder="10" /></label>
+                  <label>Вес, кг<input id="calcWeight" type="number" inputmode="decimal" placeholder="0.9" /></label>
+                </div>
+              </div>
+              <div id="volumeInputs" style="display:none;">
+                <div class="field-row">
+                  <label>Объём, л<input id="calcVolume" type="number" inputmode="decimal" placeholder="3" /></label>
+                  <label>Вес, кг<input id="calcWeightAlt" type="number" inputmode="decimal" placeholder="0.9" /></label>
+                </div>
+              </div>
+              <div class="tags" id="logisticsMeta"></div>
+              <div class="calc-note">Учёт как в примере Ozon: берём больший из фактического и объёмного веса, тариф по FBO/FBS и корректировку по СВД. Возвраты считаем по проценту выкупа.</div>
+            </div>
+
+            <div class="calc-hint">Введите цену, скидку и себестоимость. Выберите категорию — комиссия подтянется автоматически. Логистика считается как на Ozon: по габаритам/весу, модели FBO/FBS, СВД и проценту выкупа с учётом обратной доставки.</div>
+          </div>
+
+          <div class="calc-card">
+            <div class="calc-summary">
+              <div class="calc-metric">
+                <div class="k">Цена со скидкой</div>
+                <div class="v" id="calcNetPrice">—</div>
+              </div>
+              <div class="calc-metric">
+                <div class="k">Комиссия маркетплейса</div>
+                <div class="v" id="calcCommissionAmt">—</div>
+              </div>
+              <div class="calc-metric">
+                <div class="k">Реклама</div>
+                <div class="v" id="calcAdsAmt">—</div>
+              </div>
+            </div>
+            <div class="calc-breakdown">
+              <div class="line"><span>Себестоимость</span><span class="v" id="calcCostLine">—</span></div>
+              <div class="line"><span>Логистика</span><span class="v" id="calcLogisticsLine">—</span></div>
+              <div class="line"><span>Прочие</span><span class="v" id="calcOtherLine">—</span></div>
+              <div class="line"><span>Итого расходы</span><span class="v" id="calcCosts">—</span></div>
+            </div>
+            <div class="calc-summary">
+              <div class="calc-metric">
+                <div class="k">Прибыль с единицы</div>
+                <div class="v" id="calcProfit">—</div>
+              </div>
+              <div class="calc-metric">
+                <div class="k">Маржинальность</div>
+                <div class="v" id="calcMargin">—</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <div id="updatedAt">Последнее обновление: —</div>
+      <div class="row" style="justify-content:flex-end;">
+        <button class="btn secondary" id="keysBtn">🔑 Ключи</button>
+        <button class="btn" id="refreshBtn">
+          <svg id="refreshIcon" width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path d="M21 3v7h-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          Обновить
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- modal: api keys -->
+  <div class="modal-backdrop" id="modalBg">
+    <div class="modal">
+      <h3>Ключи Ozon Seller</h3>
+
+      <div class="field">
+        <label>Client ID</label>
+        <input id="clientId" placeholder="например 2396143" />
+      </div>
+
+      <div class="field">
+        <label>Api-Key</label>
+        <input id="apiKey" placeholder="например 6157f0ba-..." />
+      </div>
+
+      <div class="err" id="modalErr">Ошибка</div>
+
+      <div class="row">
+        <button class="btn secondary" id="cancelBtn">Закрыть</button>
+        <button class="btn" id="saveBtn">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- balance modal -->
+  <div class="modal-backdrop" id="balModalBg">
+    <div class="modal">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+        <h3 style="margin:0;">Баланс: операции за сегодня</h3>
+        <button class="btn secondary" id="balCloseBtn" style="flex:0 0 auto;">Закрыть</button>
+      </div>
+      <div class="ops-meta" id="balMeta">—</div>
+      <div class="err" id="balErr" style="display:none;"></div>
+      <div class="ops-list" id="balOps">
+        <div class="op">
+          <div class="op-top">
+            <div class="op-title">Загрузка…</div>
+            <div class="op-amt">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+
+    function applyFullscreen(){
+      if (!tg) return;
+      tg.ready();
+      tg.expand();
+      tg.disableVerticalSwipes?.();
+      tg.requestFullscreen?.();
+    }
+    applyFullscreen();
+    try { tg?.onEvent?.("viewportChanged", applyFullscreen); } catch(e) {}
+
+    const $ = (id) => document.getElementById(id);
+
+    const statusEl = $("status");
+    const updatedAtEl = $("updatedAt");
+    const refreshBtn = $("refreshBtn");
+    const refreshIcon = $("refreshIcon");
+
+    const modalBg = $("modalBg");
+
+    const balModalBg = $("balModalBg");
+    const balCloseBtn = $("balCloseBtn");
+    const balMeta = $("balMeta");
+    const balErr = $("balErr");
+    const balOps = $("balOps");
+    const balanceCard = $("balanceCard");
+
+    const clientIdEl = $("clientId");
+    const apiKeyEl = $("apiKey");
+    const modalErr = $("modalErr");
+
+    const calcInputs = {
+      price: $("calcPrice"),
+      cost: $("calcCost"),
+      discount: $("calcDiscount"),
+      commission: $("calcCommission"),
+      ads: $("calcAds"),
+      other: $("calcOther"),
+      len: $("calcLen"),
+      width: $("calcWidth"),
+      height: $("calcHeight"),
+      weight: $("calcWeight"),
+      volume: $("calcVolume"),
+      weightAlt: $("calcWeightAlt"),
+      svd: $("calcSvd"),
+      buyout: $("calcBuyout"),
+      category: $("calcCategory"),
+    };
+    const calcOutputs = {
+      netPrice: $("calcNetPrice"),
+      commissionAmt: $("calcCommissionAmt"),
+      adsAmt: $("calcAdsAmt"),
+      costs: $("calcCosts"),
+      costLine: $("calcCostLine"),
+      logisticsLine: $("calcLogisticsLine"),
+      otherLine: $("calcOtherLine"),
+      profit: $("calcProfit"),
+      margin: $("calcMargin"),
+    };
+
+    const svdValueEl = $("svdValue");
+    const logisticsMeta = $("logisticsMeta");
+    const modeMetaEl = $("modeMeta");
+    const dimsTab = $("dimsTab");
+    const volumeTab = $("volumeTab");
+    const dimsInputs = $("dimsInputs");
+    const volumeInputs = $("volumeInputs");
+    const categoryHintEl = $("categoryHint");
+    const categoryErrorEl = $("categoryError");
+    const categoryListEl = $("categoryList");
+    const categorySuggestEl = $("categorySuggest");
+    const fulfillmentButtons = document.querySelectorAll('.fulfillment-btn');
+
+    const tabButtons = document.querySelectorAll('.tab-btn');
+    const tabContents = document.querySelectorAll('.tab-content');
+
+    function activateTab(name){
+      tabButtons.forEach((btn) => {
+        const isActive = btn.dataset.tab === name;
+        btn.classList.toggle('active', isActive);
+      });
+      tabContents.forEach((section) => {
+        const isActive = section.id === `${name}Tab`;
+        section.classList.toggle('active', isActive);
+      });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    tabButtons.forEach((btn) => btn.addEventListener('click', () => activateTab(btn.dataset.tab)));
+
+    const rubFormatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    function setStatus(text, danger=false){
+      statusEl.textContent = text;
+      statusEl.className = "badge" + (danger ? " danger" : "");
+    }
+    function setLastUpdated(iso){
+      const d = iso ? new Date(iso) : new Date();
+      updatedAtEl.textContent = "Последнее обновление: " + d.toLocaleString("ru-RU");
+    }
+    function fmtMoneyFromCents(cents){
+      if (cents === null || cents === undefined) return "—";
+      const rub = (Number(cents) / 100);
+      return new Intl.NumberFormat("ru-RU", {minimumFractionDigits:2, maximumFractionDigits:2}).format(rub);
+    }
+
+    function fmtSigned(cents){
+      const n = Number(cents || 0);
+      const sign = n > 0 ? "+" : (n < 0 ? "−" : "");
+      const abs = Math.abs(n);
+      return sign + fmtMoneyFromCents(abs);
+    }
+
+    function fmtRub(val){
+      return `${rubFormatter.format(val)} ₽`;
+    }
+
+    function parseNumber(input){
+      if (!input) return 0;
+      const raw = String(input.value || input.placeholder || "0").replace(",", ".");
+      const num = Number(raw);
+      return Number.isFinite(num) ? num : 0;
+    }
+
+    let categories = [];
+    let categoriesLoading = false;
+    let commissionDirty = false;
+    let categorySuggestTimer = null;
+
+    const fulfillmentBase = {
+      fbo: [
+        { maxWeight: 0.5, maxVolume: 5, base: 55 },
+        { maxWeight: 2, maxVolume: 12, base: 75 },
+        { maxWeight: 5, maxVolume: 25, base: 110 },
+        { maxWeight: 10, maxVolume: 45, base: 150 },
+        { maxWeight: 20, maxVolume: 120, base: 210 },
+        { maxWeight: 40, maxVolume: 350, base: 310 },
+        { maxWeight: Infinity, maxVolume: Infinity, base: 420 },
+      ],
+      fbs: [
+        { maxWeight: 0.5, maxVolume: 5, base: 70 },
+        { maxWeight: 2, maxVolume: 12, base: 95 },
+        { maxWeight: 5, maxVolume: 25, base: 135 },
+        { maxWeight: 10, maxVolume: 45, base: 185 },
+        { maxWeight: 20, maxVolume: 120, base: 240 },
+        { maxWeight: 40, maxVolume: 350, base: 340 },
+        { maxWeight: Infinity, maxVolume: Infinity, base: 460 },
+      ],
+    };
+
+    const norm = (s) => String(s || "").toLowerCase().trim();
+    let categoriesLoadedFrom = null;
+    let lastLiveCommission = null;
+    let lastLogisticsQuote = null;
+    let commissionFetchTs = 0;
+    let logisticsFetchTs = 0;
+
+    async function fetchCategoriesFromApi(){
+      if (categoriesLoading) return;
+      categoriesLoading = true;
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
+      const hasLocalCreds = !!(clientId && apiKey);
+      try {
+        categoryHintEl.textContent = hasLocalCreds
+          ? "Подтягиваем список категорий Ozon..."
+          : "Пробуем загрузить категории с сервера (если ключи сохранены).";
+        const resp = await fetch("/api/ozon/categories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: hasLocalCreds ? JSON.stringify({ clientId, apiKey }) : undefined,
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data?.error || resp.status);
+        categories = (data?.categories || []).map((c) => ({
+          name: c.path || c.name,
+          path: c.path || c.name,
+          category_id: c.category_id,
+          keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
+          commission: c.commission || {},
+        }));
+        categoriesLoadedFrom = data?.source || "Ozon API";
+        setCategoryOptions(categories.slice(0, 10));
+        categoryHintEl.textContent = `Категории подтянуты из ${categoriesLoadedFrom} (${categories.length} шт.)`;
+      } catch (e){
+        const msg = e?.message || e;
+        categoryHintEl.textContent = `Не удалось загрузить категории из Ozon API: ${msg}`;
+        setCategoryError(msg === "no_creds" ? "Нет доступа к каталогу Ozon: добавьте Client ID и Api-Key." : `Ошибка загрузки: ${msg}`);
+      } finally {
+        categoriesLoading = false;
+      }
+    }
+
+    async function fetchCategorySuggestions(query){
+      if (categoriesLoading) return;
+      const q = norm(query);
+      if (!q || q.length < 2){
+        renderCategorySuggest([]);
+        return;
+      }
+
+      categoriesLoading = true;
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
+      const hasLocalCreds = !!(clientId && apiKey);
+      try {
+        categoryHintEl.textContent = "Ищем категорию в каталоге Ozon...";
+        const body = hasLocalCreds ? { clientId, apiKey, query: q, limit: 20 } : { query: q, limit: 20 };
+        const resp = await fetch("/api/ozon/categories/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data?.error || resp.status);
+        categories = (data?.categories || []).map((c) => ({
+          name: c.path || c.name,
+          path: c.path || c.name,
+          category_id: c.category_id,
+          keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
+          commission: c.commission || {},
+        }));
+        categoriesLoadedFrom = data?.source || "Ozon API";
+        setCategoryOptions(categories);
+        categoryHintEl.textContent = categories.length
+          ? `Нашли ${categories.length} вариантов (источник: ${categoriesLoadedFrom}).`
+          : "Не нашли категорию в каталоге Ozon. Продолжайте печатать или уточните подкатегорию.";
+      } catch (e){
+        const msg = e?.message || e;
+        categoryHintEl.textContent = `Не удалось найти категории через Ozon API: ${msg}`;
+        setCategoryError(msg === "no_creds" ? "Нет доступа к каталогу Ozon: добавьте Client ID и Api-Key." : `Ошибка поиска: ${msg}`);
+        renderCategorySuggest([]);
+      } finally {
+        categoriesLoading = false;
+      }
+    }
+
+    function setCategoryError(msg){
+      if (!categoryErrorEl) return;
+      if (!msg){
+        categoryErrorEl.style.display = "none";
+        categoryErrorEl.textContent = "";
+        return;
+      }
+      categoryErrorEl.style.display = "block";
+      categoryErrorEl.textContent = msg;
+    }
+
+    function setCategoryOptions(list){
+      if (!categoryListEl) return;
+      categoryListEl.innerHTML = (list || []).map((c) => `<option value="${c.name}"></option>`).join("");
+      renderCategorySuggest(list);
+      if (list && list.length){
+        setCategoryError("");
+      }
+    }
+
+    function renderCategorySuggest(list){
+      if (!categorySuggestEl) return;
+      if (!list || !list.length){
+        categorySuggestEl.style.display = "none";
+        categorySuggestEl.innerHTML = "";
+        return;
+      }
+      categorySuggestEl.innerHTML = list.map((c) => {
+        const meta = c.path && c.path !== c.name ? `<div class="meta">${c.path}</div>` : "";
+        return `<div class="typeahead-item" data-id="${c.category_id}"><div>${c.name}</div>${meta}</div>`;
+      }).join("");
+      categorySuggestEl.style.display = "block";
+    }
+
+    let fulfillmentMode = "fbo";
+    let selectedCategory = null;
+    let logisticsInputMode = "dims";
+
+    function commissionForMode(cat){
+      if (!cat) return null;
+      const rate = cat.commission?.[fulfillmentMode];
+      return Number.isFinite(rate) ? rate : null;
+    }
+
+    async function fetchCommissionFromApi(price){
+          if (!selectedCategory?.category_id) return;
+          if (!Number.isFinite(price) || price <= 0) return;
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
+      const now = Date.now();
+      if (now - commissionFetchTs < 800) return; // троттлим
+      commissionFetchTs = now;
+      try {
+        categoryHintEl.textContent = "Запрашиваем реальную комиссию...";
+        const payload = { items: [{ price, category_id: Number(selectedCategory.category_id), delivery_schema: fulfillmentMode.toUpperCase() }] };
+        const body = clientId && apiKey ? { clientId, apiKey, payload } : { payload };
+        const resp = await fetch("/api/ozon/commission", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data?.error || resp.status);
+        const item = data?.result?.items?.[0] || data?.result?.result?.items?.[0] || null;
+        const rate = Number(item?.sales_percent || item?.commission_percent || 0);
+        if (Number.isFinite(rate) && rate > 0){
+          selectedCategory.commission = selectedCategory.commission || {};
+          selectedCategory.commission[fulfillmentMode] = rate;
+          lastLiveCommission = rate;
+          if (!commissionDirty) calcInputs.commission.value = rate;
+          categoryHintEl.textContent = `Комиссия из Ozon API (${data?.source || "commission"}): ${rate}%`;
+          updateCalc();
+        } else {
+          categoryHintEl.textContent = "Ozon API вернул ответ без комиссии, укажите вручную.";
+        }
+      } catch (e){
+        categoryHintEl.textContent = `Не удалось получить комиссию из Ozon API: ${e.message || e}`;
+      }
+    }
+
+    function computeVolumeAndWeight(){
+      let volumeLiters = 0;
+      let weightKg = 0;
+      if (logisticsInputMode === "volume"){
+        volumeLiters = Math.max(0, parseNumber(calcInputs.volume));
+        weightKg = Math.max(0, parseNumber(calcInputs.weightAlt));
+      } else {
+        const len = Math.max(0, parseNumber(calcInputs.len));
+        const width = Math.max(0, parseNumber(calcInputs.width));
+        const height = Math.max(0, parseNumber(calcInputs.height));
+        volumeLiters = (len * width * height) / 1000; // см^3 -> литры
+        weightKg = Math.max(0, parseNumber(calcInputs.weight));
+      }
+      return { volumeLiters, weightKg };
+    }
+
+    function computeLogistics(baseTable, volumeLiters, weightKg, svdValue, buyoutPct){
+      const volumetricWeight = Math.max(weightKg, volumeLiters / 5);
+      const tier = baseTable.find((t) => volumetricWeight <= t.maxWeight && volumeLiters <= t.maxVolume) || baseTable[baseTable.length - 1];
+      const svdCoeff = 0.55 + (svdValue / 100) * 0.9; // 0.55..1.45 — ближе к калькулятору Ozon
+      const forward = tier.base * svdCoeff;
+      const returnShare = Math.max(0, Math.min(1, (100 - buyoutPct) / 100));
+      const returnCoeff = 0.55 + (svdValue / 100) * 0.35;
+      const reverse = tier.base * returnCoeff * returnShare;
+      const total = forward + reverse;
+      return { forward, reverse, total, volumetricWeight, tier, svdCoeff, returnShare };
+    }
+
+    async function fetchLogisticsFromApi({ price, volumeLiters, weightKg, svdValue, buyoutPct }){
+          if (!Number.isFinite(price) || price <= 0) return;
+          if (!volumeLiters || !weightKg) return;
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
+      const now = Date.now();
+      if (now - logisticsFetchTs < 800) return;
+      logisticsFetchTs = now;
+      try {
+        const payload = {
+          weight: weightKg,
+          dimensions: {
+            height: Math.max(0, parseNumber(calcInputs.height)),
+            length: Math.max(0, parseNumber(calcInputs.len)),
+            width: Math.max(0, parseNumber(calcInputs.width)),
+          },
+          volume: volumeLiters / 1000,
+          price,
+          delivery_schema: fulfillmentMode.toUpperCase(),
+          delivery_time: svdValue,
+          buyout_percent: buyoutPct,
+        };
+        const body = clientId && apiKey ? { clientId, apiKey, payload } : { payload };
+        const resp = await fetch("/api/ozon/logistics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data?.error || resp.status);
+        const res = data?.result?.delivery || data?.result || data;
+        const total = Number(res?.total || res?.price || res?.amount || 0);
+        if (Number.isFinite(total) && total > 0){
+          lastLogisticsQuote = { total, raw: res };
+          setLogisticsMeta({
+            volumeLiters,
+            volumetricWeight: weightKg,
+            tier: { base: total, maxWeight: weightKg, maxVolume: volumeLiters },
+            svdCoeff: 1,
+            returnShare: buyoutPct / 100,
+          });
+          updateCalc();
+        }
+      } catch (e){
+        logisticsMeta.innerHTML = `<span class="tag">Ozon API логистика: ${e.message || e}</span>`;
+      }
+    }
+
+    function setLogisticsMeta(info){
+      if (!logisticsMeta) return;
+      if (!info){
+        logisticsMeta.innerHTML = "";
+        return;
+      }
+      const tags = [
+        `${logisticsInputMode === "volume" ? "Объём" : "Габариты"}: ${info.volumeLiters.toFixed(2)} л`,
+        `Вес для тарифа: ${info.volumetricWeight.toFixed(2)} кг`,
+        `База тарифа: ${fmtRub(info.tier.base)}`,
+        `СВД множитель: ${info.svdCoeff.toFixed(2)}`,
+        `Обратка: ${(info.returnShare * 100).toFixed(0)}%`
+      ];
+      logisticsMeta.innerHTML = tags.map((t) => `<span class="tag">${t}</span>`).join("");
+    }
+
+    function updateModeMeta(){
+      if (!modeMetaEl) return;
+      const svd = calcInputs.svd?.value || "0";
+      const desc = fulfillmentMode === "fbo" ? "FBO: завоз на склад Ozon, ниже тарифы, нужна отгрузка заранее." : "FBS: со склада продавца, тариф выше при долгом СВД, но гибче отгрузка.";
+      modeMetaEl.innerHTML = [
+        `<span class="pill">Модель: ${fulfillmentMode.toUpperCase()}</span>`,
+        `<span class="pill">СВД: ${svd}</span>`,
+        `<span class="pill">${desc}</span>`,
+      ].join("");
+    }
+
+    function applyCategory(cat){
+      selectedCategory = cat;
+      if (cat){
+        const rate = commissionForMode(cat);
+        if (rate !== null && !commissionDirty){
+          calcInputs.commission.value = rate;
+        }
+        categoryHintEl.textContent = rate !== null
+          ? `Нашли: ${cat.name}. Комиссия для ${fulfillmentMode.toUpperCase()}: ${rate}%`
+          : `Категория: ${cat.name}. Укажите комиссию вручную.`;
+      } else {
+        if (!commissionDirty) calcInputs.commission.value = "";
+        categoryHintEl.textContent = "Не нашли категорию. Попробуйте точнее написать название или подкатегорию.";
+      }
+    }
+
+    function chooseCategory(cat){
+      // фиксируем выбор категории и сразу подставляем "стандартную" комиссию из дерева категорий
+      commissionDirty = false;
+      lastLiveCommission = null;
+      if (calcInputs.category && cat?.name){
+        calcInputs.category.value = cat.name;
+      }
+      renderCategorySuggest([]);
+      applyCategory(cat); // внутри applyCategory комиссия проставляется из cat.commission
+      updateCalc();
+    }
+
+    function handleCategoryInput(){
+      const query = calcInputs.category?.value || "";
+      if (!query.trim()){
+        selectedCategory = null;
+        setCategoryOptions([]);
+        renderCategorySuggest([]);
+        setCategoryError("");
+        if (!commissionDirty) calcInputs.commission.value = "";
+        categoryHintEl.textContent = "Начните вводить категорию так, как в кабинете Ozon.";
+        updateCalc();
+        return;
+      }
+
+      selectedCategory = null;
+      clearTimeout(categorySuggestTimer);
+      categorySuggestTimer = setTimeout(() => fetchCategorySuggestions(query), 200);
+    }
+
+    function setFulfillment(mode){
+      if (!mode) return;
+      fulfillmentMode = mode;
+      fulfillmentButtons.forEach((btn) => {
+        const isActive = btn.dataset.mode === mode;
+        btn.classList.toggle('active', isActive);
+      });
+      const rate = commissionForMode(selectedCategory);
+      if (rate !== null && !commissionDirty){
+        calcInputs.commission.value = rate;
+        if (selectedCategory){
+          categoryHintEl.textContent = `Категория: ${selectedCategory.name}. Комиссия ${mode.toUpperCase()}: ${rate}%`;
+        }
+      }
+      updateModeMeta();
+      updateCalc();
+    }
+
+    function setLogisticsMode(mode){
+      logisticsInputMode = mode;
+      dimsTab?.classList.toggle('active', mode === "dims");
+      volumeTab?.classList.toggle('active', mode === "volume");
+      if (dimsInputs) dimsInputs.style.display = mode === "dims" ? "block" : "none";
+      if (volumeInputs) volumeInputs.style.display = mode === "volume" ? "block" : "none";
+      updateCalc();
+    }
+
+    function setCalcValue(el, value, { isPercent = false } = {}){
+      if (!el) return;
+      const cls = value > 0 ? "pos" : (value < 0 ? "neg" : "");
+      el.className = `v ${cls}`.trim();
+      if (value === null || value === undefined || !Number.isFinite(value)) {
+        el.textContent = "—";
+        return;
+      }
+      if (isPercent) {
+        el.textContent = `${value.toFixed(1)} %`;
+      } else {
+        el.textContent = fmtRub(value);
+      }
+    }
+
+    function updateCalc(){
+      const price = Math.max(0, parseNumber(calcInputs.price));
+      const discount = Math.max(0, parseNumber(calcInputs.discount));
+      const cost = Math.max(0, parseNumber(calcInputs.cost));
+      const commissionPct = Math.max(0, parseNumber(calcInputs.commission));
+      const adsPct = Math.max(0, parseNumber(calcInputs.ads));
+      const other = Math.max(0, parseNumber(calcInputs.other));
+      const svdVal = Math.max(0, Math.min(100, parseNumber(calcInputs.svd)));
+      const buyoutPct = Math.max(0, Math.min(100, parseNumber(calcInputs.buyout)));
+
+      const { volumeLiters, weightKg } = computeVolumeAndWeight();
+      const table = fulfillmentBase[fulfillmentMode] || fulfillmentBase.fbo;
+      const logisticsInfo = computeLogistics(table, volumeLiters, weightKg, svdVal, buyoutPct);
+      let logistics = lastLogisticsQuote?.total || logisticsInfo.total;
+      if (!lastLogisticsQuote) setLogisticsMeta({ ...logisticsInfo, volumeLiters, svdValue: svdVal });
+
+      const discountFactor = Math.max(0, 1 - discount / 100);
+      const netPrice = price * discountFactor;
+      const commissionAmt = netPrice * (commissionPct / 100);
+      const adsAmt = netPrice * (adsPct / 100);
+
+      if (!lastLogisticsQuote && weightKg && volumeLiters){
+        fetchLogisticsFromApi({ price: netPrice || price || 0, volumeLiters, weightKg, svdValue: svdVal, buyoutPct });
+      }
+
+      const totalCosts = cost + logistics + other + commissionAmt + adsAmt;
+      const profit = netPrice - totalCosts;
+      const marginPct = netPrice > 0 ? (profit / netPrice) * 100 : 0;
+
+      const variablePct = (commissionPct + adsPct) / 100;
+      const fixedCosts = cost + logistics + other;
+
+      setCalcValue(calcOutputs.netPrice, netPrice);
+      setCalcValue(calcOutputs.commissionAmt, commissionAmt);
+      setCalcValue(calcOutputs.adsAmt, adsAmt);
+      setCalcValue(calcOutputs.costLine, cost);
+      setCalcValue(calcOutputs.logisticsLine, logistics);
+      setCalcValue(calcOutputs.otherLine, other);
+      setCalcValue(calcOutputs.costs, totalCosts);
+      setCalcValue(calcOutputs.profit, profit);
+      setCalcValue(calcOutputs.margin, marginPct, { isPercent: true });
+    }
+
+    Object.values(calcInputs).forEach((el) => {
+      el?.addEventListener("input", updateCalc);
+    });
+    calcInputs.commission?.addEventListener("input", () => { commissionDirty = true; lastLiveCommission = null; });
+    calcInputs.category?.addEventListener("input", handleCategoryInput);
+    calcInputs.category?.addEventListener("change", handleCategoryInput);
+    categorySuggestEl?.addEventListener("click", (e) => {
+      const item = e.target.closest(".typeahead-item");
+      if (!item) return;
+      const id = item.getAttribute("data-id");
+      const cat = categories.find((c) => String(c.category_id) === String(id));
+      if (cat) chooseCategory(cat);
+    });
+    calcInputs.svd?.addEventListener("input", () => {
+      svdValueEl.textContent = calcInputs.svd.value || "0";
+      updateModeMeta();
+      updateCalc();
+    });
+    fulfillmentButtons.forEach((btn) => btn.addEventListener("click", () => setFulfillment(btn.dataset.mode)));
+    dimsTab?.addEventListener("click", () => setLogisticsMode("dims"));
+    volumeTab?.addEventListener("click", () => setLogisticsMode("volume"));
+
+    setCategoryOptions([]);
+    fetchCategoriesFromApi();
+    setFulfillment("fbo");
+    setLogisticsMode("dims");
+    svdValueEl.textContent = calcInputs.svd?.value || "0";
+    updateModeMeta();
+    calcInputs.category?.addEventListener("focus", () => { if (!categories.length) fetchCategoriesFromApi(); });
+    handleCategoryInput();
+    updateCalc();
+
+    function fmtOpWhen(iso, todayLocal){
+      if (!iso) return "";
+      // всегда показываем время в Europe/Moscow, независимо от таймзоны устройства
+      const d = new Date(iso);
+
+      const parts = new Intl.DateTimeFormat("ru-RU", {
+        timeZone: "Europe/Moscow",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).formatToParts(d);
+
+      const get = (t)=>parts.find(p=>p.type===t)?.value || "";
+      const dd = get("day");
+      const mo = get("month");
+      const yy = get("year");
+      const hh = get("hour");
+      const mm = get("minute");
+
+      const mskDateStr = `${yy}-${mo}-${dd}`;
+
+      if (mskDateStr === todayLocal) return `${hh}:${mm}`;
+      return `${dd}.${mo}.${yy} ${hh}:${mm}`;
+    }
+    function setBalError(msg){
+      if (!msg){
+        balErr.style.display = "none";
+        balErr.textContent = "";
+      } else {
+        balErr.style.display = "block";
+        balErr.textContent = msg;
+      }
+    }
+
+
+    function openModal(){
+      modalErr.style.display = "none";
+      clientIdEl.value = localStorage.getItem("ozon_clientId") || "";
+      apiKeyEl.value = localStorage.getItem("ozon_apiKey") || "";
+      modalBg.style.display = "flex";
+      applyFullscreen();
+    }
+    function closeModal(){ modalBg.style.display = "none"; }
+
+
+    function openBalModal(){
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
+      if (!clientId || !apiKey){
+        setStatus("нужны ключи", true);
+        openModal();
+        return;
+      }
+
+      balModalBg.style.display = "flex";
+      setBalError("");
+      balMeta.textContent = "Загрузка…";
+      balOps.innerHTML = "";
+      applyFullscreen();
+
+      (async () => {
+        try{
+          const url = `/api/balance/ops/today?clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}`;
+          const r = await fetch(url);
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+
+          balMeta.textContent = data.title || "Сегодня";
+          const ops = Array.isArray(data.ops) ? data.ops : [];
+
+          if (!ops.length){
+            balOps.innerHTML = `<div class="op"><div class="op-top"><div class="op-title">Нет операций за сегодня</div><div class="op-amt">—</div></div></div>`;
+            return;
+          }
+
+          balOps.innerHTML = ops.map((op) => {
+            const amt = Number(op.amount_cents || 0);
+            const cls = amt >= 0 ? "pos" : "neg";
+            const signAmt = fmtSigned(amt);
+            const title = (op.title || "Операция").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+            const sub = (op.subtitle || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+            const whenStr = fmtOpWhen(op.occurred_at, data.date);
+            const posting = op.posting_number ? `<span class="pill">Отправление: ${String(op.posting_number)}</span>` : "";
+            const clickable = (op.is_sale_delivery && op.posting_number) ? "clickable" : "";
+            const dataPosting = op.posting_number ? `data-posting="${String(op.posting_number).replace(/"/g,'&quot;')}"` : "";
+            const dataSale = op.is_sale_delivery ? `data-sale="1"` : "";
+            return `
+              <div class="op ${clickable}" ${dataPosting} ${dataSale}>
+                <div class="op-top">
+                  <div>
+                    <div class="op-title">${title}</div>
+                    ${whenStr ? `<div class="op-time">${whenStr}</div>` : ``}
+                    ${sub ? `<div class="op-sub">${sub}</div>` : ``}
+                  </div>
+                  <div class="op-amt ${cls}">${signAmt}</div>
+                </div>
+                ${posting ? `<div class="op-foot">${posting}</div>` : ``}
+                <div class="op-details"></div>
+              </div>
+            `;
+          }).join("");
+
+          // клики: раскрываем ТОЛЬКО "Доставка покупателю" (продажа)
+          balOps.querySelectorAll(".op.clickable").forEach((el) => {
+            el.addEventListener("click", async () => {
+              const postingNumber = el.getAttribute("data-posting");
+              if (!postingNumber) return;
+
+              const detailsEl = el.querySelector(".op-details");
+              if (!detailsEl) return;
+
+              // toggle if already loaded
+              if (detailsEl.getAttribute("data-loaded") === "1") {
+                const isOpen = detailsEl.style.display === "flex";
+                detailsEl.style.display = isOpen ? "none" : "flex";
+                return;
+              }
+
+              detailsEl.style.display = "flex";
+              detailsEl.innerHTML = `<div class="op-sub">Загрузка детализации…</div>`;
+
+              try{
+                const params = new URLSearchParams({ clientId, apiKey, posting_number: postingNumber });
+                const dUrl = `/api/balance/sale/detail?${params.toString()}`;
+                const rr = await fetch(dUrl);
+                const dj = await rr.json().catch(()=>({}));
+                if (!rr.ok || dj.error) throw new Error(dj.error || ("HTTP " + rr.status));
+
+                const lines = Array.isArray(dj.lines) ? dj.lines : [];
+                const note = dj.note;
+
+                const htmlLines = lines.map((ln) => {
+                  const a = Number(ln.amount_cents || 0);
+                  const c = a >= 0 ? "pos" : "neg";
+                  const pct = (ln.percent !== null && ln.percent !== undefined) ? ` <span style="color:var(--muted);font-weight:700;">(${ln.percent}%)</span>` : "";
+                  return `<div class="op-line">
+                    <div class="t">${String(ln.title || "").replace(/</g,"&lt;").replace(/>/g,"&gt;")}${pct}</div>
+                    <div class="a ${c}">${fmtSigned(a)}</div>
+                  </div>`;
+                }).join("");
+
+                const noteHtml = note ? `<div class="op-note">${String(note.title || "").replace(/</g,"&lt;").replace(/>/g,"&gt;")}: <b>${fmtSigned(Number(note.amount_cents||0))}</b>${(note.percent!==null&&note.percent!==undefined)?` (${note.percent}%)`:``}</div>` : "";
+
+                detailsEl.innerHTML = htmlLines + noteHtml;
+                detailsEl.setAttribute("data-loaded","1");
+              } catch(e){
+                detailsEl.innerHTML = `<div class="op-sub">Не удалось получить детализацию</div>`;
+                detailsEl.setAttribute("data-loaded","1");
+              }
+            });
+          });
+
+        } catch(e){
+          setBalError(String(e.message || e));
+          balMeta.textContent = "Ошибка";
+          balOps.innerHTML = `<div class="op"><div class="op-top"><div class="op-title">Не удалось загрузить операции</div><div class="op-amt">—</div></div></div>`;
+        }
+      })();
+    }
+    function closeBalModal(){ balModalBg.style.display = "none"; }
+
+
+    $("keysBtn").addEventListener("click", openModal);
+
+    balCloseBtn.addEventListener("click", closeBalModal);
+    balModalBg.addEventListener("click", (e) => { if (e.target === balModalBg) closeBalModal(); });
+
+    // баланс: открыть операции
+    balanceCard.classList.add("clickable");
+    balanceCard.addEventListener("click", openBalModal);
+
+    $("cancelBtn").addEventListener("click", closeModal);
+    modalBg.addEventListener("click", (e) => { if (e.target === modalBg) closeModal(); });
+
+    $("saveBtn").addEventListener("click", async () => {
+      const clientId = clientIdEl.value.trim();
+      const apiKey = apiKeyEl.value.trim();
+      if (!clientId || !apiKey) {
+        modalErr.textContent = "Заполни Client ID и Api-Key";
+        modalErr.style.display = "block";
+        return;
+      }
+      localStorage.setItem("ozon_clientId", clientId);
+      localStorage.setItem("ozon_apiKey", apiKey);
+      closeModal();
+      await load();
+    });
+
+    async function load(){
+      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
+      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
+
+      if (!clientId || !apiKey){
+        setStatus("нужны ключи", true);
+        openModal();
+        return;
+      }
+
+      try{
+        refreshBtn.disabled = true;
+        refreshIcon.classList.add("spin");
+        setStatus("обновление…");
+
+        const url = `/api/dashboard/today?clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}`;
+        const r = await fetch(url);
+        const data = await r.json();
+        if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+
+        if (data.title) $("subtitle").textContent = data.title;
+
+        $("orders").textContent = data.orders ?? data.ordersCount ?? "—";
+        $("ordersSum").textContent = fmtMoneyFromCents(data.orders_sum ?? data.ordersAmount);
+        $("cancels").textContent = data.cancels ?? data.cancelsCount ?? "—";
+        $("cancelsSum").textContent = fmtMoneyFromCents(data.cancels_sum ?? data.cancelsAmount);
+
+        // выкупы / возвраты (по деньгам из finance/balance)
+        const buyoutsCents = (data.buyouts_sum_cents ?? data.buyouts_sum ?? null);
+        const returnsCents = (data.returns_sum_cents ?? data.returns_sum ?? null);
+
+        // Выкупы: всегда + и зелёным
+        if (buyoutsCents !== null && buyoutsCents !== undefined) {
+          const abs = Math.abs(Number(buyoutsCents) || 0);
+          $("buyoutsSum").textContent = "+" + fmtMoneyFromCents(abs);
+        } else if (data.buyouts_sum_text) {
+          const t = String(data.buyouts_sum_text);
+          $("buyoutsSum").textContent = t.startsWith("+") ? t : ("+" + t.replace("−","").replace("-",""));
+        } else {
+          $("buyoutsSum").textContent = "—";
+        }
+
+        // Возвраты: всегда - и красным
+        if (returnsCents !== null && returnsCents !== undefined) {
+          const abs = Math.abs(Number(returnsCents) || 0);
+          $("returnsSum").textContent = "-" + fmtMoneyFromCents(abs);
+        } else if (data.returns_sum_text) {
+          const t = String(data.returns_sum_text);
+          $("returnsSum").textContent = (t.startsWith("-") || t.startsWith("−")) ? t : ("-" + t);
+        } else {
+          $("returnsSum").textContent = "—";
+        }
+
+// баланс (если смогли получить)
+        if (data.balance_text && data.balance_text !== "—") $("balance").textContent = data.balance_text;
+        else if (data.balance_cents !== null && data.balance_cents !== undefined) $("balance").textContent = fmtMoneyFromCents(data.balance_cents);
+        else $("balance").textContent = "—";
+
+        // динамика баланса за день (closing - opening)
+        try {
+          const deltaEl = $("balanceDelta");
+          if (deltaEl) {
+            const opening = (data.balance_opening ?? data.balance_opening_cents ?? null);
+            const closing = (data.balance_closing ?? data.balance_cents ?? data.balance_closing_cents ?? null);
+            const hasBoth = opening !== null && opening !== undefined && closing !== null && closing !== undefined;
+            if (!hasBoth) {
+              deltaEl.textContent = "";
+              deltaEl.className = "delta";
+            } else {
+              const delta = Number(closing) - Number(opening);
+              if (!Number.isFinite(delta) || delta === 0) {
+                deltaEl.textContent = "";
+                deltaEl.className = "delta";
+              } else {
+                const abs = Math.abs(delta);
+                const sign = delta > 0 ? "+" : "-";
+                deltaEl.textContent = `${sign}${fmtMoneyFromCents(abs)} сегодня`;
+                deltaEl.className = `delta ${delta > 0 ? "pos" : "neg"}`;
+              }
+            }
+          }
+        } catch (_) {}
+
+
+// Выкупы / Возвраты (по offer_id)
+const topN = (arr, n=5) => Array.isArray(arr) ? arr.slice(0, n) : [];
+const renderList = (el, arr) => {
+  if (!el) return;
+  const rows = topN(arr, 5);
+  if (!rows.length) { el.textContent = ""; return; }
+  el.innerHTML = rows.map(x => (
+    `<div class="row"><span class="k">${String(x.offer_id)}</span><span>${Number(x.qty||0)}</span></div>`
+  )).join("");
+};
+
+
+        setLastUpdated(data.updated_at);
+        setStatus("актуально");
+      } catch(e){
+        setStatus("ошибка Ozon API", true);
+
+try{
+  $("buyoutsSum").textContent = "—";
+  $("returnsSum").textContent = "—";
+  const bd = $("balanceDelta");
+  if (bd) { bd.textContent = ""; bd.className = "delta"; }
+  
+  
+}catch(_){}
+      } finally{
+        refreshIcon.classList.remove("spin");
+        refreshBtn.disabled = false;
+      }
+    }
+
+    refreshBtn.addEventListener("click", () => { applyFullscreen(); load(); });
+    load();
+  </script>
+</body>
+</html>
