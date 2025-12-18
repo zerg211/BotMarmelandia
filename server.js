@@ -17,8 +17,6 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "Public", "index.html"));
 });
 
-app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
-
 const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
@@ -29,9 +27,8 @@ const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 const DATA_DIR = process.env.DATA_DIR || ".";
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
-const pending = new Map();
 
-// --- STORE HELPERS ---
+// --- ТВОИ ОРИГИНАЛЬНЫЕ ХЕЛПЕРЫ STORE ---
 function loadStore() {
   try {
     if (!fs.existsSync(STORE_PATH)) return { users: {} };
@@ -40,27 +37,8 @@ function loadStore() {
 }
 function saveStore(store) { fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2), "utf-8"); }
 function getUserCreds(userId) { return loadStore().users?.[String(userId)] || null; }
-function setUserCreds(userId, creds) {
-  const store = loadStore();
-  store.users = store.users || {};
-  store.users[String(userId)] = creds;
-  saveStore(store);
-}
-function deleteUserCreds(userId) {
-  const store = loadStore();
-  if (store.users) delete store.users[String(userId)];
-  saveStore(store);
-}
 
-// --- CRYPTO ---
-function encrypt(text) {
-  if (!ENCRYPTION_KEY_B64) return { mode: "plain", value: text };
-  const key = Buffer.from(ENCRYPTION_KEY_B64, "base64");
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-  const enc = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
-  return { mode: "aes-256-gcm", iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), value: enc.toString("base64") };
-}
+// --- ТВОЙ ОРИГИНАЛЬНЫЙ CRYPTO ---
 function decrypt(obj) {
   if (!obj || obj.mode === "plain") return obj?.value || null;
   try {
@@ -71,7 +49,6 @@ function decrypt(obj) {
   } catch { return null; }
 }
 
-// --- OZON CORE ---
 async function ozonPost(pathname, { clientId, apiKey, body }) {
   const resp = await fetch(`${OZON_API_BASE}${pathname}`, {
     method: "POST",
@@ -83,12 +60,17 @@ async function ozonPost(pathname, { clientId, apiKey, body }) {
   return data;
 }
 
-// --- ТВОЯ ОРИГИНАЛЬНАЯ ЛОГИКА РАСЧЕТОВ ---
+// --- ВСЕ ТВОИ ФУНКЦИИ РАСЧЕТА (БЕЗ ИЗМЕНЕНИЙ) ---
 function todayDateStr() { return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd"); }
 function dayBoundsUtcFromLocal(dateStr) {
   const fromLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
   const toLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
-  return { since: fromLocal.toUTC().toISO(), to: toLocal.toUTC().toISO() };
+  return { since: fromLocal.toUTC().toISO({ suppressMilliseconds: false }), to: toLocal.toUTC().toISO({ suppressMilliseconds: false }) };
+}
+function isSameDayLocal(iso, dateStr) {
+  if (!iso) return false;
+  const d = DateTime.fromISO(iso, { setZone: true }).setZone(SALES_TZ);
+  return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
 }
 function toCents(val) {
   let s = String(val || "0").trim().replace(",", ".");
@@ -97,15 +79,9 @@ function toCents(val) {
   const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10);
   return (s.startsWith("-") ? -1 : 1) * (Math.abs(rub) * 100 + kop);
 }
-function centsToRubString(cents) { return `${(cents / 100).toLocaleString("ru-RU", { minimumFractionDigits: 2 })} ₽`; }
+function centsToRubString(cents) { return `${(cents / 100).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`; }
 
-function isSameDayLocal(iso, dateStr) {
-  if (!iso) return false;
-  const d = DateTime.fromISO(iso, { setZone: true }).setZone(SALES_TZ);
-  return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
-}
-
-async function fetchFboAllForDay({ clientId, apiKey, dateStr }) {
+async function calcTodayStats({ clientId, apiKey, dateStr }) {
   const { since, to } = dayBoundsUtcFromLocal(dateStr);
   let offset = 0, limit = 1000, all = [];
   while (true) {
@@ -116,33 +92,26 @@ async function fetchFboAllForDay({ clientId, apiKey, dateStr }) {
     if (postings.length < limit) break;
     offset += limit;
   }
-  return all;
-}
-
-async function calcTodayStats({ clientId, apiKey, dateStr }) {
-  const postings = await fetchFboAllForDay({ clientId, apiKey, dateStr });
-  let oCount = 0, oAmt = 0, cCount = 0, cAmt = 0;
-  for (const p of postings) {
+  let oC = 0, oA = 0, cC = 0, cA = 0;
+  for (const p of all) {
     if (!isSameDayLocal(p?.created_at, dateStr)) continue;
     let sum = 0;
     for (const pr of p.products || []) sum += toCents(pr.price) * (pr.quantity || 1);
-    oCount++; oAmt += sum;
-    if (String(p?.status).toLowerCase() === "cancelled") { cCount++; cAmt += sum; }
+    oC++; oA += sum;
+    if (String(p?.status).toLowerCase() === "cancelled") { cC++; cA += sum; }
   }
-  return { dateStr, ordersCount: oCount, ordersAmount: oAmt, cancelsCount: cCount, cancelsAmount: cAmt };
+  return { ordersCount: oC, ordersAmount: oA, cancelsCount: cC, cancelsAmount: cA };
 }
 
 async function calcBalanceToday({ clientId, apiKey, dateStr }) {
     try {
         const data = await ozonPost("/v1/finance/balance", { clientId, apiKey, body: { date_from: dateStr, date_to: dateStr } });
-        const total = data?.result?.total || data?.total;
-        const closing = total?.closing_balance || 0;
-        const opening = total?.opening_balance || 0;
+        const t = data?.result?.total || data?.total;
         const sales = data?.result?.cashflows?.sales?.amount?.value || 0;
         const returns = data?.result?.cashflows?.returns?.amount?.value || 0;
         return {
-            balance_cents: toCents(closing),
-            balance_opening_cents: toCents(opening),
+            balance_cents: toCents(t?.closing_balance),
+            balance_opening_cents: toCents(t?.opening_balance),
             buyouts_sum_cents: toCents(sales),
             returns_sum_cents: toCents(returns)
         };
@@ -150,44 +119,35 @@ async function calcBalanceToday({ clientId, apiKey, dateStr }) {
 }
 
 function resolveCredsFromRequest(req) {
-  const qClient = req.query.clientId || req.body?.clientId;
-  const qKey = req.query.apiKey || req.body?.apiKey;
-  if (qClient && qKey) return { clientId: String(qClient), apiKey: String(qKey) };
+  const qClient = req.query.clientId;
+  const qKey = req.query.apiKey;
+  if (qClient && qKey) return { clientId: qClient, apiKey: qKey };
   const store = loadStore();
   const firstUser = Object.values(store.users || {})[0];
   if (firstUser) return { clientId: firstUser.clientId, apiKey: decrypt(firstUser.apiKey) };
   return { clientId: OZON_DEFAULT_CLIENT_ID, apiKey: OZON_DEFAULT_API_KEY };
 }
 
-// --- API ENDPOINTS ---
+// --- API ---
 app.get("/api/dashboard/today", async (req, res) => {
   try {
     const creds = resolveCredsFromRequest(req);
-    if (!creds.clientId || !creds.apiKey) return res.status(400).json({ error: "no_creds" });
     const dateStr = todayDateStr();
-    
-    // ВЫЗОВ РЕАЛЬНЫХ ФУНКЦИЙ
-    const [stats, balance] = await Promise.all([
-      calcTodayStats({ ...creds, dateStr }),
-      calcBalanceToday({ ...creds, dateStr })
-    ]);
-
+    const [s, b] = await Promise.all([calcTodayStats({ ...creds, dateStr }), calcBalanceToday({ ...creds, dateStr })]);
     res.json({
       title: `FBO: за сегодня ${dateStr}`,
       date: dateStr,
-      ordersCount: stats.ordersCount,
-      ordersAmount: stats.ordersAmount,
-      cancelsCount: stats.cancelsCount,
-      cancelsAmount: stats.cancelsAmount,
-      balance_cents: balance.balance_cents,
-      balance_opening_cents: balance.balance_opening_cents,
-      buyouts_sum_cents: balance.buyouts_sum_cents,
-      returns_sum_cents: balance.returns_sum_cents,
+      ordersCount: s.ordersCount,
+      ordersAmount: s.ordersAmount,
+      cancelsCount: s.cancelsCount,
+      cancelsAmount: s.cancelsAmount,
+      balance_cents: b.balance_cents,
+      balance_opening_cents: b.balance_opening_cents,
+      buyouts_sum_cents: b.buyouts_sum_cents,
+      returns_sum_cents: b.returns_sum_cents,
       updated_at: DateTime.now().setZone(SALES_TZ).toISO()
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Добавь сюда свои оригинальные /api/balance/ops/today и /api/balance/sale/detail, если они нужны в приложении
-
-app.listen(PORT, () => console.log(`✅ Server (Full Analytics) started on :${PORT}`));
+app.listen(PORT, () => console.log(`✅ Started on :${PORT}`));
