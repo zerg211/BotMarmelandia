@@ -11,12 +11,9 @@
       --accent:#4DA3FF; --danger:#FF5A6A; --success:#3CCB7F; --line: rgba(255,255,255,.08);
       --top-gap: 44px;
     }
-    *{box-sizing:border-box;}
-    body{ margin:0; background:var(--bg); color:var(--text); font-family:system-ui, sans-serif; }
+    body{ margin:0; background:var(--bg); color:var(--text); font-family:sans-serif; }
     .app{ padding: calc(var(--top-gap) + 16px) 16px; display:flex; flex-direction:column; gap:14px; }
     .top{ display:flex; justify-content:space-between; align-items:flex-end; }
-    .title{ font-size:20px; font-weight:900; }
-    .badge{ font-size:11px; padding:4px 8px; border-radius:999px; background:rgba(77,163,255,.15); color:var(--accent); }
     .grid{ display:grid; grid-template-columns: repeat(2, 1fr); gap:12px; }
     .card{ 
       background:var(--card); border-radius:16px; padding:14px; border:1px solid var(--line);
@@ -24,27 +21,25 @@
     }
     .card.wide { grid-column: span 2; }
     .label{ font-size:12px; color:var(--muted); }
-    .value{ font-size:28px; font-weight:900; }
-    .value.small{ font-size:22px; }
+    .value{ font-size:26px; font-weight:900; }
+    .value.small{ font-size:20px; }
+    .badge{ font-size:10px; padding:2px 6px; border-radius:999px; background:rgba(77,163,255,0.1); color:var(--accent); }
     .pos{ color:var(--success); }
     .neg{ color:var(--danger); }
-    .footer{ margin-top:auto; display:flex; justify-content:space-between; align-items:center; padding-top:20px; }
-    .btn{ border:1px solid var(--line); background:rgba(77,163,255,0.18); color:#fff; padding:10px 14px; border-radius:12px; font-weight:800; cursor:pointer;}
-    .modal-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,0.6); display:none; align-items:center; justify-content:center; padding:16px; z-index:100; }
-    .modal{ background:var(--card); width:100%; max-width:440px; border-radius:18px; padding:16px; border:1px solid var(--line); }
+    .footer{ margin-top:20px; display:flex; justify-content:space-between; align-items:center; }
+    .btn{ border:1px solid var(--line); background:rgba(77,163,255,0.2); color:#fff; padding:10px 14px; border-radius:12px; font-weight:bold; cursor:pointer;}
   </style>
 </head>
 <body>
   <div class="app">
     <div class="top">
       <div>
-        <div class="title">Моя аналитика</div>
-        <div id="subtitle" style="font-size:12px; color:var(--muted)">FBO · Сегодня</div>
+        <div style="font-size:20px; font-weight:900">Дашборд</div>
+        <div id="subtitle" style="font-size:12px; color:var(--muted)">Загрузка...</div>
       </div>
-      <div class="badge" id="status">готово</div>
+      <div id="status" class="badge">готово</div>
     </div>
 
-    <!-- ТОЛЬКО ОДНА ВКЛАДКА ДАШБОРДА -->
     <div class="grid">
       <div class="card">
         <div class="label">Заказы <span class="badge">шт</span></div>
@@ -63,22 +58,22 @@
         <div class="value small" id="cancelsSum">—</div>
       </div>
       <div class="card">
-        <div class="label">Выкупы <span class="badge">₽</span></div>
+        <div class="label">Выкупы сегодня <span class="badge">₽</span></div>
         <div class="value small pos" id="buyoutsSum">—</div>
       </div>
       <div class="card">
-        <div class="label">Возвраты <span class="badge danger">₽</span></div>
+        <div class="label">Возвраты сегодня <span class="badge danger">₽</span></div>
         <div class="value small neg" id="returnsSum">—</div>
       </div>
-      <div class="card wide" id="balanceCard" style="cursor:pointer">
+      <div class="card wide" id="balanceCard">
         <div class="label">Баланс кабинета <span class="badge">₽</span></div>
         <div class="value small" id="balance">—</div>
-        <div id="balanceDelta" style="font-size:12px"></div>
+        <div id="balanceDelta" style="font-size:11px; margin-top:-5px"></div>
       </div>
     </div>
 
     <div class="footer">
-      <div id="updatedAt" style="font-size:11px; color:var(--muted)">—</div>
+      <div id="updatedAt" style="font-size:10px; color:var(--muted)">—</div>
       <div style="display:flex; gap:8px">
         <button class="btn" id="keysBtn" style="background:rgba(255,255,255,0.05)">🔑 Ключи</button>
         <button class="btn" id="refreshBtn">Обновить</button>
@@ -86,49 +81,55 @@
     </div>
   </div>
 
-  <!-- Модалка ключей -->
-  <div class="modal-backdrop" id="modalBg">
-    <div class="modal">
-      <h3 style="margin-top:0">Ключи Ozon Seller</h3>
-      <input id="clientId" placeholder="Client ID" style="width:100%; padding:12px; margin:8px 0; border-radius:8px; background:#000; border:1px solid var(--line); color:#fff">
-      <input id="apiKey" placeholder="Api-Key" style="width:100%; padding:12px; margin:8px 0; border-radius:8px; background:#000; border:1px solid var(--line); color:#fff">
-      <button class="btn" id="saveBtn" style="width:100%; margin-top:10px">Сохранить</button>
-      <button class="btn" id="closeBtn" style="width:100%; margin-top:8px; background:none">Закрыть</button>
-    </div>
-  </div>
-
   <script>
     const tg = window.Telegram?.WebApp;
-    if(tg) { tg.ready(); tg.expand(); }
+    if(tg) tg.expand();
     const $ = (id) => document.getElementById(id);
+
+    function fmt(cents) {
+      if (cents === null || cents === undefined) return "—";
+      return (Number(cents) / 100).toLocaleString("ru-RU", {minimumFractionDigits: 2}) + " ₽";
+    }
 
     async function load() {
       const cId = localStorage.getItem("ozon_clientId");
       const aKey = localStorage.getItem("ozon_apiKey");
-      if(!cId || !aKey) { $("modalBg").style.display="flex"; return; }
+      if(!cId || !aKey) { alert("Введите ключи!"); return; }
 
       $("status").textContent = "обновление...";
       try {
-        const url = `/api/dashboard/today?clientId=${cId}&apiKey=${aKey}`;
-        const r = await fetch(url);
+        const r = await fetch(`/api/dashboard/today?clientId=${cId}&apiKey=${aKey}`);
         const data = await r.json();
         
-        $("orders").textContent = data.ordersCount || 0;
-        $("ordersSum").textContent = (data.ordersAmount / 100).toLocaleString() + " ₽";
-        $("balance").textContent = (data.balance_cents / 100).toLocaleString() + " ₽";
+        $("subtitle").textContent = data.title;
+        $("orders").textContent = data.ordersCount;
+        $("ordersSum").textContent = fmt(data.ordersAmount);
+        $("cancels").textContent = data.cancelsCount;
+        $("cancelsSum").textContent = fmt(data.cancelsAmount);
+        $("buyoutsSum").textContent = "+" + fmt(data.buyouts_sum_cents);
+        $("returnsSum").textContent = "-" + fmt(data.returns_sum_cents);
+        $("balance").textContent = fmt(data.balance_cents);
+        
+        const delta = data.balance_cents - data.balance_opening_cents;
+        if(delta !== 0) {
+            $("balanceDelta").textContent = (delta > 0 ? "+" : "") + fmt(delta) + " за сегодня";
+            $("balanceDelta").style.color = delta > 0 ? "var(--success)" : "var(--danger)";
+        }
+
         $("updatedAt").textContent = "Обновлено: " + new Date().toLocaleTimeString();
         $("status").textContent = "готово";
-      } catch(e) { $("status").textContent = "ошибка API"; }
+      } catch(e) { $("status").textContent = "ошибка"; }
     }
 
     $("refreshBtn").onclick = load;
-    $("keysBtn").onclick = () => $("modalBg").style.display="flex";
-    $("closeBtn").onclick = () => $("modalBg").style.display="none";
-    $("saveBtn").onclick = () => {
-      localStorage.setItem("ozon_clientId", $("clientId").value);
-      localStorage.setItem("ozon_apiKey", $("apiKey").value);
-      $("modalBg").style.display="none";
-      load();
+    $("keysBtn").onclick = () => {
+        const c = prompt("Client ID", localStorage.getItem("ozon_clientId") || "");
+        const k = prompt("API Key", localStorage.getItem("ozon_apiKey") || "");
+        if(c && k) {
+            localStorage.setItem("ozon_clientId", c);
+            localStorage.setItem("ozon_apiKey", k);
+            load();
+        }
     };
     load();
   </script>
