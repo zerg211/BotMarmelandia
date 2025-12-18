@@ -27,10 +27,10 @@
 
       /* ✅ добавили top-gap */
       padding:
-        calc(var(--top-gap) + env(safe-area-inset-top) + 16px)
-        calc(16px + env(safe-area-inset-right))
-        calc(16px + env(safe-area-inset-bottom))
-        calc(16px + env(safe-area-inset-left));
+        (var(--top-gap) + env(safe-area-inset-top) + 16px)
+        (16px + env(safe-area-inset-right))
+        (16px + env(safe-area-inset-bottom))
+        (16px + env(safe-area-inset-left));
 
       display:flex;flex-direction:column;gap:14px;overflow-y:auto;
     }
@@ -141,33 +141,33 @@
     .tab-content{display:none;flex-direction:column;gap:14px;}
     .tab-content.active{display:flex;}
 
-    /* ozon calc */
+    /* ozon  */
     .section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;}
     .title.sm{font-size:18px;}
-    .calc{display:flex;flex-direction:column;gap:12px;}
-    .calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;}
-    .calc-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:12px;}
-    .calc .field-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
-    .calc label{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:6px;}
-    .calc input{width:100%;margin-top:6px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);outline:none;}
-    .calc input:focus{border-color:rgba(77,163,255,.6);}
-    .calc select{width:100%;margin-top:6px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);outline:none;}
-    .calc .fieldset{display:flex;flex-direction:column;gap:8px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:rgba(255,255,255,.02);}
-    .calc .fieldset legend{font-size:11px;color:var(--muted);padding:0 4px;}
-    .calc .tags{display:flex;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--muted);}
-    .calc .tag{padding:4px 8px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.04);}
-    .calc-hint{font-size:12px;color:var(--muted);line-height:1.4;}
-    .calc-note{font-size:11px;color:var(--muted);line-height:1.4;background:rgba(255,255,255,.03);border:1px dashed var(--line);border-radius:12px;padding:8px 10px;}
-    .calc-summary{display:flex;flex-direction:column;gap:10px;}
-    .calc-metric{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid var(--line);}
-    .calc-metric .k{color:var(--muted);font-size:12px;}
-    .calc-metric .v{font-weight:900;}
-    .calc-metric .v.pos{color:var(--success);}
-    .calc-metric .v.neg{color:var(--danger);}
-    .calc-badge{font-size:11px;padding:3px 8px;border-radius:999px;background:rgba(77,163,255,.14);color:var(--accent);}
-    .calc-breakdown{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;font-size:12px;color:var(--muted);}
-    .calc-breakdown .line{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.02);border:1px solid var(--line);}
-    .calc-breakdown .line .v{font-weight:800;color:var(--text);}
+    .{display:flex;flex-direction:column;gap:12px;}
+    .-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;}
+    .-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:12px;}
+    . .field-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+    . label{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:6px;}
+    . input{width:100%;margin-top:6px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);outline:none;}
+    . input:focus{border-color:rgba(77,163,255,.6);}
+    . select{width:100%;margin-top:6px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);outline:none;}
+    . .fieldset{display:flex;flex-direction:column;gap:8px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:rgba(255,255,255,.02);}
+    . .fieldset legend{font-size:11px;color:var(--muted);padding:0 4px;}
+    . .tags{display:flex;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--muted);}
+    . .tag{padding:4px 8px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.04);}
+    .-hint{font-size:12px;color:var(--muted);line-height:1.4;}
+    .-note{font-size:11px;color:var(--muted);line-height:1.4;background:rgba(255,255,255,.03);border:1px dashed var(--line);border-radius:12px;padding:8px 10px;}
+    .-summary{display:flex;flex-direction:column;gap:10px;}
+    .-metric{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid var(--line);}
+    .-metric .k{color:var(--muted);font-size:12px;}
+    .-metric .v{font-weight:900;}
+    .-metric .v.pos{color:var(--success);}
+    .-metric .v.neg{color:var(--danger);}
+    .-badge{font-size:11px;padding:3px 8px;border-radius:999px;background:rgba(77,163,255,.14);color:var(--accent);}
+    .-breakdown{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;font-size:12px;color:var(--muted);}
+    .-breakdown .line{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.02);border:1px solid var(--line);}
+    .-breakdown .line .v{font-weight:800;color:var(--text);}
     .svd-row{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted);}
     .svd-row input[type="range"]{flex:1;accent-color:var(--accent);}
     .toggle-row{display:flex;gap:8px;flex-wrap:wrap;}
@@ -206,7 +206,7 @@
 
     <div class="tabs">
       <button class="tab-btn active" data-tab="dashboard">Дашборд</button>
-      <button class="tab-btn" data-tab="calc">Калькулятор Ozon</button>
+      
     </div>
 
     <div id="dashboardTab" class="tab-content active">
@@ -245,19 +245,14 @@
       </div>
     </div>
 
-    <div id="calcTab" class="tab-content">
-      <div class="calc">
-        <div class="section-head">
-          <div>
-            <div class="title sm">Калькулятор Ozon</div>
+    
             <div class="sub">Повторяет UX ecomunit: автоподбор категории и комиссий, логистика FBO/FBS с ползунком СВД.</div>
           </div>
-          <span class="calc-badge">⚡ обновлён</span>
+          
         </div>
 
         <div class="hero-row">
-          <div class="calc-card mode-card">
-            <div class="label" style="color:var(--text);font-weight:800;">Схема работы</div>
+          
             <div class="pill-radio" role="group" aria-label="Модель исполнения" style="gap:10px;">
               <button type="button" class="fulfillment-btn active" data-mode="fbo">FBO · склад Ozon</button>
               <button type="button" class="fulfillment-btn" data-mode="fbs">FBS · склад продавца</button>
@@ -269,106 +264,89 @@
             </div>
             <div class="svd-row">
               <span>0</span>
-              <input id="calcSvd" type="range" min="0" max="100" value="50" />
-              <span>100</span>
+              
             </div>
             <div class="inline-note">Чем выше СВД, тем дороже логистика. Ближе к логике калькулятора Ozon: учитываем обратную доставку через процент выкупа.</div>
             <div class="field-row">
-              <label>Процент выкупа, %<input id="calcBuyout" type="number" inputmode="decimal" placeholder="95" value="95" /></label>
-              <label>Скидка, %<input id="calcDiscount" type="number" inputmode="decimal" placeholder="10" value="0" /></label>
+              <label>Процент выкупа, %
+              <label>Скидка, %
             </div>
           </div>
 
-          <div class="calc-card">
-            <div class="fieldset">
-              <legend>Категория и тип товара</legend>
+          
               <label>Категория или тип, как в кабинете Ozon
                 <div class="typeahead">
-                  <input id="calcCategory" type="text" placeholder="например: обогрев" autocomplete="off" list="categoryList" />
-                  <div class="typeahead-list" id="categorySuggest"></div>
+                  
                 </div>
               </label>
               <datalist id="categoryList"></datalist>
               <div class="inline-note" id="categoryHint">Начните вводить название — покажем ближайшую категорию, а комиссию подставим автоматически.</div>
               <div class="err" id="categoryError" style="display:none;"></div>
               <label>Комиссия маркетплейса, %
-                <input id="calcCommission" type="number" inputmode="decimal" placeholder="15" />
-              </label>
+                
             </div>
             <div class="fieldset">
               <legend>Финансы</legend>
               <div class="field-row">
-                <label>Цена продажи, ₽<input id="calcPrice" type="number" inputmode="decimal" placeholder="1499" /></label>
-                <label>Себестоимость, ₽<input id="calcCost" type="number" inputmode="decimal" placeholder="650" /></label>
+                <label>Цена продажи, ₽
+                <label>Себестоимость, ₽
               </div>
               <div class="field-row">
-                <label>Реклама, % от цены<input id="calcAds" type="number" inputmode="decimal" placeholder="8" value="0" /></label>
-                <label>Доп. расходы, ₽<input id="calcOther" type="number" inputmode="decimal" placeholder="35" value="0" /></label>
+                <label>Реклама, % от цены
+                <label>Доп. расходы, ₽
               </div>
             </div>
           </div>
         </div>
 
-        <div class="calc-grid">
-          <div class="calc-card">
-            <div class="fieldset">
-              <legend>Логистика и габариты</legend>
+        
               <div class="toggle-row">
                 <button type="button" class="toggle-btn active" id="dimsTab">Габариты</button>
                 <button type="button" class="toggle-btn" id="volumeTab">Объём (л) + вес</button>
               </div>
               <div id="dimsInputs">
                 <div class="field-row">
-                  <label>Длина, см<input id="calcLen" type="number" inputmode="decimal" placeholder="20" /></label>
-                  <label>Ширина, см<input id="calcWidth" type="number" inputmode="decimal" placeholder="15" /></label>
+                  <label>Длина, см
+                  <label>Ширина, см
                 </div>
                 <div class="field-row">
-                  <label>Высота, см<input id="calcHeight" type="number" inputmode="decimal" placeholder="10" /></label>
-                  <label>Вес, кг<input id="calcWeight" type="number" inputmode="decimal" placeholder="0.9" /></label>
+                  <label>Высота, см
+                  <label>Вес, кг
                 </div>
               </div>
               <div id="volumeInputs" style="display:none;">
                 <div class="field-row">
-                  <label>Объём, л<input id="calcVolume" type="number" inputmode="decimal" placeholder="3" /></label>
-                  <label>Вес, кг<input id="calcWeightAlt" type="number" inputmode="decimal" placeholder="0.9" /></label>
+                  <label>Объём, л
+                  <label>Вес, кг
                 </div>
               </div>
               <div class="tags" id="logisticsMeta"></div>
-              <div class="calc-note">Учёт как в примере Ozon: берём больший из фактического и объёмного веса, тариф по FBO/FBS и корректировку по СВД. Возвраты считаем по проценту выкупа.</div>
+              
             </div>
 
-            <div class="calc-hint">Введите цену, скидку и себестоимость. Выберите категорию — комиссия подтянется автоматически. Логистика считается как на Ozon: по габаритам/весу, модели FBO/FBS, СВД и проценту выкупа с учётом обратной доставки.</div>
+            
           </div>
 
-          <div class="calc-card">
-            <div class="calc-summary">
-              <div class="calc-metric">
-                <div class="k">Цена со скидкой</div>
-                <div class="v" id="calcNetPrice">—</div>
+          
+                
               </div>
-              <div class="calc-metric">
-                <div class="k">Комиссия маркетплейса</div>
-                <div class="v" id="calcCommissionAmt">—</div>
+              
+                
               </div>
-              <div class="calc-metric">
-                <div class="k">Реклама</div>
-                <div class="v" id="calcAdsAmt">—</div>
+              
+                
               </div>
             </div>
-            <div class="calc-breakdown">
-              <div class="line"><span>Себестоимость</span><span class="v" id="calcCostLine">—</span></div>
-              <div class="line"><span>Логистика</span><span class="v" id="calcLogisticsLine">—</span></div>
-              <div class="line"><span>Прочие</span><span class="v" id="calcOtherLine">—</span></div>
-              <div class="line"><span>Итого расходы</span><span class="v" id="calcCosts">—</span></div>
             </div>
-            <div class="calc-summary">
-              <div class="calc-metric">
-                <div class="k">Прибыль с единицы</div>
-                <div class="v" id="calcProfit">—</div>
+              <div class="line"><span>Логистика</span></div>
+              <div class="line"><span>Прочие</span></div>
+              <div class="line"><span>Итого расходы</span></div>
+            </div>
+            
+                
               </div>
-              <div class="calc-metric">
-                <div class="k">Маржинальность</div>
-                <div class="v" id="calcMargin">—</div>
+              
+                
               </div>
             </div>
           </div>
@@ -468,33 +446,33 @@
     const apiKeyEl = $("apiKey");
     const modalErr = $("modalErr");
 
-    const calcInputs = {
-      price: $("calcPrice"),
-      cost: $("calcCost"),
-      discount: $("calcDiscount"),
-      commission: $("calcCommission"),
-      ads: $("calcAds"),
-      other: $("calcOther"),
-      len: $("calcLen"),
-      width: $("calcWidth"),
-      height: $("calcHeight"),
-      weight: $("calcWeight"),
-      volume: $("calcVolume"),
-      weightAlt: $("calcWeightAlt"),
-      svd: $("calcSvd"),
-      buyout: $("calcBuyout"),
-      category: $("calcCategory"),
+    const Inputs = {
+      price: $("Price"),
+      cost: $("Cost"),
+      discount: $("Discount"),
+      commission: $("Commission"),
+      ads: $("Ads"),
+      other: $("Other"),
+      len: $("Len"),
+      width: $("Width"),
+      height: $("Height"),
+      weight: $("Weight"),
+      volume: $("Volume"),
+      weightAlt: $("WeightAlt"),
+      svd: $("Svd"),
+      buyout: $("Buyout"),
+      category: $("Category"),
     };
-    const calcOutputs = {
-      netPrice: $("calcNetPrice"),
-      commissionAmt: $("calcCommissionAmt"),
-      adsAmt: $("calcAdsAmt"),
-      costs: $("calcCosts"),
-      costLine: $("calcCostLine"),
-      logisticsLine: $("calcLogisticsLine"),
-      otherLine: $("calcOtherLine"),
-      profit: $("calcProfit"),
-      margin: $("calcMargin"),
+    const Outputs = {
+      netPrice: $("NetPrice"),
+      commissionAmt: $("CommissionAmt"),
+      adsAmt: $("AdsAmt"),
+      costs: $("Costs"),
+      costLine: $("CostLine"),
+      logisticsLine: $("LogisticsLine"),
+      otherLine: $("OtherLine"),
+      profit: $("Profit"),
+      margin: $("Margin"),
     };
 
     const svdValueEl = $("svdValue");
@@ -599,15 +577,15 @@
       categoriesLoading = true;
       const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
       const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
-      const hasLocalCreds = !!(clientId && apiKey);
+      const hasLoreds = !!(clientId && apiKey);
       try {
-        categoryHintEl.textContent = hasLocalCreds
+        categoryHintEl.textContent = hasLoreds
           ? "Подтягиваем список категорий Ozon..."
           : "Пробуем загрузить категории с сервера (если ключи сохранены).";
         const resp = await fetch("/api/ozon/categories", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: hasLocalCreds ? JSON.stringify({ clientId, apiKey }) : undefined,
+          body: hasLoreds ? JSON.stringify({ clientId, apiKey }) : undefined,
         });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data?.error || resp.status);
@@ -633,61 +611,7 @@
     async function fetchCategorySuggestions(query){
       if (categoriesLoading) return;
       const q = norm(query);
-      if (!q || q.length < 2){
-        renderCategorySuggest([]);
-        return;
-      }
-
-      categoriesLoading = true;
-      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
-      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
-      const hasLocalCreds = !!(clientId && apiKey);
-      try {
-        categoryHintEl.textContent = "Ищем категорию в каталоге Ozon...";
-        const body = hasLocalCreds ? { clientId, apiKey, query: q, limit: 20 } : { query: q, limit: 20 };
-        const resp = await fetch("/api/ozon/categories/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data?.error || resp.status);
-        categories = (data?.categories || []).map((c) => ({
-          name: c.path || c.name,
-          path: c.path || c.name,
-          category_id: c.category_id,
-          keywords: (c.path || c.name || "").split(/[>/]/).map((p) => p.trim()).filter(Boolean),
-          commission: c.commission || {},
-        }));
-        categoriesLoadedFrom = data?.source || "Ozon API";
-        setCategoryOptions(categories);
-        categoryHintEl.textContent = categories.length
-          ? `Нашли ${categories.length} вариантов (источник: ${categoriesLoadedFrom}).`
-          : "Не нашли категорию в каталоге Ozon. Продолжайте печатать или уточните подкатегорию.";
-      } catch (e){
-        const msg = e?.message || e;
-        categoryHintEl.textContent = `Не удалось найти категории через Ozon API: ${msg}`;
-        setCategoryError(msg === "no_creds" ? "Нет доступа к каталогу Ozon: добавьте Client ID и Api-Key." : `Ошибка поиска: ${msg}`);
-        renderCategorySuggest([]);
-      } finally {
-        categoriesLoading = false;
-      }
-    }
-
-    function setCategoryError(msg){
-      if (!categoryErrorEl) return;
-      if (!msg){
-        categoryErrorEl.style.display = "none";
-        categoryErrorEl.textContent = "";
-        return;
-      }
-      categoryErrorEl.style.display = "block";
-      categoryErrorEl.textContent = msg;
-    }
-
-    function setCategoryOptions(list){
-      if (!categoryListEl) return;
-      categoryListEl.innerHTML = (list || []).map((c) => `<option value="${c.name}"></option>`).join("");
+      if (!q || q.length `).join("");
       renderCategorySuggest(list);
       if (list && list.length){
         setCategoryError("");
@@ -739,9 +663,9 @@
           selectedCategory.commission = selectedCategory.commission || {};
           selectedCategory.commission[fulfillmentMode] = rate;
           lastLiveCommission = rate;
-          if (!commissionDirty) calcInputs.commission.value = rate;
+          if (!commissionDirty) Inputs.commission.value = rate;
           categoryHintEl.textContent = `Комиссия из Ozon API (${data?.source || "commission"}): ${rate}%`;
-          updateCalc();
+          update();
         } else {
           categoryHintEl.textContent = "Ozon API вернул ответ без комиссии, укажите вручную.";
         }
@@ -754,71 +678,21 @@
       let volumeLiters = 0;
       let weightKg = 0;
       if (logisticsInputMode === "volume"){
-        volumeLiters = Math.max(0, parseNumber(calcInputs.volume));
-        weightKg = Math.max(0, parseNumber(calcInputs.weightAlt));
+        volumeLiters = Math.max(0, parseNumber(Inputs.volume));
+        weightKg = Math.max(0, parseNumber(Inputs.weightAlt));
       } else {
-        const len = Math.max(0, parseNumber(calcInputs.len));
-        const width = Math.max(0, parseNumber(calcInputs.width));
-        const height = Math.max(0, parseNumber(calcInputs.height));
+        const len = Math.max(0, parseNumber(Inputs.len));
+        const width = Math.max(0, parseNumber(Inputs.width));
+        const height = Math.max(0, parseNumber(Inputs.height));
         volumeLiters = (len * width * height) / 1000; // см^3 -> литры
-        weightKg = Math.max(0, parseNumber(calcInputs.weight));
+        weightKg = Math.max(0, parseNumber(Inputs.weight));
       }
       return { volumeLiters, weightKg };
     }
 
     function computeLogistics(baseTable, volumeLiters, weightKg, svdValue, buyoutPct){
       const volumetricWeight = Math.max(weightKg, volumeLiters / 5);
-      const tier = baseTable.find((t) => volumetricWeight <= t.maxWeight && volumeLiters <= t.maxVolume) || baseTable[baseTable.length - 1];
-      const svdCoeff = 0.55 + (svdValue / 100) * 0.9; // 0.55..1.45 — ближе к калькулятору Ozon
-      const forward = tier.base * svdCoeff;
-      const returnShare = Math.max(0, Math.min(1, (100 - buyoutPct) / 100));
-      const returnCoeff = 0.55 + (svdValue / 100) * 0.35;
-      const reverse = tier.base * returnCoeff * returnShare;
-      const total = forward + reverse;
-      return { forward, reverse, total, volumetricWeight, tier, svdCoeff, returnShare };
-    }
-
-    async function fetchLogisticsFromApi({ price, volumeLiters, weightKg, svdValue, buyoutPct }){
-          if (!Number.isFinite(price) || price <= 0) return;
-          if (!volumeLiters || !weightKg) return;
-      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
-      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
-      const now = Date.now();
-      if (now - logisticsFetchTs < 800) return;
-      logisticsFetchTs = now;
-      try {
-        const payload = {
-          weight: weightKg,
-          dimensions: {
-            height: Math.max(0, parseNumber(calcInputs.height)),
-            length: Math.max(0, parseNumber(calcInputs.len)),
-            width: Math.max(0, parseNumber(calcInputs.width)),
-          },
-          volume: volumeLiters / 1000,
-          price,
-          delivery_schema: fulfillmentMode.toUpperCase(),
-          delivery_time: svdValue,
-          buyout_percent: buyoutPct,
-        };
-        const body = clientId && apiKey ? { clientId, apiKey, payload } : { payload };
-        const resp = await fetch("/api/ozon/logistics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data?.error || resp.status);
-        const res = data?.result?.delivery || data?.result || data;
-        const total = Number(res?.total || res?.price || res?.amount || 0);
-        if (Number.isFinite(total) && total > 0){
-          lastLogisticsQuote = { total, raw: res };
-          setLogisticsMeta({
-            volumeLiters,
-            volumetricWeight: weightKg,
-            tier: { base: total, maxWeight: weightKg, maxVolume: volumeLiters },
-            svdCoeff: 1,
-            returnShare: buyoutPct / 100,
-          });
-          updateCalc();
-        }
-      } catch (e){
-        logisticsMeta.innerHTML = `<span class="tag">Ozon API логистика: ${e.message || e}</span>`;
+      const tier = baseTable.find((t) => volumetricWeight `;
       }
     }
 
@@ -840,7 +714,7 @@
 
     function updateModeMeta(){
       if (!modeMetaEl) return;
-      const svd = calcInputs.svd?.value || "0";
+      const svd = Inputs.svd?.value || "0";
       const desc = fulfillmentMode === "fbo" ? "FBO: завоз на склад Ozon, ниже тарифы, нужна отгрузка заранее." : "FBS: со склада продавца, тариф выше при долгом СВД, но гибче отгрузка.";
       modeMetaEl.innerHTML = [
         `<span class="pill">Модель: ${fulfillmentMode.toUpperCase()}</span>`,
@@ -854,13 +728,13 @@
       if (cat){
         const rate = commissionForMode(cat);
         if (rate !== null && !commissionDirty){
-          calcInputs.commission.value = rate;
+          Inputs.commission.value = rate;
         }
         categoryHintEl.textContent = rate !== null
           ? `Нашли: ${cat.name}. Комиссия для ${fulfillmentMode.toUpperCase()}: ${rate}%`
           : `Категория: ${cat.name}. Укажите комиссию вручную.`;
       } else {
-        if (!commissionDirty) calcInputs.commission.value = "";
+        if (!commissionDirty) Inputs.commission.value = "";
         categoryHintEl.textContent = "Не нашли категорию. Попробуйте точнее написать название или подкатегорию.";
       }
     }
@@ -869,24 +743,24 @@
       // фиксируем выбор категории и сразу подставляем "стандартную" комиссию из дерева категорий
       commissionDirty = false;
       lastLiveCommission = null;
-      if (calcInputs.category && cat?.name){
-        calcInputs.category.value = cat.name;
+      if (Inputs.category && cat?.name){
+        Inputs.category.value = cat.name;
       }
       renderCategorySuggest([]);
       applyCategory(cat); // внутри applyCategory комиссия проставляется из cat.commission
-      updateCalc();
+      update();
     }
 
     function handleCategoryInput(){
-      const query = calcInputs.category?.value || "";
+      const query = Inputs.category?.value || "";
       if (!query.trim()){
         selectedCategory = null;
         setCategoryOptions([]);
         renderCategorySuggest([]);
         setCategoryError("");
-        if (!commissionDirty) calcInputs.commission.value = "";
+        if (!commissionDirty) Inputs.commission.value = "";
         categoryHintEl.textContent = "Начните вводить категорию так, как в кабинете Ozon.";
-        updateCalc();
+        update();
         return;
       }
 
@@ -904,13 +778,13 @@
       });
       const rate = commissionForMode(selectedCategory);
       if (rate !== null && !commissionDirty){
-        calcInputs.commission.value = rate;
+        Inputs.commission.value = rate;
         if (selectedCategory){
           categoryHintEl.textContent = `Категория: ${selectedCategory.name}. Комиссия ${mode.toUpperCase()}: ${rate}%`;
         }
       }
       updateModeMeta();
-      updateCalc();
+      update();
     }
 
     function setLogisticsMode(mode){
@@ -919,174 +793,12 @@
       volumeTab?.classList.toggle('active', mode === "volume");
       if (dimsInputs) dimsInputs.style.display = mode === "dims" ? "block" : "none";
       if (volumeInputs) volumeInputs.style.display = mode === "volume" ? "block" : "none";
-      updateCalc();
+      update();
     }
 
-    function setCalcValue(el, value, { isPercent = false } = {}){
+    function setValue(el, value, { isPercent = false } = {}){
       if (!el) return;
-      const cls = value > 0 ? "pos" : (value < 0 ? "neg" : "");
-      el.className = `v ${cls}`.trim();
-      if (value === null || value === undefined || !Number.isFinite(value)) {
-        el.textContent = "—";
-        return;
-      }
-      if (isPercent) {
-        el.textContent = `${value.toFixed(1)} %`;
-      } else {
-        el.textContent = fmtRub(value);
-      }
-    }
-
-    function updateCalc(){
-      const price = Math.max(0, parseNumber(calcInputs.price));
-      const discount = Math.max(0, parseNumber(calcInputs.discount));
-      const cost = Math.max(0, parseNumber(calcInputs.cost));
-      const commissionPct = Math.max(0, parseNumber(calcInputs.commission));
-      const adsPct = Math.max(0, parseNumber(calcInputs.ads));
-      const other = Math.max(0, parseNumber(calcInputs.other));
-      const svdVal = Math.max(0, Math.min(100, parseNumber(calcInputs.svd)));
-      const buyoutPct = Math.max(0, Math.min(100, parseNumber(calcInputs.buyout)));
-
-      const { volumeLiters, weightKg } = computeVolumeAndWeight();
-      const table = fulfillmentBase[fulfillmentMode] || fulfillmentBase.fbo;
-      const logisticsInfo = computeLogistics(table, volumeLiters, weightKg, svdVal, buyoutPct);
-      let logistics = lastLogisticsQuote?.total || logisticsInfo.total;
-      if (!lastLogisticsQuote) setLogisticsMeta({ ...logisticsInfo, volumeLiters, svdValue: svdVal });
-
-      const discountFactor = Math.max(0, 1 - discount / 100);
-      const netPrice = price * discountFactor;
-      const commissionAmt = netPrice * (commissionPct / 100);
-      const adsAmt = netPrice * (adsPct / 100);
-
-      if (!lastLogisticsQuote && weightKg && volumeLiters){
-        fetchLogisticsFromApi({ price: netPrice || price || 0, volumeLiters, weightKg, svdValue: svdVal, buyoutPct });
-      }
-
-      const totalCosts = cost + logistics + other + commissionAmt + adsAmt;
-      const profit = netPrice - totalCosts;
-      const marginPct = netPrice > 0 ? (profit / netPrice) * 100 : 0;
-
-      const variablePct = (commissionPct + adsPct) / 100;
-      const fixedCosts = cost + logistics + other;
-
-      setCalcValue(calcOutputs.netPrice, netPrice);
-      setCalcValue(calcOutputs.commissionAmt, commissionAmt);
-      setCalcValue(calcOutputs.adsAmt, adsAmt);
-      setCalcValue(calcOutputs.costLine, cost);
-      setCalcValue(calcOutputs.logisticsLine, logistics);
-      setCalcValue(calcOutputs.otherLine, other);
-      setCalcValue(calcOutputs.costs, totalCosts);
-      setCalcValue(calcOutputs.profit, profit);
-      setCalcValue(calcOutputs.margin, marginPct, { isPercent: true });
-    }
-
-    Object.values(calcInputs).forEach((el) => {
-      el?.addEventListener("input", updateCalc);
-    });
-    calcInputs.commission?.addEventListener("input", () => { commissionDirty = true; lastLiveCommission = null; });
-    calcInputs.category?.addEventListener("input", handleCategoryInput);
-    calcInputs.category?.addEventListener("change", handleCategoryInput);
-    categorySuggestEl?.addEventListener("click", (e) => {
-      const item = e.target.closest(".typeahead-item");
-      if (!item) return;
-      const id = item.getAttribute("data-id");
-      const cat = categories.find((c) => String(c.category_id) === String(id));
-      if (cat) chooseCategory(cat);
-    });
-    calcInputs.svd?.addEventListener("input", () => {
-      svdValueEl.textContent = calcInputs.svd.value || "0";
-      updateModeMeta();
-      updateCalc();
-    });
-    fulfillmentButtons.forEach((btn) => btn.addEventListener("click", () => setFulfillment(btn.dataset.mode)));
-    dimsTab?.addEventListener("click", () => setLogisticsMode("dims"));
-    volumeTab?.addEventListener("click", () => setLogisticsMode("volume"));
-
-    setCategoryOptions([]);
-    fetchCategoriesFromApi();
-    setFulfillment("fbo");
-    setLogisticsMode("dims");
-    svdValueEl.textContent = calcInputs.svd?.value || "0";
-    updateModeMeta();
-    calcInputs.category?.addEventListener("focus", () => { if (!categories.length) fetchCategoriesFromApi(); });
-    handleCategoryInput();
-    updateCalc();
-
-    function fmtOpWhen(iso, todayLocal){
-      if (!iso) return "";
-      // всегда показываем время в Europe/Moscow, независимо от таймзоны устройства
-      const d = new Date(iso);
-
-      const parts = new Intl.DateTimeFormat("ru-RU", {
-        timeZone: "Europe/Moscow",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-      }).formatToParts(d);
-
-      const get = (t)=>parts.find(p=>p.type===t)?.value || "";
-      const dd = get("day");
-      const mo = get("month");
-      const yy = get("year");
-      const hh = get("hour");
-      const mm = get("minute");
-
-      const mskDateStr = `${yy}-${mo}-${dd}`;
-
-      if (mskDateStr === todayLocal) return `${hh}:${mm}`;
-      return `${dd}.${mo}.${yy} ${hh}:${mm}`;
-    }
-    function setBalError(msg){
-      if (!msg){
-        balErr.style.display = "none";
-        balErr.textContent = "";
-      } else {
-        balErr.style.display = "block";
-        balErr.textContent = msg;
-      }
-    }
-
-
-    function openModal(){
-      modalErr.style.display = "none";
-      clientIdEl.value = localStorage.getItem("ozon_clientId") || "";
-      apiKeyEl.value = localStorage.getItem("ozon_apiKey") || "";
-      modalBg.style.display = "flex";
-      applyFullscreen();
-    }
-    function closeModal(){ modalBg.style.display = "none"; }
-
-
-    function openBalModal(){
-      const clientId = (localStorage.getItem("ozon_clientId") || "").trim();
-      const apiKey = (localStorage.getItem("ozon_apiKey") || "").trim();
-      if (!clientId || !apiKey){
-        setStatus("нужны ключи", true);
-        openModal();
-        return;
-      }
-
-      balModalBg.style.display = "flex";
-      setBalError("");
-      balMeta.textContent = "Загрузка…";
-      balOps.innerHTML = "";
-      applyFullscreen();
-
-      (async () => {
-        try{
-          const url = `/api/balance/ops/today?clientId=${encodeURIComponent(clientId)}&apiKey=${encodeURIComponent(apiKey)}`;
-          const r = await fetch(url);
-          const data = await r.json().catch(() => ({}));
-          if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
-
-          balMeta.textContent = data.title || "Сегодня";
-          const ops = Array.isArray(data.ops) ? data.ops : [];
-
-          if (!ops.length){
-            balOps.innerHTML = `<div class="op"><div class="op-top"><div class="op-title">Нет операций за сегодня</div><div class="op-amt">—</div></div></div>`;
+      const cls = value > 0 ? "pos" : (value <div class="op-amt">—</div></div></div>`;
             return;
           }
 
