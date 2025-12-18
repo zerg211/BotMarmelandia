@@ -378,6 +378,7 @@
     let selectedCategory = null;
     let searchTimer = null;
     let categoriesReady = false;
+    let allCategories = [];
 
     const rubFormatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -481,6 +482,35 @@
       }
     }
 
+    function localCategoryScore(cat, qTokens, joined){
+      const hay = [cat.name, cat.path, ...(cat.keywords || [])]
+        .map((s) => String(s || "").toLowerCase())
+        .filter(Boolean);
+      let score = 0;
+      hay.forEach((h) => {
+        if (h === joined) score = Math.max(score, 140);
+        else if (h.startsWith(joined)) score = Math.max(score, 120);
+        else if (h.includes(joined)) score = Math.max(score, 100);
+        qTokens.forEach((t) => {
+          if (t.length > 2 && h.includes(t)) score = Math.max(score, 80);
+        });
+      });
+      return score;
+    }
+
+    function localSearchCategories(query, limit = 12){
+      const q = String(query || "").toLowerCase().trim();
+      if (!q || q.length < 2 || !allCategories.length) return [];
+      const qTokens = q.split(/\s+/).filter(Boolean);
+      const joined = qTokens.join(" ");
+      return allCategories
+        .map((cat) => ({ cat, score: localCategoryScore(cat, qTokens, joined) }))
+        .filter((s) => s.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit)
+        .map((s) => s.cat);
+    }
+
     function renderSuggestions(items){
       if (!categoryList) return;
       if (!items?.length){
@@ -524,7 +554,10 @@
         });
         const data = await r.json().catch(() => ({}));
         if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
-        categoriesReady = true;
+        if (Array.isArray(data.categories) && data.categories.length){
+          allCategories = data.categories;
+        }
+        categoriesReady = allCategories.length > 0;
         setCalcStatus("актуально");
         return true;
       } catch (e){
@@ -548,6 +581,13 @@
       const ready = await ensureCategories();
       if (!ready) return;
 
+      const local = localSearchCategories(query, 12);
+      if (local.length){
+        renderSuggestions(local);
+        setCalcStatus("актуально");
+        return;
+      }
+
       setCalcStatus("Поиск категорий…");
       try{
         const r = await fetch("/api/ozon/categories/search", {
@@ -557,7 +597,12 @@
         });
         const data = await r.json().catch(() => ({}));
         if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
-        renderSuggestions(Array.isArray(data.categories) ? data.categories : []);
+        const serverItems = Array.isArray(data.categories) ? data.categories : [];
+        if (!allCategories.length && Array.isArray(data.categories)){
+          allCategories = data.categories;
+        }
+        const suggestions = serverItems.length ? serverItems : localSearchCategories(query, 12);
+        renderSuggestions(suggestions);
         setCalcStatus("актуально");
       } catch (e){
         setCalcStatus("ошибка", true);
