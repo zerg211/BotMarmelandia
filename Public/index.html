@@ -377,6 +377,7 @@
 
     let selectedCategory = null;
     let searchTimer = null;
+    let categoriesReady = false;
 
     const rubFormatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -406,6 +407,7 @@
     function switchTab(tab){
       tabButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tab));
       tabContents.forEach((c) => c.classList.toggle("active", c.id === `tab-${tab}`));
+      if (tab === "calc") ensureCategories();
       applyFullscreen();
     }
 
@@ -482,7 +484,8 @@
     function renderSuggestions(items){
       if (!categoryList) return;
       if (!items?.length){
-        clearSuggestions();
+        categoryList.innerHTML = `<div class="typeahead-item" style="cursor:default;">Совпадений нет</div>`;
+        categoryList.style.display = "block";
         return;
       }
 
@@ -508,6 +511,30 @@
       });
     }
 
+    async function ensureCategories(){
+      if (categoriesReady) return true;
+      const creds = ensureCredsOrPrompt();
+      if (!creds) return false;
+      setCalcStatus("Обновляем категории…");
+      try{
+        const r = await fetch("/api/ozon/categories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clientId: creds.clientId, apiKey: creds.apiKey }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+        categoriesReady = true;
+        setCalcStatus("актуально");
+        return true;
+      } catch (e){
+        setCalcStatus("ошибка", true);
+        commissionErr.textContent = e.message || e;
+        commissionErr.style.display = "block";
+        return false;
+      }
+    }
+
     async function fetchCategories(query){
       if (!categoryInput) return;
       if (!query || query.trim().length < 2){
@@ -517,6 +544,9 @@
 
       const creds = ensureCredsOrPrompt();
       if (!creds) return;
+
+      const ready = await ensureCategories();
+      if (!ready) return;
 
       setCalcStatus("Поиск категорий…");
       try{
@@ -576,6 +606,7 @@
       });
 
       categoryInput.addEventListener("focus", () => {
+        ensureCategories();
         if (categoryList?.children?.length) categoryList.style.display = "block";
       });
     }
