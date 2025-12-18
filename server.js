@@ -864,11 +864,8 @@ app.post("/api/ozon/categories/search", async (req, res) => {
 });
 
 app.post("/api/ozon/commission", async (req, res) => {
-  // ВАЖНО: для твоей логики комиссия фиксированная по категории.
-  // Этот endpoint возвращает % комиссии из categoryCache (seed из ozon-category-fallback.json + подмешивание в API дерево).
   try {
     loadCategoryCacheFromDisk();
-    seedCategoryCacheFromFallback();
 
     const payload = req.body?.payload || req.body || {};
     const item = Array.isArray(payload?.items) ? payload.items[0] : (payload?.item || payload || null);
@@ -876,7 +873,6 @@ app.post("/api/ozon/commission", async (req, res) => {
     const categoryIdRaw = item?.category_id ?? item?.categoryId ?? payload?.category_id ?? payload?.categoryId;
     if (!categoryIdRaw) return res.status(400).json({ error: "missing_category_id" });
 
-    // fbo/fbs: берём из delivery_schema если он есть, иначе из query/body, иначе fbo
     const schemaRaw =
       item?.delivery_schema ??
       payload?.delivery_schema ??
@@ -885,31 +881,42 @@ app.post("/api/ozon/commission", async (req, res) => {
       "fbo";
     const schema = String(schemaRaw).toLowerCase().includes("fbs") ? "fbs" : "fbo";
 
-    // если кэша нет и есть ключи — попробуем обновить дерево (это не обязательно, но полезно)
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
-    if ((!categoryCache.list.length || categoryCache.source === "fallback") && resolved?.clientId && resolved?.apiKey) {
-      try { await ensureCategoryCache(resolved); } catch (_) {}
-    }
+    if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
 
-    const id = String(categoryIdRaw);
-    const cat = categoryCache.list.find((c) => String(c.category_id) === id);
+    const price = Number(payload?.price ?? req.body?.price ?? 1000);
+    const safePrice = Number.isFinite(price) && price > 0 ? price : 1000;
+    const commissionPayload = Array.isArray(payload?.items) && payload.items.length
+      ? payload
+      : { items: [{ category_id: Number(categoryIdRaw), price: safePrice, delivery_schema: schema.toUpperCase() }] };
 
-    const rate = Number(cat?.commission?.[schema] ?? cat?.commission?.rate ?? cat?.commission ?? NaN);
-    if (!Number.isFinite(rate) || rate <= 0) {
-      return res.status(404).json({
-        error: "commission_not_found",
-        category_id: id,
-        schema,
-        hint: "Добавь комиссию в ozon-category-fallback.json для этого category_id.",
-      });
-    }
+    const data = await ozonPost(OZON_COMMISSION_PATH, { clientId: resolved.clientId, apiKey: resolved.apiKey, body: commissionPayload });
+    const itemsArr = Array.isArray(data?.result?.items) ? data.result.items : Array.isArray(data?.result) ? data.result : (Array.isArray(data?.items) ? data.items : []);
+    const first = Array.isArray(itemsArr) && itemsArr.length ? itemsArr[0] : null;
+
+    const pickRate = (obj) => {
+      if (!obj) return NaN;
+      const direct = Number(obj.rate ?? obj.percent ?? obj.value ?? obj.commission);
+      if (Number.isFinite(direct)) return direct;
+      const fromCommission = Number(obj.commission?.percent ?? obj.commission?.value ?? obj.commission?.rate);
+      if (Number.isFinite(fromCommission)) return fromCommission;
+      if (Array.isArray(obj.commissions) && obj.commissions.length) {
+        const c = obj.commissions[0];
+        const nested = Number(c?.percent ?? c?.value ?? c?.rate);
+        if (Number.isFinite(nested)) return nested;
+      }
+      return NaN;
+    };
+
+    const rate = pickRate(first);
+    if (!Number.isFinite(rate) || rate <= 0) return res.status(404).json({ error: "commission_not_found", category_id: String(categoryIdRaw) });
 
     return res.json({
-      source: "category_cache",
-      category_id: id,
+      source: "ozon_api",
+      category_id: String(categoryIdRaw),
       schema,
-      rate, // % комиссии
+      rate,
     });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
@@ -1577,4 +1584,4 @@ app.post("/telegram-webhook", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`✅ Server started on :${PORT}`));
+app.listen(PORT, "0.0.0.0", () => console.log(`✅ Server started on :${PORT}`));
