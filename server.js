@@ -851,7 +851,13 @@ app.post("/api/ozon/categories/search", async (req, res) => {
       await ensureCategoryCache(resolved);
     }
 
-    const matches = searchCategories(query, { limit });
+    let matches = searchCategories(query, { limit });
+
+    if ((!matches || !matches.length) && resolved?.clientId && resolved?.apiKey) {
+      // Попробуем принудительно обновить дерево категорий (например, если кэш пустой или устаревший)
+      await ensureCategoryCache(resolved);
+      matches = searchCategories(query, { limit });
+    }
     return res.json({
       source: categoryCache.source,
       total: categoryCache.list.length,
