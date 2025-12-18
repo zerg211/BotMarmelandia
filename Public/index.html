@@ -482,6 +482,12 @@
       }
     }
 
+    function renderSuggestionMessage(text){
+      if (!categoryList) return;
+      categoryList.innerHTML = `<div class="typeahead-item" style="cursor:default;">${text}</div>`;
+      categoryList.style.display = "block";
+    }
+
     function localCategoryScore(cat, qTokens, joined){
       const hay = [cat.name, cat.path, ...(cat.keywords || [])]
         .map((s) => String(s || "").toLowerCase())
@@ -513,11 +519,7 @@
 
     function renderSuggestions(items){
       if (!categoryList) return;
-      if (!items?.length){
-        categoryList.innerHTML = `<div class="typeahead-item" style="cursor:default;">Совпадений нет</div>`;
-        categoryList.style.display = "block";
-        return;
-      }
+      if (!items?.length) return renderSuggestionMessage("Совпадений нет");
 
       categoryList.innerHTML = items.map((c) => {
         const title = (c.path || c.name || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -578,14 +580,12 @@
       const creds = ensureCredsOrPrompt();
       if (!creds) return;
 
-      const ready = await ensureCategories();
-      if (!ready) return;
+      await ensureCategories();
 
       const local = localSearchCategories(query, 12);
       if (local.length){
         renderSuggestions(local);
         setCalcStatus("актуально");
-        return;
       }
 
       setCalcStatus("Поиск категорий…");
@@ -598,16 +598,21 @@
         const data = await r.json().catch(() => ({}));
         if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
         const serverItems = Array.isArray(data.categories) ? data.categories : [];
-        if (!allCategories.length && Array.isArray(data.categories)){
-          allCategories = data.categories;
+        if (serverItems.length){
+          allCategories = allCategories.length ? allCategories : serverItems;
+          renderSuggestions(serverItems);
+        } else if (local.length){
+          renderSuggestions(local);
+        } else {
+          renderSuggestionMessage("Совпадений нет");
         }
-        const suggestions = serverItems.length ? serverItems : localSearchCategories(query, 12);
-        renderSuggestions(suggestions);
         setCalcStatus("актуально");
       } catch (e){
         setCalcStatus("ошибка", true);
-        commissionErr.textContent = e.message || e;
+        const msg = e.message || e;
+        commissionErr.textContent = msg;
         commissionErr.style.display = "block";
+        renderSuggestionMessage(msg);
       }
     }
 
