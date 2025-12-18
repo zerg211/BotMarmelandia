@@ -3,124 +3,133 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Аналитика Ozon</title>
+  <title>Моя аналитика</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root{
       --bg:#0B0F14; --card:#121923; --text:#EAF0FF; --muted:#93A4C7;
       --accent:#4DA3FF; --danger:#FF5A6A; --success:#3CCB7F; --line: rgba(255,255,255,.08);
+      --top-gap: 44px;
     }
-    body{ margin:0; background:var(--bg); color:var(--text); font-family:sans-serif; }
-    .app{ padding: 20px; display:flex; flex-direction:column; gap:14px; }
-    .top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
-    .grid{ display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    *{box-sizing:border-box;}
+    body{ margin:0; background:var(--bg); color:var(--text); font-family:system-ui, sans-serif; }
+    .app{ padding: calc(var(--top-gap) + 16px) 16px; display:flex; flex-direction:column; gap:14px; }
+    .top{ display:flex; justify-content:space-between; align-items:flex-end; }
+    .title{ font-size:20px; font-weight:900; }
+    .badge{ font-size:11px; padding:4px 8px; border-radius:999px; background:rgba(77,163,255,.15); color:var(--accent); }
+    .grid{ display:grid; grid-template-columns: repeat(2, 1fr); gap:12px; }
     .card{ 
-      background:var(--card); border-radius:16px; padding:16px; 
-      border:1px solid var(--line); display:flex; flex-direction:column; gap:8px;
+      background:var(--card); border-radius:16px; padding:14px; border:1px solid var(--line);
+      display:flex; flex-direction:column; gap:10px; min-height:110px;
     }
+    .card.wide { grid-column: span 2; }
     .label{ font-size:12px; color:var(--muted); }
-    .value{ font-size:24px; font-weight:bold; }
-    .value.small{ font-size:18px; }
-    .footer{ margin-top:20px; display:flex; justify-content:space-between; }
-    .btn{ 
-        background:var(--accent); border:none; color:#fff; padding:10px 16px; 
-        border-radius:12px; font-weight:bold; cursor:pointer; 
-    }
-    .btn.secondary{ background:var(--line); }
-    
-    /* modal */
-    .modal-backdrop{
-      position:fixed; inset:0; background:rgba(0,0,0,.8);
-      display:none; align-items:center; justify-content:center; padding:20px;
-    }
-    .modal{ background:var(--card); padding:20px; border-radius:16px; width:100%; max-width:400px; }
-    input{ 
-        width:100%; padding:12px; margin:8px 0; border-radius:8px; 
-        border:1px solid var(--line); background:#000; color:#fff; 
-    }
+    .value{ font-size:28px; font-weight:900; }
+    .value.small{ font-size:22px; }
+    .pos{ color:var(--success); }
+    .neg{ color:var(--danger); }
+    .footer{ margin-top:auto; display:flex; justify-content:space-between; align-items:center; padding-top:20px; }
+    .btn{ border:1px solid var(--line); background:rgba(77,163,255,0.18); color:#fff; padding:10px 14px; border-radius:12px; font-weight:800; cursor:pointer;}
+    .modal-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,0.6); display:none; align-items:center; justify-content:center; padding:16px; z-index:100; }
+    .modal{ background:var(--card); width:100%; max-width:440px; border-radius:18px; padding:16px; border:1px solid var(--line); }
   </style>
 </head>
 <body>
   <div class="app">
     <div class="top">
       <div>
-        <div style="font-size:20px; font-weight:bold;">Дашборд</div>
-        <div id="date" style="font-size:12px; color:var(--muted);">Сегодня</div>
+        <div class="title">Моя аналитика</div>
+        <div id="subtitle" style="font-size:12px; color:var(--muted)">FBO · Сегодня</div>
       </div>
-      <div id="status" class="label">обновлено</div>
+      <div class="badge" id="status">готово</div>
     </div>
 
+    <!-- ТОЛЬКО ОДНА ВКЛАДКА ДАШБОРДА -->
     <div class="grid">
       <div class="card">
-        <div class="label">Заказы</div>
-        <div class="value" id="orders">0</div>
+        <div class="label">Заказы <span class="badge">шт</span></div>
+        <div class="value" id="orders">—</div>
       </div>
       <div class="card">
-        <div class="label">Сумма</div>
-        <div class="value small" id="ordersSum">0 ₽</div>
+        <div class="label">Сумма <span class="badge">₽</span></div>
+        <div class="value small" id="ordersSum">—</div>
       </div>
       <div class="card">
-        <div class="label">Отмены</div>
-        <div class="value" id="cancels">0</div>
+        <div class="label">Отмены <span class="badge danger">шт</span></div>
+        <div class="value" id="cancels">—</div>
       </div>
       <div class="card">
-        <div class="label">Баланс</div>
-        <div class="value small" id="balance">0 ₽</div>
+        <div class="label">Сумма отмен <span class="badge danger">₽</span></div>
+        <div class="value small" id="cancelsSum">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Выкупы <span class="badge">₽</span></div>
+        <div class="value small pos" id="buyoutsSum">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Возвраты <span class="badge danger">₽</span></div>
+        <div class="value small neg" id="returnsSum">—</div>
+      </div>
+      <div class="card wide" id="balanceCard" style="cursor:pointer">
+        <div class="label">Баланс кабинета <span class="badge">₽</span></div>
+        <div class="value small" id="balance">—</div>
+        <div id="balanceDelta" style="font-size:12px"></div>
       </div>
     </div>
 
     <div class="footer">
-      <button class="btn secondary" id="keysBtn">🔑 Ключи</button>
-      <button class="btn" id="refreshBtn">Обновить</button>
+      <div id="updatedAt" style="font-size:11px; color:var(--muted)">—</div>
+      <div style="display:flex; gap:8px">
+        <button class="btn" id="keysBtn" style="background:rgba(255,255,255,0.05)">🔑 Ключи</button>
+        <button class="btn" id="refreshBtn">Обновить</button>
+      </div>
     </div>
   </div>
 
+  <!-- Модалка ключей -->
   <div class="modal-backdrop" id="modalBg">
     <div class="modal">
-      <h3 style="margin-top:0">Настройки Ozon</h3>
-      <input id="clientId" placeholder="Client ID" />
-      <input id="apiKey" placeholder="API Key" />
-      <button class="btn" id="saveBtn" style="width:100%">Сохранить</button>
-      <button class="btn secondary" id="closeBtn" style="width:100%; margin-top:8px">Закрыть</button>
+      <h3 style="margin-top:0">Ключи Ozon Seller</h3>
+      <input id="clientId" placeholder="Client ID" style="width:100%; padding:12px; margin:8px 0; border-radius:8px; background:#000; border:1px solid var(--line); color:#fff">
+      <input id="apiKey" placeholder="Api-Key" style="width:100%; padding:12px; margin:8px 0; border-radius:8px; background:#000; border:1px solid var(--line); color:#fff">
+      <button class="btn" id="saveBtn" style="width:100%; margin-top:10px">Сохранить</button>
+      <button class="btn" id="closeBtn" style="width:100%; margin-top:8px; background:none">Закрыть</button>
     </div>
   </div>
 
   <script>
-    const $ = (id) => document.getElementById(id);
     const tg = window.Telegram?.WebApp;
-    if(tg) tg.expand();
+    if(tg) { tg.ready(); tg.expand(); }
+    const $ = (id) => document.getElementById(id);
 
     async function load() {
       const cId = localStorage.getItem("ozon_clientId");
       const aKey = localStorage.getItem("ozon_apiKey");
       if(!cId || !aKey) { $("modalBg").style.display="flex"; return; }
 
+      $("status").textContent = "обновление...";
       try {
-        $("status").textContent = "обновление...";
-        const r = await fetch(`/api/dashboard/today?clientId=${cId}&apiKey=${aKey}`);
+        const url = `/api/dashboard/today?clientId=${cId}&apiKey=${aKey}`;
+        const r = await fetch(url);
         const data = await r.json();
         
-        $("orders").textContent = data.ordersCount;
-        $("ordersSum").textContent = (data.ordersAmount/100).toLocaleString() + " ₽";
-        $("cancels").textContent = data.cancelsCount;
-        $("balance").textContent = (data.balance_cents/100).toLocaleString() + " ₽";
-        $("date").textContent = data.date;
-        $("status").textContent = "актуально";
-      } catch(e) {
-        $("status").textContent = "ошибка";
-      }
+        $("orders").textContent = data.ordersCount || 0;
+        $("ordersSum").textContent = (data.ordersAmount / 100).toLocaleString() + " ₽";
+        $("balance").textContent = (data.balance_cents / 100).toLocaleString() + " ₽";
+        $("updatedAt").textContent = "Обновлено: " + new Date().toLocaleTimeString();
+        $("status").textContent = "готово";
+      } catch(e) { $("status").textContent = "ошибка API"; }
     }
 
+    $("refreshBtn").onclick = load;
     $("keysBtn").onclick = () => $("modalBg").style.display="flex";
     $("closeBtn").onclick = () => $("modalBg").style.display="none";
-    $("refreshBtn").onclick = load;
     $("saveBtn").onclick = () => {
       localStorage.setItem("ozon_clientId", $("clientId").value);
       localStorage.setItem("ozon_apiKey", $("apiKey").value);
       $("modalBg").style.display="none";
       load();
     };
-
     load();
   </script>
 </body>
