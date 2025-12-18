@@ -204,51 +204,84 @@
       <div class="badge" id="status">готово</div>
     </div>
 
-    <div class="grid">
-      <div class="card">
-        <div class="label">Заказы <span class="badge">шт</span></div>
-        <div class="value" id="orders">—</div>
-      </div>
-      <div class="card">
-        <div class="label">Сумма заказов <span class="badge">₽</span></div>
-        <div class="value small" id="ordersSum">—</div>
-      </div>
-      <div class="card">
-        <div class="label">Отмены <span class="badge danger">шт</span></div>
-        <div class="value" id="cancels">—</div>
-      </div>
-      <div class="card">
-        <div class="label">Сумма отмен <span class="badge danger">₽</span></div>
-        <div class="value small" id="cancelsSum">—</div>
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="dash">Дашборд</button>
+      <button class="tab-btn" data-tab="calc">Калькулятор</button>
+    </div>
+
+    <div class="tab-content active" id="tab-dash">
+      <div class="grid">
+        <div class="card">
+          <div class="label">Заказы <span class="badge">шт</span></div>
+          <div class="value" id="orders">—</div>
+        </div>
+        <div class="card">
+          <div class="label">Сумма заказов <span class="badge">₽</span></div>
+          <div class="value small" id="ordersSum">—</div>
+        </div>
+        <div class="card">
+          <div class="label">Отмены <span class="badge danger">шт</span></div>
+          <div class="value" id="cancels">—</div>
+        </div>
+        <div class="card">
+          <div class="label">Сумма отмен <span class="badge danger">₽</span></div>
+          <div class="value small" id="cancelsSum">—</div>
+        </div>
+
+        <div class="card">
+          <div class="label">Выкупы сегодня <span class="badge">₽</span></div>
+          <div class="value small pos" id="buyoutsSum">—</div>
+        </div>
+        <div class="card">
+          <div class="label">Возвраты сегодня <span class="badge danger">₽</span></div>
+          <div class="value small neg" id="returnsSum">—</div>
+        </div>
+
+        <div class="card clickable" id="balanceCard">
+          <div class="label">Баланс кабинета <span class="badge">₽</span></div>
+          <div class="value small" id="balance">—</div>
+          <div class="delta" id="balanceDelta"></div>
+        </div>
       </div>
 
-      <div class="card">
-        <div class="label">Выкупы сегодня <span class="badge">₽</span></div>
-        <div class="value small pos" id="buyoutsSum">—</div>
-      </div>
-      <div class="card">
-        <div class="label">Возвраты сегодня <span class="badge danger">₽</span></div>
-        <div class="value small neg" id="returnsSum">—</div>
-      </div>
-
-      <div class="card" id="balanceCard">
-        <div class="label">Баланс кабинета <span class="badge">₽</span></div>
-        <div class="value small" id="balance">—</div>
-        <div class="delta" id="balanceDelta"></div>
+      <div class="footer">
+        <div id="updatedAt">Последнее обновление: —</div>
+        <div class="row" style="justify-content:flex-end;">
+          <button class="btn secondary" id="keysBtn">🔑 Ключи</button>
+          <button class="btn" id="refreshBtn">
+            <svg id="refreshIcon" width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M21 3v7h-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            Обновить
+          </button>
+        </div>
       </div>
     </div>
 
-    <div class="footer">
-      <div id="updatedAt">Последнее обновление: —</div>
-      <div class="row" style="justify-content:flex-end;">
-        <button class="btn secondary" id="keysBtn">🔑 Ключи</button>
-        <button class="btn" id="refreshBtn">
-          <svg id="refreshIcon" width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-            <path d="M21 3v7h-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          </svg>
-          Обновить
-        </button>
+    <div class="tab-content" id="tab-calc">
+      <div class="calc-card">
+        <div class="section-head">
+          <div>
+            <div class="title sm">Калькулятор комиссии</div>
+            <div class="sub">Актуальные категории и ставки напрямую из Ozon API</div>
+          </div>
+          <div class="badge" id="calcStatus">готово</div>
+        </div>
+
+        <div class="field typeahead">
+          <label>Категория товара</label>
+          <input id="categoryInput" placeholder="Начни вводить категорию" autocomplete="off" />
+          <div class="typeahead-list" id="categoryList"></div>
+        </div>
+
+        <div class="field">
+          <label>Комиссия Ozon</label>
+          <input id="commissionInput" placeholder="Выберите категорию" readonly />
+          <div class="err" id="commissionErr" style="display:none;"></div>
+        </div>
+
+        <div class="calc-note">Выберите категорию, совпадающую с вашим товаром. Мы подтянем её из каталога Ozon и покажем текущую комиссию.</div>
       </div>
     </div>
   </div>
@@ -316,6 +349,7 @@
     const updatedAtEl = $("updatedAt");
     const refreshBtn = $("refreshBtn");
     const refreshIcon = $("refreshIcon");
+    const calcStatus = $("calcStatus");
 
     const modalBg = $("modalBg");
     const balModalBg = $("balModalBg");
@@ -333,7 +367,51 @@
     const cancelBtn = $("cancelBtn");
     const saveBtn = $("saveBtn");
 
+    const tabButtons = Array.from(document.querySelectorAll(".tab-btn"));
+    const tabContents = Array.from(document.querySelectorAll(".tab-content"));
+
+    const categoryInput = $("categoryInput");
+    const categoryList = $("categoryList");
+    const commissionInput = $("commissionInput");
+    const commissionErr = $("commissionErr");
+
+    let selectedCategory = null;
+    let searchTimer = null;
+
     const rubFormatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    function setCalcStatus(text, danger=false){
+      if (!calcStatus) return;
+      calcStatus.textContent = text;
+      calcStatus.className = "badge" + (danger ? " danger" : "");
+    }
+
+    function getStoredCreds(){
+      return {
+        clientId: (localStorage.getItem("ozon_clientId") || "").trim(),
+        apiKey: (localStorage.getItem("ozon_apiKey") || "").trim(),
+      };
+    }
+
+    function ensureCredsOrPrompt(){
+      const { clientId, apiKey } = getStoredCreds();
+      if (!clientId || !apiKey){
+        setStatus("нужны ключи", true);
+        openModal();
+        return null;
+      }
+      return { clientId, apiKey };
+    }
+
+    function switchTab(tab){
+      tabButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tab));
+      tabContents.forEach((c) => c.classList.toggle("active", c.id === `tab-${tab}`));
+      applyFullscreen();
+    }
+
+    tabButtons.forEach((btn) => {
+      btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+    });
 
     function setStatus(text, danger=false){
       statusEl.textContent = text;
@@ -393,6 +471,120 @@
         balErr.textContent = msg;
       }
     }
+
+    function clearSuggestions(){
+      if (categoryList){
+        categoryList.innerHTML = "";
+        categoryList.style.display = "none";
+      }
+    }
+
+    function renderSuggestions(items){
+      if (!categoryList) return;
+      if (!items?.length){
+        clearSuggestions();
+        return;
+      }
+
+      categoryList.innerHTML = items.map((c) => {
+        const title = (c.path || c.name || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+        return `<div class="typeahead-item" data-id="${c.category_id}">
+          <div>${title}</div>
+          <div class="meta">ID ${c.category_id}</div>
+        </div>`;
+      }).join("");
+      categoryList.style.display = "block";
+
+      categoryList.querySelectorAll(".typeahead-item").forEach((el) => {
+        el.addEventListener("click", () => {
+          const id = el.getAttribute("data-id");
+          const item = items.find((c) => String(c.category_id) === id) || null;
+          if (!item) return;
+          selectedCategory = item;
+          categoryInput.value = item.path || item.name;
+          clearSuggestions();
+          fetchCommissionForCategory(item.category_id);
+        });
+      });
+    }
+
+    async function fetchCategories(query){
+      if (!categoryInput) return;
+      if (!query || query.trim().length < 2){
+        clearSuggestions();
+        return;
+      }
+
+      const creds = ensureCredsOrPrompt();
+      if (!creds) return;
+
+      setCalcStatus("Поиск категорий…");
+      try{
+        const r = await fetch("/api/ozon/categories/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query, limit: 12, clientId: creds.clientId, apiKey: creds.apiKey }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+        renderSuggestions(Array.isArray(data.categories) ? data.categories : []);
+        setCalcStatus("актуально");
+      } catch (e){
+        setCalcStatus("ошибка", true);
+        commissionErr.textContent = e.message || e;
+        commissionErr.style.display = "block";
+      }
+    }
+
+    async function fetchCommissionForCategory(categoryId){
+      const creds = ensureCredsOrPrompt();
+      if (!creds) return;
+      if (!categoryId) return;
+
+      commissionErr.style.display = "none";
+      commissionInput.value = "Загрузка…";
+      setCalcStatus("Получаем комиссию…");
+
+      try{
+        const r = await fetch("/api/ozon/commission", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ category_id: categoryId, clientId: creds.clientId, apiKey: creds.apiKey }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+        const rate = Number(data.rate ?? data.percent ?? data.commission);
+        if (!Number.isFinite(rate) || rate <= 0) throw new Error("Комиссия не найдена");
+        commissionInput.value = `${rate}%`;
+        setCalcStatus("актуально");
+      } catch (e){
+        commissionInput.value = "—";
+        setCalcStatus("ошибка", true);
+        commissionErr.textContent = e.message || e;
+        commissionErr.style.display = "block";
+      }
+    }
+
+    if (categoryInput){
+      categoryInput.addEventListener("input", (e) => {
+        const q = e.target.value;
+        selectedCategory = null;
+        commissionInput.value = "";
+        commissionErr.style.display = "none";
+        if (searchTimer) clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => fetchCategories(q), 300);
+      });
+
+      categoryInput.addEventListener("focus", () => {
+        if (categoryList?.children?.length) categoryList.style.display = "block";
+      });
+    }
+
+    document.addEventListener("click", (e) => {
+      if (!categoryList || !categoryInput) return;
+      const isInside = categoryList.contains(e.target) || categoryInput === e.target;
+      if (!isInside) clearSuggestions();
+    });
 
     function openModal(){
       modalErr.style.display = "none";
