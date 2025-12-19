@@ -105,6 +105,19 @@ function loadCommissionMapFromXlsx() {
     const byName = new Map();
     const categories = [];
 
+    const rateColumns = [
+      { schema: "fbo", max: 100, names: ["FBO до 100 руб."] },
+      { schema: "fbo", max: 300, names: ["FBO свыше 100 до 300 руб."] },
+      { schema: "fbo", max: 500, names: ["FBO свыше 300 до 500 руб."] },
+      { schema: "fbo", max: 1500, names: ["FBO свыше 500 до 1500 руб."] },
+      { schema: "fbo", max: null, names: ["FBO свыше 1500 руб."] },
+      { schema: "fbo_fresh", max: null, names: ["FBO Fresh"] },
+      { schema: "fbs", max: 100, names: ["FBS до 100 руб."] },
+      { schema: "fbs", max: 300, names: ["FBS свыше 100 до 300 руб."] },
+      { schema: "fbs", max: null, names: ["FBS свыше 300 руб."] },
+      { schema: "rfbs", max: null, names: ["RFBS"] },
+    ];
+
     for (const row of rows) {
       const id =
         row.category_id ??
@@ -118,22 +131,34 @@ function loadCommissionMapFromXlsx() {
       const name = row["Категория"] ?? row["category_name"] ?? row["Category"] ?? row["Name"] ?? row["name"] ?? row["category"];
       const path = row["Тип товара"] ?? row["type_name"] ?? row["Type"] ?? row["type"] ?? name;
 
-      const rate = parseRateFromRow(row);
-
       const idStr = id === 0 ? "0" : String(id || "").trim();
-      if (idStr && Number.isFinite(rate) && rate > 0) {
-        byId.set(idStr, rate);
+      const schemaRates = {};
+
+      for (const col of rateColumns) {
+        for (const colName of col.names) {
+          if (row[colName] === undefined || row[colName] === null) continue;
+          const rate = parseRateFromRow({ [colName]: row[colName] });
+          if (!Number.isFinite(rate) || rate <= 0) continue;
+          const list = schemaRates[col.schema] || [];
+          list.push({ max: col.max, rate, label: colName });
+          schemaRates[col.schema] = list;
+          break;
+        }
       }
 
-      if (name && Number.isFinite(rate) && rate > 0) {
-        const key = String(name).trim().toLowerCase();
-        byName.set(key, rate);
+      const normalizedName = name ? String(name).trim() : "";
+      const key = normalizedName.toLowerCase();
+
+      if (Object.keys(schemaRates).length) {
+        const entry = { name: normalizedName || idStr || key || "Категория", path: path ? String(path).trim() : normalizedName, schemaRates };
+        if (idStr) byId.set(idStr, entry);
+        if (key) byName.set(key, entry);
         categories.push({
           category_id: idStr || key,
-          name: String(name).trim(),
-          path: path ? String(path).trim() : String(name).trim(),
-          keywords: [String(name).trim(), String(path || name).trim()].filter(Boolean),
-          commission: { rate },
+          name: entry.name,
+          path: entry.path || entry.name,
+          keywords: [entry.name, entry.path].filter(Boolean),
+          commission: { rates: schemaRates },
         });
       }
     }
@@ -149,18 +174,36 @@ function loadCommissionMapFromXlsx() {
   }
 }
 
-function findLocalCommission(categoryId, name) {
+function pickTierRate(schemaRates, schema, price) {
+  const list = schemaRates?.[schema];
+  if (!Array.isArray(list) || !list.length) return null;
+  const normalized = [...list].sort((a, b) => {
+    const ma = a.max === null || a.max === undefined ? Infinity : a.max;
+    const mb = b.max === null || b.max === undefined ? Infinity : b.max;
+    return ma - mb;
+  });
+  if (!Number.isFinite(price) || price <= 0) return normalized[normalized.length - 1]?.rate ?? null;
+  for (const tier of normalized) {
+    const max = Number.isFinite(tier.max) ? tier.max : Infinity;
+    if (price <= max) return tier.rate;
+  }
+  return normalized[normalized.length - 1]?.rate ?? null;
+}
+
+function findLocalCommission(categoryId, name, price, schema) {
   const { byId, byName } = loadCommissionMapFromXlsx();
+  let entry = null;
   if (categoryId !== undefined && categoryId !== null) {
-    const direct = byId.get(String(categoryId));
-    if (direct !== undefined) return direct;
+    entry = byId.get(String(categoryId)) || null;
   }
-  if (name) {
+  if (!entry && name) {
     const key = String(name).trim().toLowerCase();
-    const byNameRate = byName.get(key);
-    if (byNameRate !== undefined) return byNameRate;
+    entry = byName.get(key) || null;
   }
-  return null;
+  if (!entry) return null;
+  const rate = pickTierRate(entry.schemaRates, schema, price);
+  if (!Number.isFinite(rate) || rate <= 0) return null;
+  return rate;
 }
 
 // ---------------- store helpers ----------------
@@ -402,6 +445,13 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
   }));
 
   categoryCache.list = flat;
+  if (localExcel?.categories?.length) {
+    const seen = new Set(categoryCache.list.map((c) => (normalize(c.name) + "|" + (c.category_id || ""))));
+    for (const c of localExcel.categories) {
+      const key = normalize(c.name) + "|" + (c.category_id || "");
+      if (!seen.has(key)) categoryCache.list.push(c);
+    }
+  }
   categoryCache.source = source || usedPath || OZON_CATEGORY_TREE_PATH;
   categoryCache.updatedAt = Date.now();
   saveCategoryCacheToDisk();
@@ -1088,20 +1138,28 @@ app.post("/api/ozon/commission", async (req, res) => {
       req.body?.delivery_schema ??
       req.query?.delivery_schema ??
       "fbo";
-    const schema = String(schemaRaw).toLowerCase().includes("fbs") ? "fbs" : "fbo";
+    const schemaStr = String(schemaRaw || "").toLowerCase();
+    const schema = schemaStr.includes("fbs") ? "fbs" : schemaStr.includes("rfbs") ? "rfbs" : "fbo";
 
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
     if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
 
+    const price = Number(payload?.price ?? req.body?.price ?? item?.price ?? req.query?.price);
+    if (!Number.isFinite(price) || price <= 0) {
+      return res.status(400).json({ error: "invalid_price", hint: "Укажите цену товара (number > 0)" });
+    }
+
     // 1) пробуем локальный Excel (если есть)
-    const localRate = findLocalCommission(categoryIdRaw, item?.name || item?.category_name);
+    const localRate = findLocalCommission(categoryIdRaw, item?.name || item?.category_name || payload?.category_name, price, schema);
     if (Number.isFinite(localRate) && localRate > 0) {
       return res.json({
         source: "local_excel",
         category_id: String(categoryIdRaw),
+        category_name: item?.name || item?.category_name || payload?.category_name,
         schema,
         rate: Number(localRate),
+        price,
       });
     }
 
@@ -1109,7 +1167,9 @@ app.post("/api/ozon/commission", async (req, res) => {
     return res.status(404).json({
       error: "commission_not_found",
       category_id: String(categoryIdRaw),
+      category_name: item?.name || item?.category_name || payload?.category_name,
       schema,
+      price,
       hint: "Ставка не найдена в commissions.xlsx. Добавьте категорию и повторите.",
     });
   } catch (e) {
