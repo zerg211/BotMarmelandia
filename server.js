@@ -978,7 +978,11 @@ app.post("/api/ozon/commission", async (req, res) => {
       : { items: [{ category_id: Number(categoryIdRaw), price: safePrice, delivery_schema: schema.toUpperCase() }] };
 
     const data = await ozonPost(OZON_COMMISSION_PATH, { clientId: resolved.clientId, apiKey: resolved.apiKey, body: commissionPayload });
-    const itemsArr = Array.isArray(data?.result?.items) ? data.result.items : Array.isArray(data?.result) ? data.result : (Array.isArray(data?.items) ? data.items : []);
+    const itemsArr = Array.isArray(data?.result?.items)
+      ? data.result.items
+      : Array.isArray(data?.result)
+        ? data.result
+        : (Array.isArray(data?.items) ? data.items : []);
     const first = Array.isArray(itemsArr) && itemsArr.length ? itemsArr[0] : null;
 
     const pickRate = (obj) => {
@@ -996,7 +1000,15 @@ app.post("/api/ozon/commission", async (req, res) => {
     };
 
     const rate = pickRate(first);
-    if (!Number.isFinite(rate) || rate <= 0) return res.status(404).json({ error: "commission_not_found", category_id: String(categoryIdRaw) });
+    if (!Number.isFinite(rate) || rate <= 0) {
+      console.error("OZON COMMISSION NOT FOUND", { category_id: categoryIdRaw, schema, payload: commissionPayload, raw: data });
+      return res.status(502).json({
+        error: "commission_not_found",
+        category_id: String(categoryIdRaw),
+        schema,
+        raw: data,
+      });
+    }
 
     return res.json({
       source: "ozon_api",
@@ -1005,7 +1017,12 @@ app.post("/api/ozon/commission", async (req, res) => {
       rate,
     });
   } catch (e) {
-    return res.status(500).json({ error: String(e.message || e) });
+    console.error("OZON COMMISSION ERROR", e);
+    return res.status(500).json({
+      error: String(e.message || e),
+      code: e?.code,
+      hint: "Проверьте права ключа на расчет комиссий и корректность category_id/price.",
+    });
   }
 });
 
