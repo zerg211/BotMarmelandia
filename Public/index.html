@@ -555,7 +555,7 @@
           body: JSON.stringify({ clientId: creds.clientId, apiKey: creds.apiKey }),
         });
         const data = await r.json().catch(() => ({}));
-        if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+        if (!r.ok || data.error) throw new Error(data.hint || data.error || ("HTTP " + r.status));
         if (Array.isArray(data.categories) && data.categories.length){
           allCategories = data.categories;
         }
@@ -596,7 +596,7 @@
           body: JSON.stringify({ query, limit: 12, clientId: creds.clientId, apiKey: creds.apiKey }),
         });
         const data = await r.json().catch(() => ({}));
-        if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+        if (!r.ok || data.error) throw new Error(data.hint || data.error || ("HTTP " + r.status));
         const serverItems = Array.isArray(data.categories) ? data.categories : [];
         if (serverItems.length){
           allCategories = allCategories.length ? allCategories : serverItems;
