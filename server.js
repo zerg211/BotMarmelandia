@@ -31,6 +31,8 @@ const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
 const OZON_CATEGORY_TREE_PATH = process.env.OZON_CATEGORY_TREE_PATH || "/v1/description-category/tree";
+// запасной путь, если description-category/tree вернёт пусто
+const OZON_CATEGORY_TREE_ALT_PATH = process.env.OZON_CATEGORY_TREE_ALT_PATH || "/v1/category/tree";
 const OZON_COMMISSION_PATH = process.env.OZON_COMMISSION_PATH || "/v1/product/calc/commission";
 const OZON_LOGISTICS_PATH = process.env.OZON_LOGISTICS_PATH || "/v1/product/calc/fbs";
 const OZON_DEFAULT_CLIENT_ID = process.env.OZON_DEFAULT_CLIENT_ID || process.env.OZON_CLIENT_ID;
@@ -203,9 +205,51 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
   // Если кэш есть, но он из фолбэка или устарел — продолжаем и перезапишем его при наличии ключей
   if (!clientId || !apiKey) throw new Error("no_creds");
 
+  const tryPaths = Array.from(new Set([OZON_CATEGORY_TREE_PATH, OZON_CATEGORY_TREE_ALT_PATH].filter(Boolean)));
   const body = { language: "RU" };
-  const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId, apiKey, body });
-  const tree = data?.result?.categories || data?.result?.items || data?.result || data;
+
+  let tree = null;
+  let usedPath = null;
+  const treeInfos = [];
+
+  for (const p of tryPaths) {
+    try {
+      const data = await ozonPost(p, { clientId, apiKey, body });
+      const candidate = data?.result?.categories || data?.result?.items || data?.result || data;
+
+      const info = Array.isArray(candidate)
+        ? { path: p, type: "array", length: candidate.length }
+        : candidate && typeof candidate === "object"
+          ? { path: p, type: "object", keys: Object.keys(candidate).slice(0, 12) }
+          : { path: p, type: typeof candidate };
+      treeInfos.push(info);
+
+      const flatCandidate = flattenCategoryTree(candidate, []);
+      if (flatCandidate.length) {
+        tree = candidate;
+        usedPath = p;
+        break;
+      }
+    } catch (err) {
+      treeInfos.push({ path: p, error: String(err.message || err) });
+      continue;
+    }
+  }
+
+  if (!tree) {
+    console.error("OZON CATEGORY TREE EMPTY", { treeInfos });
+
+    // Попробуем вернуться к локальному fallback, если он есть
+    seedCategoryCacheFromFallback();
+    if (!categoryCache.list.length) {
+      throw new Error("categories_empty_api");
+    }
+    categoryCache.source = "fallback_after_empty";
+    categoryCache.updatedAt = Date.now();
+    saveCategoryCacheToDisk();
+    return categoryCache;
+  }
+
   // попробуем подмешать "стандартные" комиссии из fallback-файла (если он есть)
 // чтобы комиссия работала даже при обновлении дерева категорий через API
   let commissionById = new Map();
@@ -230,28 +274,8 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
     commission: commissionById.get(String(c.category_id)) || {},
   }));
 
-  if (!flat.length) {
-    const treeInfo = Array.isArray(tree)
-      ? { type: "array", length: tree.length }
-      : tree && typeof tree === "object"
-        ? { type: "object", keys: Object.keys(tree).slice(0, 12) }
-        : { type: typeof tree };
-
-    console.error("OZON CATEGORY TREE EMPTY", { treeInfo, source });
-
-    // Попробуем вернуться к локальному fallback, если он есть
-    seedCategoryCacheFromFallback();
-    if (!categoryCache.list.length) {
-      throw new Error("categories_empty_api");
-    }
-    categoryCache.source = "fallback_after_empty";
-    categoryCache.updatedAt = Date.now();
-    saveCategoryCacheToDisk();
-    return categoryCache;
-  }
-
   categoryCache.list = flat;
-  categoryCache.source = source || OZON_CATEGORY_TREE_PATH;
+  categoryCache.source = source || usedPath || OZON_CATEGORY_TREE_PATH;
   categoryCache.updatedAt = Date.now();
   saveCategoryCacheToDisk();
   return categoryCache;
