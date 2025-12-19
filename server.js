@@ -4,34 +4,21 @@ import path from "path";
 import crypto from "crypto";
 import { DateTime } from "luxon";
 import { fileURLToPath } from "url";
-import xlsx from "xlsx"; // Не забудьте: npm install xlsx
+import xlsx from "xlsx";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ==========================================
-// КОНФИГУРАЦИЯ
-// ==========================================
-const PORT = process.env.PORT || 8080;
-const BOT_TOKEN = process.env.BOT_TOKEN; // Ваш токен от BotFather
-const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64; // Ключ шифрования (из .env)
-const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
-const BASE_URL = process.env.BASE_URL; // Ваш домен (https://...)
-
-// Проверка наличия ключей
-if (!BOT_TOKEN) console.warn("⚠️ Warning: BOT_TOKEN is missing in .env");
-if (!ENCRYPTION_KEY_B64) console.warn("⚠️ Warning: ENCRYPTION_KEY_B64 is missing in .env");
-
 const app = express();
 app.use(express.json());
 
-// ====== СТАТИКА (Front-end) ======
+// ====== MINI APP (страница + статика из /Public) ======
 app.use("/public", express.static(path.join(__dirname, "Public")));
 
-// Редирект с "кривых" ссылок
+// если кто-то открывает кривой путь вида "/https://....." — редиректим на главную
 app.get(/^\/https?:\/\//, (req, res) => res.redirect(302, "/"));
 
-// Главная страница (Дашборд)
+// главная Mini App
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "Public", "index.html"));
 });
@@ -39,308 +26,30 @@ app.get("/index.html", (req, res) => {
   res.sendFile(path.join(__dirname, "Public", "index.html"));
 });
 
-// Страница Калькулятора (новая)
-app.get("/calculator", (req, res) => {
-  res.sendFile(path.join(__dirname, "Public", "calculator.html"));
-});
-
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 
-// ==========================================
-// 1. ЛОГИКА КАЛЬКУЛЯТОРА И ЗАГРУЗКА EXCEL
-// ==========================================
+const PORT = process.env.PORT || 8080;
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
+const OZON_CATEGORY_TREE_PATH = process.env.OZON_CATEGORY_TREE_PATH || "/v1/description-category/tree";
+// запасной путь, если description-category/tree вернёт пусто
+const OZON_CATEGORY_TREE_ALT_PATH = process.env.OZON_CATEGORY_TREE_ALT_PATH || "/v1/category/tree";
+const OZON_COMMISSION_PATH = process.env.OZON_COMMISSION_PATH || "/v1/product/calc/commission";
+const OZON_LOGISTICS_PATH = process.env.OZON_LOGISTICS_PATH || "/v1/product/calc/fbs";
+const OZON_DEFAULT_CLIENT_ID = process.env.OZON_DEFAULT_CLIENT_ID || process.env.OZON_CLIENT_ID;
+const OZON_DEFAULT_API_KEY = process.env.OZON_DEFAULT_API_KEY || process.env.OZON_API_KEY;
+const COMMISSION_XLSX_PATH = process.env.COMMISSION_XLSX_PATH || path.join(__dirname, "commissions.xlsx");
 
-let commissionsCache = [];
+// “Сегодня” считаем по МСК (или поменяй через ENV SALES_TZ)
+const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
 
-function loadCommissions() {
-  try {
-    const filePath = path.join(__dirname, "comissions.xlsx - commissions.csv");
-    if (!fs.existsSync(filePath)) {
-        console.error("❌ Файл с комиссиями не найден:", filePath);
-        return;
-    }
-
-    const workbook = xlsx.readFile(filePath);
-    const sheetName = workbook.SheetNames[0];
-    const rawData = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
-
-    // НОРМАЛИЗАЦИЯ ДАННЫХ (чистим заголовки от \n и пробелов)
-    commissionsCache = rawData.map(row => {
-      const newRow = {};
-      for (let key in row) {
-        // Убираем переносы строк и лишние пробелы, приводим к нижнему регистру
-        let cleanKey = key.replace(/(\r\n|\n|\r)/gm, " ").trim().toLowerCase();
-        
-        // Маппинг сложных названий из Excel в простые ключи кода
-        if (cleanKey.includes("fbo") && cleanKey.includes("до 100")) cleanKey = "fbo_0_100";
-        else if (cleanKey.includes("fbo") && cleanKey.includes("свыше 100") && cleanKey.includes("до 300")) cleanKey = "fbo_100_300";
-        else if (cleanKey.includes("fbo") && cleanKey.includes("свыше 300") && cleanKey.includes("до 500")) cleanKey = "fbo_300_500";
-        else if (cleanKey.includes("fbo") && cleanKey.includes("свыше 500") && cleanKey.includes("до 1500")) cleanKey = "fbo_500_1500";
-        else if (cleanKey.includes("fbo") && cleanKey.includes("свыше") && cleanKey.includes("1500")) cleanKey = "fbo_1500_plus";
-        else if (cleanKey.includes("fbo") && cleanKey.includes("fresh")) cleanKey = "fbo_fresh";
-        
-        else if (cleanKey.includes("fbs") && cleanKey.includes("до 100")) cleanKey = "fbs_0_100";
-        else if (cleanKey.includes("fbs") && cleanKey.includes("свыше 100") && cleanKey.includes("до 300")) cleanKey = "fbs_100_300";
-        else if (cleanKey.includes("fbs") && cleanKey.includes("свыше") && cleanKey.includes("300")) cleanKey = "fbs_300_plus";
-        
-        else if (cleanKey.includes("rfbs")) cleanKey = "rfbs";
-        
-        else if (cleanKey.includes("категория")) cleanKey = "category";
-        else if (cleanKey.includes("тип товара")) cleanKey = "item_type";
-
-        newRow[cleanKey] = row[key];
-      }
-      return newRow;
-    });
-
-    console.log(`✅ Комиссии загружены: ${commissionsCache.length} позиций.`);
-  } catch (e) {
-    console.error("❌ Ошибка загрузки commissions.csv:", e.message);
-  }
-}
-
-// Загружаем комиссии при старте
-loadCommissions();
-
-// API Endpoint для калькулятора
-app.get("/api/calculator/commission", (req, res) => {
-  try {
-    const { categoryName, price, schema } = req.query;
-
-    if (!categoryName || !price || !schema) {
-      return res.status(400).json({ error: "Не заполнены поля" });
-    }
-
-    const numPrice = parseFloat(price);
-    const searchStr = categoryName.toLowerCase().trim();
-    const schemaKey = schema.toLowerCase(); 
-
-    // Поиск товара (точное совпадение или вхождение)
-    const item = commissionsCache.find(row => {
-      const type = (row["item_type"] || "").toLowerCase();
-      const cat = (row["category"] || "").toLowerCase();
-      return type === searchStr || cat === searchStr || type.includes(searchStr);
-    });
-
-    if (!item) {
-      return res.json({ found: false, message: "Категория не найдена в тарифах." });
-    }
-
-    // Выбор ключа по цене
-    let key = "";
-    if (schemaKey === "fbo") {
-      if (numPrice <= 100) key = "fbo_0_100";
-      else if (numPrice <= 300) key = "fbo_100_300";
-      else if (numPrice <= 500) key = "fbo_300_500";
-      else if (numPrice <= 1500) key = "fbo_500_1500";
-      else key = "fbo_1500_plus";
-    } else if (schemaKey === "fbs") {
-      if (numPrice <= 100) key = "fbs_0_100";
-      else if (numPrice <= 300) key = "fbs_100_300";
-      else key = "fbs_300_plus";
-    } else if (schemaKey === "rfbs") {
-      key = "rfbs";
-    }
-
-    let commissionValue = item[key];
-    if (commissionValue === undefined) {
-      return res.json({ found: true, category: item["item_type"], error: `Тариф не найден для этой цены.` });
-    }
-
-    let percent = parseFloat(commissionValue);
-    if (percent < 1.0) percent = percent * 100; // 0.14 -> 14%
-    percent = Math.round(percent * 100) / 100;
-
-    return res.json({
-      found: true,
-      category: item["item_type"],
-      root_category: item["category"],
-      commissionPercent: percent,
-      schema: schemaKey
-    });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Ошибка сервера" });
-  }
-});
-
-
-// ==========================================
-// 2. БАЗА ДАННЫХ ПОЛЬЗОВАТЕЛЕЙ (Bot Logic)
-// ==========================================
-const USERS_FILE = path.join(__dirname, "data", "users.json");
-// Создаем папку data если нет
-if (!fs.existsSync(path.join(__dirname, "data"))) {
-  fs.mkdirSync(path.join(__dirname, "data"));
-}
-
-function getUserCreds(userId) {
-  try {
-    if (!fs.existsSync(USERS_FILE)) return null;
-    const data = JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
-    return data[String(userId)] || null;
-  } catch (e) { return null; }
-}
-
-function setUserCreds(userId, creds) {
-  let data = {};
-  try {
-    if (fs.existsSync(USERS_FILE)) data = JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
-  } catch (e) {}
-  data[String(userId)] = creds;
-  fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2));
-}
-
-function deleteUserCreds(userId) {
-  let data = {};
-  try {
-    if (fs.existsSync(USERS_FILE)) data = JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
-  } catch (e) {}
-  delete data[String(userId)];
-  fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2));
-}
-
-// ==========================================
-// 3. ШИФРОВАНИЕ (AES-256-CBC)
-// ==========================================
-function getCipherKey() {
-  if (!ENCRYPTION_KEY_B64) throw new Error("No ENCRYPTION_KEY_B64");
-  return Buffer.from(ENCRYPTION_KEY_B64, "base64");
-}
-function encrypt(text) {
-  if (!text) return "";
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", getCipherKey(), iv);
-  let encrypted = cipher.update(text, "utf8", "hex");
-  encrypted += cipher.final("hex");
-  return iv.toString("hex") + ":" + encrypted;
-}
-function decrypt(text) {
-  if (!text) return "";
-  const parts = text.split(":");
-  if (parts.length !== 2) return text; 
-  const iv = Buffer.from(parts[0], "hex");
-  const encryptedText = parts[1];
-  const decipher = crypto.createDecipheriv("aes-256-cbc", getCipherKey(), iv);
-  let decrypted = decipher.update(encryptedText, "hex", "utf8");
-  decrypted += decipher.final("utf8");
-  return decrypted;
-}
-
-// ==========================================
-// 4. API DASHBOARD (Для Mini App)
-// ==========================================
-app.get("/api/dashboard/today", async (req, res) => {
-  try {
-    let { clientId, apiKey } = req.query;
-    if (!clientId || !apiKey) return res.status(401).json({ error: "No credentials" });
-
-    // Если ключи зашифрованы (пришли из localStorage как есть, но мы их расшифруем если надо)
-    // В данном случае предполагаем, что MiniApp шлет raw, или мы их расшифровываем на клиенте?
-    // Обычно MiniApp шлет то, что сохранил. Если сохранил зашифрованное - надо декрипт.
-    // Но проще считать, что MiniApp шлет "как есть". 
-    // Если в базе лежит зашифрованное, то бот сохранил зашифрованное.
-    // В этом эндпоинте мы ожидаем ClientID и ApiKey в открытом виде или расшифровываем?
-    // В коде бота ниже мы шифруем перед сохранением. Значит MiniApp должен получить расшифрованное?
-    // Или MiniApp просто дергает API?
-    // Давайте предположим, что передаются чистые ключи для запроса к озону.
-    
-    // Попробуем расшифровать, если похоже на шифр (содержит :)
-    if (apiKey.includes(":")) {
-        try { apiKey = decrypt(apiKey); } catch(e){}
-    }
-
-    const today = DateTime.now().setZone("Europe/Moscow").toFormat("yyyy-MM-dd");
-    const dateFrom = today + "T00:00:00.000Z";
-    const dateTo = today + "T23:59:59.999Z";
-
-    // Запрос FBO
-    const fboData = await ozonGetFboStats(clientId, apiKey, dateFrom, dateTo);
-    
-    // Ответ
-    res.json({
-      title: "Статистика за сегодня",
-      updated_at: DateTime.now().toFormat("HH:mm:ss"),
-      orders: fboData.orders,
-      orders_sum: fboData.ordersSum,
-      cancels: fboData.cancels,
-      cancels_sum: fboData.cancelsSum
-    });
-
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Хелпер для Ozon API (FBO)
-async function ozonGetFboStats(clientId, apiKey, dateFrom, dateTo) {
-  // Реализация запроса к /v2/posting/fbo/list
-  // Упрощенная логика суммирования
-  const url = `${OZON_API_BASE}/v2/posting/fbo/list`;
-  const body = {
-    dir: "ASC",
-    filter: { since: dateFrom, to: dateTo },
-    limit: 1000,
-    with: { financial_data: true }
-  };
-  
-  const json = await ozonFetch(url, clientId, apiKey, body);
-  const list = json.result || [];
-
-  let orders = 0; let ordersSum = 0;
-  let cancels = 0; let cancelsSum = 0;
-
-  for (const p of list) {
-    // Статусы: awaiting_packaging, awaiting_deliver, delivering, delivered
-    // Отмены: cancelled
-    const price = p.financial_data?.products?.[0]?.price || 0; // упрощенно
-    if (p.status === "cancelled") {
-      cancels++;
-      cancelsSum += parseFloat(price);
-    } else {
-      orders++;
-      ordersSum += parseFloat(price);
-    }
-  }
-
-  // Переводим в копейки или оставляем как есть? В html используется fmtMoneyFromCents.
-  // Предположим Ozon отдает рубли. Умножим на 100 для совместимости с фронтом
-  return {
-    orders,
-    ordersSum: ordersSum * 100, 
-    cancels,
-    cancelsSum: cancelsSum * 100
-  };
-}
-
-async function ozonFetch(url, clientId, apiKey, body) {
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Client-Id": clientId,
-      "Api-Key": apiKey,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-  if (!resp.ok) {
-    const txt = await resp.text();
-    throw new Error(`Ozon API Error ${resp.status}: ${txt}`);
-  }
-  return await resp.json();
-}
-
-
-// ==========================================
-// 5. TELEGRAM BOT (Webhook)
-// ==========================================
-
-// In-memory состояние диалога (шаги ввода ключей)
+const DATA_DIR = process.env.DATA_DIR || ".";
+const STORE_PATH = path.join(DATA_DIR, "store.json");
+const CATEGORY_CACHE_PATH = path.join(DATA_DIR, "category-cache.json");
+const OZON_FALLBACK_CATEGORIES_PATH = path.join(__dirname, "ozon-category-fallback.json");
+const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 const pending = new Map();
 
-<<<<<<< HEAD
 // ---------------- local commission + categories (Excel) ----------------
 const commissionXlsxCache = { mtimeMs: 0, byId: new Map(), byName: new Map(), categories: [] };
 
@@ -770,34 +479,598 @@ const categoryCache = {
 
 function loadCategoryCacheFromDisk() {
   if (categoryCache.list.length) return;
-=======
-// Метод отправки сообщений
-async function tgSendMessage(chatId, text, opts = {}) {
-  if (!BOT_TOKEN) return;
->>>>>>> a416ba205706c6cc6d6599531f3caecd5f8c80ae
   try {
-    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", ...opts })
-    });
-  } catch (e) {
-    console.error("TG Send Error:", e);
+    if (!fs.existsSync(CATEGORY_CACHE_PATH)) return;
+    const data = JSON.parse(fs.readFileSync(CATEGORY_CACHE_PATH, "utf-8"));
+    if (Array.isArray(data?.list)) {
+      categoryCache.list = data.list;
+      categoryCache.source = data.source || "disk";
+      categoryCache.updatedAt = data.updatedAt || Date.now();
+    }
+  } catch (_) {}
+}
+
+function saveCategoryCacheToDisk() {
+  try {
+    const payload = {
+      list: categoryCache.list,
+      source: categoryCache.source,
+      updatedAt: categoryCache.updatedAt || Date.now(),
+    };
+    fs.writeFileSync(CATEGORY_CACHE_PATH, JSON.stringify(payload, null, 2), "utf-8");
+  } catch (_) {}
+}
+
+function seedCategoryCacheFromFallback() {
+  if (categoryCache.list.length) return false;
+  try {
+    if (!fs.existsSync(OZON_FALLBACK_CATEGORIES_PATH)) return false;
+    const data = JSON.parse(fs.readFileSync(OZON_FALLBACK_CATEGORIES_PATH, "utf-8"));
+    if (!Array.isArray(data)) return false;
+    categoryCache.list = data.map((c) => ({
+      category_id: c.category_id,
+      name: c.name,
+      path: c.path || c.name,
+      keywords: (c.keywords || c.path || c.name || "")
+        .toString()
+        .split(/[>/]/)
+        .map((p) => p.trim())
+        .filter(Boolean),
+      commission: c.commission || {},
+    }));
+    categoryCache.source = "fallback";
+    categoryCache.updatedAt = Date.now();
+    return categoryCache.list.length > 0;
+  } catch (_) {
+    return false;
   }
 }
 
-// Webhook endpoint
-app.post(`/bot${BOT_TOKEN}`, async (req, res) => {
-  res.sendStatus(200); // Сразу отвечаем OK
-  try {
-    const body = req.body;
-    if (!body || !body.message) return;
-    const msg = body.message;
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    const text = msg.text?.trim();
+// ---------------- date helpers ----------------
+function todayDateStr() {
+  return DateTime.now().setZone(SALES_TZ).toFormat("yyyy-LL-dd");
+}
+function dayBoundsUtcFromLocal(dateStr) {
+  const fromLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("day");
+  const toLocal = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day");
+  return {
+    since: fromLocal.toUTC().toISO({ suppressMilliseconds: false }),
+    to: toLocal.toUTC().toISO({ suppressMilliseconds: false }),
+  };
+}
+function isSameDayLocal(iso, dateStr) {
+  if (!iso) return false;
+  const d = DateTime.fromISO(iso, { setZone: true }).setZone(SALES_TZ);
+  return d.isValid && d.toFormat("yyyy-LL-dd") === dateStr;
+}
 
-<<<<<<< HEAD
+// ---------------- money helpers (без float) ----------------
+function toCents(val) {
+  if (val === null || val === undefined) return 0;
+  let s = String(val).trim().replace(",", ".");
+  if (!s) return 0;
+
+  let sign = 1;
+  if (s.startsWith("-")) {
+    sign = -1;
+    s = s.slice(1);
+  } else if (s.startsWith("+")) {
+    s = s.slice(1);
+  }
+
+  const parts = s.split(".");
+  const rub = parseInt(parts[0] || "0", 10) || 0;
+  const kop = parseInt((parts[1] || "0").padEnd(2, "0").slice(0, 2), 10) || 0;
+  return sign * (rub * 100 + kop);
+}
+function rubToCents(val) {
+  return toCents(val);
+}
+const rubFmt = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function centsToRubString(cents) {
+  return `${rubFmt.format(cents / 100)} ₽`;
+}
+
+function postingAmountCents(posting) {
+  const qtyBySku = new Map();
+  for (const pr of posting?.products || []) {
+    qtyBySku.set(String(pr.sku), Number(pr.quantity || 0));
+  }
+
+  const finProds = posting?.financial_data?.products || [];
+  if (Array.isArray(finProds) && finProds.length > 0) {
+    let sum = 0;
+    for (const fp of finProds) {
+      const id = String(fp.product_id);
+      const qty = qtyBySku.get(id) ?? 1;
+      sum += toCents(fp.price) * qty;
+    }
+    if (sum > 0) return sum;
+  }
+
+  let sum2 = 0;
+  for (const pr of posting?.products || []) {
+    sum2 += toCents(pr.price) * Number(pr.quantity || 0);
+  }
+  return sum2;
+}
+
+// ---------------- Core: FBO fetch + stats ----------------
+function extractPostings(data) {
+  if (Array.isArray(data?.result)) return { postings: data.result, hasNext: false };
+  const r = data?.result || {};
+  if (Array.isArray(r?.postings)) return { postings: r.postings, hasNext: Boolean(r.has_next) };
+  if (Array.isArray(data?.postings)) return { postings: data.postings, hasNext: Boolean(data?.has_next) };
+  return { postings: [], hasNext: false };
+}
+
+async function fetchFboAllForDay({ clientId, apiKey, dateStr }) {
+  const { since, to } = dayBoundsUtcFromLocal(dateStr);
+
+  let offset = 0;
+  const limit = 1000;
+  const all = [];
+
+  while (true) {
+    const body = {
+      dir: "ASC",
+      filter: { since, to, status: "" },
+      limit,
+      offset,
+      translit: true,
+      with: { analytics_data: true, financial_data: true, legal_info: false },
+    };
+
+    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
+    const { postings, hasNext } = extractPostings(data);
+
+    all.push(...postings);
+    if (!hasNext) break;
+
+    offset += limit;
+    if (offset > 200000) break;
+  }
+
+  return all;
+}
+
+async function calcTodayStats({ clientId, apiKey, dateStr }) {
+  const postings = await fetchFboAllForDay({ clientId, apiKey, dateStr });
+
+  let ordersCount = 0;
+  let ordersAmount = 0;
+
+  let cancelsCount = 0;
+  let cancelsAmount = 0;
+
+  for (const p of postings) {
+    if (!isSameDayLocal(p?.created_at, dateStr)) continue;
+
+    const amt = postingAmountCents(p);
+
+    ordersCount += 1;
+    ordersAmount += amt;
+
+    if (String(p?.status || "").toLowerCase() === "cancelled") {
+      cancelsCount += 1;
+      cancelsAmount += amt;
+    }
+  }
+
+  return { dateStr, ordersCount, ordersAmount, cancelsCount, cancelsAmount };
+}
+
+
+// ---------------- Core: buyouts (delivered today) + returns (today) ----------------
+async function fetchFboAllForPeriod({ clientId, apiKey, sinceIso, toIso }) {
+  let offset = 0;
+  const limit = 1000;
+  const all = [];
+
+  while (true) {
+    const body = {
+      dir: "ASC",
+      filter: { since: sinceIso, to: toIso, status: "delivered" },
+      limit,
+      offset,
+      translit: true,
+      with: { analytics_data: true, financial_data: false, legal_info: false },
+    };
+
+    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
+    const { postings, hasNext } = extractPostings(data);
+
+    all.push(...postings);
+    if (!hasNext) break;
+
+    offset += limit;
+    if (offset > 200000) break;
+  }
+
+  return all;
+}
+
+function pickDeliveredIso(posting) {
+  // Считаем момент "выкупа" как момент смены статуса на DELIVERED (обычно это status_updated_at).
+  // Поля в разных версиях API могут отличаться — пробуем максимально широко.
+  return (
+    posting?.status_updated_at ||
+    posting?.delivered_at ||
+    posting?.analytics_data?.delivered_at ||
+    posting?.analytics_data?.delivering_date ||
+    posting?.analytics_data?.delivery_date ||
+    posting?.analytics_data?.shipment_date ||
+    posting?.delivering_date ||
+    posting?.delivery_date ||
+    null
+  );
+}
+
+async function calcBuyoutsTodayByOffer({ clientId, apiKey, dateStr }) {
+  // "Выкуплено сегодня" = отправления, у которых СТАТУС сменился на DELIVERED сегодня (по МСК).
+  // Важно: /v2/posting/fbo/list фильтрует по created_at, поэтому берём широкий диапазон по созданию
+  // и уже в коде отбираем по статусным датам.
+  const day = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ });
+  const sinceCreated = day.minus({ days: 30 }).startOf("day").toUTC().toISO({ suppressMilliseconds: false });
+  const toCreated = day.endOf("day").toUTC().toISO({ suppressMilliseconds: false });
+
+  let offset = 0;
+  const limit = 1000;
+
+  const byOffer = new Map();
+  let totalQty = 0;
+
+  while (true) {
+    const body = {
+      dir: "ASC",
+      filter: { since: sinceCreated, to: toCreated, status: "" },
+      limit,
+      offset,
+      translit: true,
+      with: { analytics_data: true, financial_data: false, legal_info: false },
+    };
+
+    const data = await ozonPost("/v2/posting/fbo/list", { clientId, apiKey, body });
+    const { postings, hasNext } = extractPostings(data);
+
+    for (const p of postings) {
+      // берём момент смены статуса на delivered
+      const deliveredIso = pickDeliveredIso(p);
+      if (!isSameDayLocal(deliveredIso, dateStr)) continue;
+      if (String(p?.status || "").toLowerCase() !== "delivered") continue;
+
+      for (const pr of p?.products || []) {
+        const offerId = pr?.offer_id != null ? String(pr.offer_id) : null;
+        const qty = Number(pr?.quantity || 0) || 0;
+        if (!offerId || qty <= 0) continue;
+
+        totalQty += qty;
+        byOffer.set(offerId, (byOffer.get(offerId) || 0) + qty);
+      }
+    }
+
+    if (!hasNext) break;
+    offset += limit;
+    if (offset > 200000) break;
+  }
+
+  const list = Array.from(byOffer.entries())
+    .map(([offer_id, qty]) => ({ offer_id, qty }))
+    .sort((a, b) => b.qty - a.qty);
+
+  return { buyouts_total_qty: totalQty, buyouts_list: list };
+}
+
+async function calcReturnsTodayByOffer({ clientId, apiKey, dateStr }) {
+  // Возвраты сегодня: /v1/returns/list требует filter.status, но "all" у некоторых аккаунтов не работает.
+  // Поэтому передаём status = "" (как "все"), и берём широкий период, затем фильтруем по дате обновления.
+  const day = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ });
+  const fromStr = day.minus({ days: 30 }).toFormat("yyyy-LL-dd");
+  const toStr = day.toFormat("yyyy-LL-dd");
+
+  const byOffer = new Map();
+  let totalQty = 0;
+
+  let offset = 0;
+  const limit = 1000;
+
+  while (true) {
+    const body = {
+      filter: { date_from: fromStr, date_to: toStr, status: "" },
+      limit,
+      offset,
+    };
+
+    const data = await ozonPost("/v1/returns/list", { clientId, apiKey, body });
+
+    const root = data?.result ?? data ?? {};
+    const items =
+      root?.returns ||
+      root?.items ||
+      root?.result ||
+      root ||
+      [];
+
+    const arr = Array.isArray(items) ? items : [];
+    if (arr.length === 0) break;
+
+    for (const r of arr) {
+      // дата изменения статуса/обновления
+      const iso =
+        r?.updated_at ||
+        r?.status_updated_at ||
+        r?.last_updated_at ||
+        r?.last_changed_at ||
+        r?.created_at ||
+        null;
+
+      if (!isSameDayLocal(iso, dateStr)) continue;
+
+      const prods = Array.isArray(r?.products) ? r.products : [];
+      if (prods.length) {
+        for (const pr of prods) {
+          const offerId = pr?.offer_id != null ? String(pr.offer_id) : null;
+          const qty = Number(pr?.quantity || 0) || 0;
+          if (!offerId || qty <= 0) continue;
+
+          totalQty += qty;
+          byOffer.set(offerId, (byOffer.get(offerId) || 0) + qty);
+        }
+      } else {
+        // fallback если products нет
+        const offerId = r?.offer_id != null ? String(r.offer_id) : null;
+        const qty = Number(r?.quantity || 0) || 0;
+        if (!offerId || qty <= 0) continue;
+
+        totalQty += qty;
+        byOffer.set(offerId, (byOffer.get(offerId) || 0) + qty);
+      }
+    }
+
+    offset += limit;
+    if (arr.length < limit) break;
+  }
+
+  const list = Array.from(byOffer.entries())
+    .map(([offer_id, qty]) => ({ offer_id, qty }))
+    .sort((a, b) => b.qty - a.qty);
+
+  return { returns_total_qty: totalQty, returns_list: list };
+}
+
+
+
+// ---------------- Core: balance (today) ----------------
+async function calcBalanceToday({ clientId, apiKey, dateStr }) {
+  // Самый прямой метод (у тебя он работает): /v1/finance/balance
+  // Запрос должен быть в формате YYYY-MM-DD
+  try {
+    const data = await ozonPost("/v1/finance/balance", {
+      clientId,
+      apiKey,
+      body: { date_from: dateStr, date_to: dateStr },
+    });
+
+    const total = data?.total || data?.result?.total;
+    const opening = total?.opening_balance?.value ?? total?.opening_balance ?? null;
+    const closing = total?.closing_balance?.value ?? total?.closing_balance ?? null;
+
+    if (closing !== null && closing !== undefined) {
+      const cents = toCents(closing);
+      const salesVal = data?.cashflows?.sales?.amount?.value ?? null;
+      const returnsVal = data?.cashflows?.returns?.amount?.value ?? null;
+
+      const buyouts_sum_cents = salesVal === null ? null : toCents(salesVal);
+      const returns_sum_cents = returnsVal === null ? null : toCents(returnsVal);
+
+      return {
+        // совместимость: balance_* = closing
+        balance_cents: cents,
+        balance_text: centsToRubString(cents),
+
+        // для динамики: opening/closing отдельно
+        balance_opening_cents: opening === null || opening === undefined ? null : toCents(opening),
+        balance_opening_text: (opening === null || opening === undefined) ? "—" : centsToRubString(toCents(opening)),
+        balance_closing_cents: cents,
+        balance_closing_text: centsToRubString(cents),
+
+        buyouts_sum_cents,
+        buyouts_sum_text: buyouts_sum_cents === null ? "—" : centsToRubString(buyouts_sum_cents),
+        returns_sum_cents,
+        returns_sum_text: returns_sum_cents === null ? "—" : centsToRubString(returns_sum_cents),
+      };
+    }
+  } catch (e) {
+    // пойдём дальше (фолбэки)
+  }
+
+  // Фолбэк 1: некоторые аккаунты имеют /v2/finance/balance
+  try {
+    const data = await ozonPost("/v2/finance/balance", {
+      clientId,
+      apiKey,
+      body: { date_from: dateStr, date_to: dateStr },
+    });
+
+    const root = data?.result ?? data ?? {};
+    const total = root?.total ?? root;
+    const closing = total?.closing_balance?.value ?? total?.closing_balance ?? root?.balance ?? null;
+
+    if (closing !== null && closing !== undefined) {
+      const cents = toCents(closing);
+      return { balance_cents: cents, balance_text: centsToRubString(cents) };
+    }
+  } catch (e) {}
+
+  // Фолбэк 2: cash-flow (может быть неактуален по балансу, но лучше чем ничего)
+  const { since, to } = dayBoundsUtcFromLocal(dateStr);
+  try {
+    const data = await ozonPost("/v1/finance/cash-flow-statement/list", {
+      clientId,
+      apiKey,
+      body: { filter: { date_from: since, date_to: to } },
+    });
+    const r = data?.result ?? data ?? {};
+    const balance =
+      r?.summary?.closing_balance ??
+      r?.summary?.end_balance ??
+      r?.header?.closing_balance ??
+      r?.header?.end_balance ??
+      null;
+
+    if (balance !== null && balance !== undefined) {
+      const cents = toCents(balance);
+      return { balance_cents: cents, balance_text: centsToRubString(cents) };
+    }
+  } catch (e) {}
+
+  return { balance_cents: null, balance_text: "—" };
+}
+
+// ---------------- Core: balance (cabinet) ----------------
+async function calcBalanceNowCents({ clientId, apiKey, dateStr }) {
+  // В Seller API нет одного “идеального” метода баланса, поэтому делаем 2 попытки:
+  // 1) /v1/finance/mutual-settlement (отчёт взаиморасчётов) — часто содержит итоговую задолженность/баланс.
+  // 2) /v1/finance/cash-flow-statement/list (финансовый отчёт) — как запасной вариант.
+  // Возвращаем копейки. Если не получилось — null (чтобы фронт показывал "—", а не 0).
+  const fromMonth = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).startOf("month").toUTC().toISO({ suppressMilliseconds: false });
+  const to = DateTime.fromFormat(dateStr, "yyyy-LL-dd", { zone: SALES_TZ }).endOf("day").toUTC().toISO({ suppressMilliseconds: false });
+
+  // 1) mutual-settlement
+  try {
+    const body = { date_from: fromMonth, date_to: to };
+    const data = await ozonPost("/v1/finance/mutual-settlement", { clientId, apiKey, body });
+    const r = data?.result || data;
+
+    const candidates = [
+      r?.summary?.ending_balance,
+      r?.summary?.end_balance,
+      r?.summary?.closing_balance,
+      r?.header?.ending_balance,
+      r?.header?.end_balance,
+      r?.header?.closing_balance,
+      r?.balance,
+      r?.result?.balance,
+    ];
+
+    for (const c of candidates) {
+      const cents = toCents(c);
+      if (cents !== 0) return cents; // если реально есть баланс — возвращаем
+    }
+  } catch (_) {}
+
+  // 2) cash-flow-statement
+  try {
+    const body = { filter: { date_from: fromMonth, date_to: to }, page: 1, page_size: 1000 };
+    const data = await ozonPost("/v1/finance/cash-flow-statement/list", { clientId, apiKey, body });
+    const r = data?.result || data;
+
+    const candidates = [
+      r?.summary?.closing_balance,
+      r?.summary?.end_balance,
+      r?.summary?.ending_balance,
+      r?.header?.closing_balance,
+      r?.header?.end_balance,
+      r?.header?.ending_balance,
+      r?.balance,
+    ];
+
+    for (const c of candidates) {
+      const cents = toCents(c);
+      if (cents !== 0) return cents;
+    }
+  } catch (_) {}
+
+  return null;
+}
+// ====== API: получить ключи из (query → user_id → первый юзер) ======
+function resolveCredsFromRequest(req) {
+  const qClient = req.query.clientId || req.query.client_id;
+  const qKey = req.query.apiKey || req.query.api_key;
+
+  // 1) Если MiniApp передал ключи прямо в запросе
+  if (qClient && qKey) {
+    return { clientId: String(qClient), apiKey: String(qKey), source: "query" };
+  }
+
+  // 2) Если передан user_id (telegram id)
+  const qUserId = req.query.user_id || req.query.userId;
+  if (qUserId) {
+    const creds = getUserCreds(String(qUserId));
+    if (creds?.clientId && creds?.apiKey) {
+      return { clientId: creds.clientId, apiKey: decrypt(creds.apiKey), source: "user_id" };
+    }
+  }
+
+  // 3) Иначе — первый пользователь в store.json
+  const store = loadStore();
+  const firstUserId = Object.keys(store.users || {})[0];
+  if (firstUserId) {
+    const creds = getUserCreds(firstUserId);
+    if (creds?.clientId && creds?.apiKey) {
+      return { clientId: creds.clientId, apiKey: decrypt(creds.apiKey), source: "first_user" };
+    }
+  }
+
+  // 4) Фолбэк на переменные окружения
+  if (OZON_DEFAULT_CLIENT_ID && OZON_DEFAULT_API_KEY) {
+    return { clientId: OZON_DEFAULT_CLIENT_ID, apiKey: OZON_DEFAULT_API_KEY, source: "env" };
+  }
+
+  return null;
+}
+
+app.post("/api/ozon/categories", async (req, res) => {
+  try {
+    loadCategoryCacheFromDisk();
+    seedCategoryCacheFromFallback();
+    const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
+    const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
+
+    if (!resolved?.clientId || !resolved?.apiKey) {
+      if (categoryCache.list.length) {
+        return res.json({
+          source: categoryCache.source || "cache",
+          total: categoryCache.list.length,
+          categories: categoryCache.list,
+          cached: true,
+        });
+      }
+      return res.status(400).json({ error: "no_creds" });
+    }
+
+    const cache = await ensureCategoryCache(resolved);
+
+    if (!cache?.list?.length) {
+      console.error("OZON CATEGORIES EMPTY", { source: cache?.source, updatedAt: cache?.updatedAt });
+      return res.status(502).json({ error: "categories_empty", source: cache?.source || "unknown" });
+    }
+
+    return res.json({
+      source: categoryCache.source,
+      total: categoryCache.list.length,
+      updatedAt: categoryCache.updatedAt,
+      categories: categoryCache.list,
+    });
+  } catch (e) {
+    console.error("OZON CATEGORIES ERROR:", e);
+    const code = e?.code || "error";
+    const status = code === "categories_empty_api" ? 502 : 500;
+    return res.status(status).json({
+      error: String(e.message || e),
+      code,
+      hint: e?.hint,
+      treeInfos: e?.treeInfos,
+    });
+  }
+});
+
+app.post("/api/ozon/categories/search", async (req, res) => {
+  try {
+    loadCategoryCacheFromDisk();
+    const query = req.body?.query || req.query.q || "";
+    const limit = Number(req.body?.limit || req.query.limit || 20) || 20;
+
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
 
@@ -1530,76 +1803,44 @@ app.post("/telegram-webhook", async (req, res) => {
     const userId = msg?.from?.id;
     const text = msg?.text?.trim();
     if (!chatId || !userId || !text) return;
-=======
-    if (!text) return;
->>>>>>> a416ba205706c6cc6d6599531f3caecd5f8c80ae
 
-    // --- Команда /start ---
     if (text === "/start") {
       const creds = getUserCreds(userId);
       if (creds?.clientId && creds?.apiKey) {
-        await tgSendMessage(chatId, "✅ Ключи уже сохранены. Нажми кнопку ниже, чтобы открыть аналитику.", {
-            reply_markup: {
-                inline_keyboard: [[{ text: "📊 Открыть аналитику", web_app: { url: BASE_URL } }]]
-            }
-        });
+        await tgSendMessage(chatId, "✅ Ключи уже сохранены. Показываю статистику за сегодня:");
+        await showWidget(chatId, userId, todayDateStr());
         return;
       }
       pending.set(userId, { step: "clientId" });
-      await tgSendMessage(chatId, "Привет! Для работы мне нужны твои ключи Ozon API (Read only).\n\nОтправь мне <b>Client ID</b>:");
+      await tgSendMessage(chatId, "Отправь <b>Client ID</b>.");
       return;
     }
 
-    // --- Команда /reset ---
     if (text === "/reset") {
       deleteUserCreds(userId);
       pending.set(userId, { step: "clientId" });
-      await tgSendMessage(chatId, "🗑 Ключи удалены. Давай настроим заново.\n\nОтправь <b>Client ID</b>:");
+      await tgSendMessage(chatId, "Ок. Отправь <b>Client ID</b>.");
       return;
     }
 
-    // --- Обработка шагов (State Machine) ---
     const st = pending.get(userId);
-    
     if (st?.step === "clientId") {
-      // Простая валидация (только цифры)
-      if (!/^\d+$/.test(text)) {
-        await tgSendMessage(chatId, "⚠️ Client ID должен состоять только из цифр. Попробуй еще раз:");
-        return;
-      }
       pending.set(userId, { step: "apiKey", clientId: text });
-      await tgSendMessage(chatId, "Принято. Теперь отправь <b>API Key</b> (тип Admin или Statistics):");
+      await tgSendMessage(chatId, "Теперь отправь <b>Api-Key</b>.");
       return;
     }
-
     if (st?.step === "apiKey") {
-      // Сохраняем (шифруем API Key)
-      const encryptedKey = encrypt(text);
-      setUserCreds(userId, { 
-        clientId: st.clientId, 
-        apiKey: encryptedKey, 
-        savedAt: Date.now() 
-      });
+      setUserCreds(userId, { clientId: st.clientId, apiKey: encrypt(text), savedAt: Date.now() });
       pending.delete(userId);
-      
-      await tgSendMessage(chatId, "✅ Отлично! Ключи сохранены и зашифрованы.", {
-        reply_markup: {
-            inline_keyboard: [[{ text: "📊 Открыть аналитику", web_app: { url: BASE_URL } }]]
-        }
-      });
+      await tgSendMessage(chatId, "✅ Сохранил. Открываю статистику за сегодня:");
+      await showWidget(chatId, userId, todayDateStr());
       return;
     }
 
-    // Если ничего не подошло
-    await tgSendMessage(chatId, "Я не понимаю эту команду. Нажми /start или /reset.");
-
-  } catch (e) {
-    console.error("Webhook Error:", e);
+    await tgSendMessage(chatId, "Команды:\n/start\n/reset");
+  } catch (err) {
+    console.error("Webhook handler error:", err);
   }
 });
 
-// Запуск
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-  console.log(`Webhook URL: ${BASE_URL}/bot${BOT_TOKEN}`);
-});
+app.listen(PORT, "0.0.0.0", () => console.log(`✅ Server started on :${PORT}`));
