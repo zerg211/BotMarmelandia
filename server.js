@@ -4,6 +4,7 @@ import path from "path";
 import crypto from "crypto";
 import { DateTime } from "luxon";
 import { fileURLToPath } from "url";
+import xlsx from "xlsx";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,10 +32,13 @@ const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OZON_API_BASE = process.env.OZON_API_BASE || "https://api-seller.ozon.ru";
 const OZON_CATEGORY_TREE_PATH = process.env.OZON_CATEGORY_TREE_PATH || "/v1/description-category/tree";
+// запасной путь, если description-category/tree вернёт пусто
+const OZON_CATEGORY_TREE_ALT_PATH = process.env.OZON_CATEGORY_TREE_ALT_PATH || "/v1/category/tree";
 const OZON_COMMISSION_PATH = process.env.OZON_COMMISSION_PATH || "/v1/product/calc/commission";
 const OZON_LOGISTICS_PATH = process.env.OZON_LOGISTICS_PATH || "/v1/product/calc/fbs";
 const OZON_DEFAULT_CLIENT_ID = process.env.OZON_DEFAULT_CLIENT_ID || process.env.OZON_CLIENT_ID;
 const OZON_DEFAULT_API_KEY = process.env.OZON_DEFAULT_API_KEY || process.env.OZON_API_KEY;
+const COMMISSION_XLSX_PATH = process.env.COMMISSION_XLSX_PATH || path.join(__dirname, "commissions.xlsx");
 
 // “Сегодня” считаем по МСК (или поменяй через ENV SALES_TZ)
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
@@ -45,6 +49,162 @@ const CATEGORY_CACHE_PATH = path.join(DATA_DIR, "category-cache.json");
 const OZON_FALLBACK_CATEGORIES_PATH = path.join(__dirname, "ozon-category-fallback.json");
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 const pending = new Map();
+
+// ---------------- local commission + categories (Excel) ----------------
+const commissionXlsxCache = { mtimeMs: 0, byId: new Map(), byName: new Map(), categories: [] };
+
+function parseRateFromRow(row) {
+  const numericKeys = [
+    "rate",
+    "percent",
+    "value",
+    "commission",
+    "Commission",
+    "Commission (%)",
+    "commission_percent",
+    "FBO до 100 руб.",
+    "FBO свыше 100 до 300 руб.",
+    "FBO свыше 300 до 500 руб.",
+    "FBO свыше 500 до 1500 руб.",
+    "FBO свыше 1500 руб.",
+    "FBO Fresh",
+    "FBS до 100 руб.",
+    "FBS свыше 100 до 300 руб.",
+    "FBS свыше 300 руб.",
+    "RFBS",
+  ];
+  for (const key of numericKeys) {
+    if (row[key] === undefined || row[key] === null) continue;
+    const clean = String(row[key]).replace("%", "").replace(",", ".").trim();
+    const num = Number(clean);
+    if (Number.isFinite(num) && num > 0) return num;
+  }
+
+  // если ключ не найден — ищем первое число в значениях
+  for (const val of Object.values(row || {})) {
+    const clean = String(val ?? "").replace("%", "").replace(",", ".").trim();
+    const num = Number(clean);
+    if (Number.isFinite(num) && num > 0) return num;
+  }
+  return NaN;
+}
+
+function loadCommissionMapFromXlsx() {
+  try {
+    if (!fs.existsSync(COMMISSION_XLSX_PATH)) return commissionXlsxCache;
+    const stat = fs.statSync(COMMISSION_XLSX_PATH);
+    if (commissionXlsxCache.mtimeMs === stat.mtimeMs && commissionXlsxCache.byId.size) return commissionXlsxCache;
+
+    const wb = xlsx.readFile(COMMISSION_XLSX_PATH);
+    const sheetName = wb.SheetNames[0];
+    if (!sheetName) return commissionXlsxCache;
+    const sheet = wb.Sheets[sheetName];
+    const rows = xlsx.utils.sheet_to_json(sheet, { defval: null });
+
+    const byId = new Map();
+    const byName = new Map();
+    const categories = [];
+
+    const rateColumns = [
+      { schema: "fbo", max: 100, names: ["FBO до 100 руб."] },
+      { schema: "fbo", max: 300, names: ["FBO свыше 100 до 300 руб."] },
+      { schema: "fbo", max: 500, names: ["FBO свыше 300 до 500 руб."] },
+      { schema: "fbo", max: 1500, names: ["FBO свыше 500 до 1500 руб."] },
+      { schema: "fbo", max: null, names: ["FBO свыше 1500 руб."] },
+      { schema: "fbo_fresh", max: null, names: ["FBO Fresh"] },
+      { schema: "fbs", max: 100, names: ["FBS до 100 руб."] },
+      { schema: "fbs", max: 300, names: ["FBS свыше 100 до 300 руб."] },
+      { schema: "fbs", max: null, names: ["FBS свыше 300 руб."] },
+      { schema: "rfbs", max: null, names: ["RFBS"] },
+    ];
+
+    for (const row of rows) {
+      const id =
+        row.category_id ??
+        row.id ??
+        row.categoryId ??
+        row.type_id ??
+        row.typeId ??
+        row["ID"] ??
+        row["Category ID"] ??
+        row["category"];
+      const name = row["Категория"] ?? row["category_name"] ?? row["Category"] ?? row["Name"] ?? row["name"] ?? row["category"];
+      const path = row["Тип товара"] ?? row["type_name"] ?? row["Type"] ?? row["type"] ?? name;
+
+      const idStr = id === 0 ? "0" : String(id || "").trim();
+      const schemaRates = {};
+
+      for (const col of rateColumns) {
+        for (const colName of col.names) {
+          if (row[colName] === undefined || row[colName] === null) continue;
+          const rate = parseRateFromRow({ [colName]: row[colName] });
+          if (!Number.isFinite(rate) || rate <= 0) continue;
+          const list = schemaRates[col.schema] || [];
+          list.push({ max: col.max, rate, label: colName });
+          schemaRates[col.schema] = list;
+          break;
+        }
+      }
+
+      const normalizedName = name ? String(name).trim() : "";
+      const key = normalizedName.toLowerCase();
+
+      if (Object.keys(schemaRates).length) {
+        const entry = { name: normalizedName || idStr || key || "Категория", path: path ? String(path).trim() : normalizedName, schemaRates };
+        if (idStr) byId.set(idStr, entry);
+        if (key) byName.set(key, entry);
+        categories.push({
+          category_id: idStr || key,
+          name: entry.name,
+          path: entry.path || entry.name,
+          keywords: [entry.name, entry.path].filter(Boolean),
+          commission: { rates: schemaRates },
+        });
+      }
+    }
+
+    commissionXlsxCache.mtimeMs = stat.mtimeMs;
+    commissionXlsxCache.byId = byId;
+    commissionXlsxCache.byName = byName;
+    commissionXlsxCache.categories = categories;
+    return commissionXlsxCache;
+  } catch (err) {
+    console.error("LOCAL COMMISSION XLSX LOAD ERROR", err);
+    return commissionXlsxCache;
+  }
+}
+
+function pickTierRate(schemaRates, schema, price) {
+  const list = schemaRates?.[schema];
+  if (!Array.isArray(list) || !list.length) return null;
+  const normalized = [...list].sort((a, b) => {
+    const ma = a.max === null || a.max === undefined ? Infinity : a.max;
+    const mb = b.max === null || b.max === undefined ? Infinity : b.max;
+    return ma - mb;
+  });
+  if (!Number.isFinite(price) || price <= 0) return normalized[normalized.length - 1]?.rate ?? null;
+  for (const tier of normalized) {
+    const max = Number.isFinite(tier.max) ? tier.max : Infinity;
+    if (price <= max) return tier.rate;
+  }
+  return normalized[normalized.length - 1]?.rate ?? null;
+}
+
+function findLocalCommission(categoryId, name, price, schema) {
+  const { byId, byName } = loadCommissionMapFromXlsx();
+  let entry = null;
+  if (categoryId !== undefined && categoryId !== null) {
+    entry = byId.get(String(categoryId)) || null;
+  }
+  if (!entry && name) {
+    const key = String(name).trim().toLowerCase();
+    entry = byName.get(key) || null;
+  }
+  if (!entry) return null;
+  const rate = pickTierRate(entry.schemaRates, schema, price);
+  if (!Number.isFinite(rate) || rate <= 0) return null;
+  return rate;
+}
 
 // ---------------- store helpers ----------------
 function loadStore() {
@@ -155,9 +315,9 @@ function flattenCategoryTree(tree, acc = []) {
   }
 
   const current = {
-    category_id: tree.category_id || tree.id,
-    name: tree.title || tree.name,
-    path: tree.path || tree.path_name,
+    category_id: tree.category_id || tree.id || tree.type_id,
+    name: tree.title || tree.name || tree.type_name,
+    path: tree.path || tree.path_name || tree.type_path || tree.type_name,
     children: tree.children || tree.childrens || [],
   };
 
@@ -193,6 +353,7 @@ const CATEGORY_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 часов
 
 async function ensureCategoryCache({ clientId, apiKey, source }) {
   loadCategoryCacheFromDisk();
+  const localExcel = loadCommissionMapFromXlsx();
 
   const cacheIsFallback = categoryCache.source === "fallback";
   const cacheIsStale = categoryCache.updatedAt && Date.now() - categoryCache.updatedAt > CATEGORY_CACHE_TTL_MS;
@@ -203,9 +364,62 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
   // Если кэш есть, но он из фолбэка или устарел — продолжаем и перезапишем его при наличии ключей
   if (!clientId || !apiKey) throw new Error("no_creds");
 
+  const tryPaths = Array.from(new Set([OZON_CATEGORY_TREE_PATH, OZON_CATEGORY_TREE_ALT_PATH].filter(Boolean)));
   const body = { language: "RU" };
-  const data = await ozonPost(OZON_CATEGORY_TREE_PATH, { clientId, apiKey, body });
-  const tree = data?.result?.categories || data?.result?.items || data?.result || data;
+
+  let tree = null;
+  let usedPath = null;
+  const treeInfos = [];
+
+  for (const p of tryPaths) {
+    try {
+      const data = await ozonPost(p, { clientId, apiKey, body });
+      const candidate = data?.result?.categories || data?.result?.items || data?.result || data;
+
+      const info = Array.isArray(candidate)
+        ? { path: p, type: "array", length: candidate.length }
+        : candidate && typeof candidate === "object"
+          ? { path: p, type: "object", keys: Object.keys(candidate).slice(0, 12) }
+          : { path: p, type: typeof candidate };
+      treeInfos.push(info);
+
+      const flatCandidate = flattenCategoryTree(candidate, []);
+      if (flatCandidate.length) {
+        tree = candidate;
+        usedPath = p;
+        break;
+      }
+    } catch (err) {
+      treeInfos.push({ path: p, error: String(err.message || err) });
+      continue;
+    }
+  }
+
+  if (!tree) {
+    console.error("OZON CATEGORY TREE EMPTY", { treeInfos });
+
+    // Попробуем вернуться к локальному fallback, если он есть
+    seedCategoryCacheFromFallback();
+    if (!categoryCache.list.length && localExcel?.categories?.length) {
+      categoryCache.list = localExcel.categories;
+      categoryCache.source = "excel_fallback";
+      categoryCache.updatedAt = Date.now();
+      saveCategoryCacheToDisk();
+      return categoryCache;
+    }
+    if (!categoryCache.list.length) {
+      const err = new Error("categories_empty_api");
+      err.code = "categories_empty_api";
+      err.treeInfos = treeInfos;
+      err.hint = "Ozon API вернул пустой список категорий. Проверьте права ключа: нужен доступ к каталогу и описанию категорий.";
+      throw err;
+    }
+    categoryCache.source = "fallback_after_empty";
+    categoryCache.updatedAt = Date.now();
+    saveCategoryCacheToDisk();
+    return categoryCache;
+  }
+
   // попробуем подмешать "стандартные" комиссии из fallback-файла (если он есть)
 // чтобы комиссия работала даже при обновлении дерева категорий через API
   let commissionById = new Map();
@@ -231,7 +445,14 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
   }));
 
   categoryCache.list = flat;
-  categoryCache.source = source || OZON_CATEGORY_TREE_PATH;
+  if (localExcel?.categories?.length) {
+    const seen = new Set(categoryCache.list.map((c) => (normalize(c.name) + "|" + (c.category_id || ""))));
+    for (const c of localExcel.categories) {
+      const key = normalize(c.name) + "|" + (c.category_id || "");
+      if (!seen.has(key)) categoryCache.list.push(c);
+    }
+  }
+  categoryCache.source = source || usedPath || OZON_CATEGORY_TREE_PATH;
   categoryCache.updatedAt = Date.now();
   saveCategoryCacheToDisk();
   return categoryCache;
@@ -818,16 +1039,29 @@ app.post("/api/ozon/categories", async (req, res) => {
       return res.status(400).json({ error: "no_creds" });
     }
 
-    await ensureCategoryCache(resolved);
+    const cache = await ensureCategoryCache(resolved);
+
+    if (!cache?.list?.length) {
+      console.error("OZON CATEGORIES EMPTY", { source: cache?.source, updatedAt: cache?.updatedAt });
+      return res.status(502).json({ error: "categories_empty", source: cache?.source || "unknown" });
+    }
 
     return res.json({
       source: categoryCache.source,
       total: categoryCache.list.length,
+      updatedAt: categoryCache.updatedAt,
       categories: categoryCache.list,
     });
   } catch (e) {
     console.error("OZON CATEGORIES ERROR:", e);
-    return res.status(500).json({ error: String(e.message || e) });
+    const code = e?.code || "error";
+    const status = code === "categories_empty_api" ? 502 : 500;
+    return res.status(status).json({
+      error: String(e.message || e),
+      code,
+      hint: e?.hint,
+      treeInfos: e?.treeInfos,
+    });
   }
 });
 
@@ -851,24 +1085,46 @@ app.post("/api/ozon/categories/search", async (req, res) => {
       await ensureCategoryCache(resolved);
     }
 
-    const matches = searchCategories(query, { limit });
+    let matches = searchCategories(query, { limit });
+
+    if ((!matches || !matches.length) && resolved?.clientId && resolved?.apiKey) {
+      // Попробуем принудительно обновить дерево категорий (например, если кэш пустой или устаревший)
+      const cache = await ensureCategoryCache(resolved);
+      matches = searchCategories(query, { limit });
+      if (!matches?.length && !cache?.list?.length) {
+        console.error("OZON CATEGORIES SEARCH EMPTY AFTER REFRESH", { source: cache?.source, updatedAt: cache?.updatedAt, query, treeInfos: cache?.treeInfos });
+        return res.status(502).json({
+          error: "categories_empty",
+          code: "categories_empty",
+          source: cache?.source || "unknown",
+          query,
+          total: cache?.list?.length || 0,
+          treeInfos: cache?.treeInfos,
+        });
+      }
+    }
     return res.json({
       source: categoryCache.source,
       total: categoryCache.list.length,
+      updatedAt: categoryCache.updatedAt,
       categories: matches,
     });
   } catch (e) {
     console.error("OZON CATEGORIES SEARCH ERROR:", e);
-    return res.status(500).json({ error: String(e.message || e) });
+    const code = e?.code || "error";
+    const status = code === "categories_empty_api" ? 502 : 500;
+    return res.status(status).json({
+      error: String(e.message || e),
+      code,
+      hint: e?.hint,
+      treeInfos: e?.treeInfos,
+    });
   }
 });
 
 app.post("/api/ozon/commission", async (req, res) => {
-  // ВАЖНО: для твоей логики комиссия фиксированная по категории.
-  // Этот endpoint возвращает % комиссии из categoryCache (seed из ozon-category-fallback.json + подмешивание в API дерево).
   try {
     loadCategoryCacheFromDisk();
-    seedCategoryCacheFromFallback();
 
     const payload = req.body?.payload || req.body || {};
     const item = Array.isArray(payload?.items) ? payload.items[0] : (payload?.item || payload || null);
@@ -876,43 +1132,53 @@ app.post("/api/ozon/commission", async (req, res) => {
     const categoryIdRaw = item?.category_id ?? item?.categoryId ?? payload?.category_id ?? payload?.categoryId;
     if (!categoryIdRaw) return res.status(400).json({ error: "missing_category_id" });
 
-    // fbo/fbs: берём из delivery_schema если он есть, иначе из query/body, иначе fbo
     const schemaRaw =
       item?.delivery_schema ??
       payload?.delivery_schema ??
       req.body?.delivery_schema ??
       req.query?.delivery_schema ??
       "fbo";
-    const schema = String(schemaRaw).toLowerCase().includes("fbs") ? "fbs" : "fbo";
+    const schemaStr = String(schemaRaw || "").toLowerCase();
+    const schema = schemaStr.includes("fbs") ? "fbs" : schemaStr.includes("rfbs") ? "rfbs" : "fbo";
 
-    // если кэша нет и есть ключи — попробуем обновить дерево (это не обязательно, но полезно)
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
-    if ((!categoryCache.list.length || categoryCache.source === "fallback") && resolved?.clientId && resolved?.apiKey) {
-      try { await ensureCategoryCache(resolved); } catch (_) {}
+    if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
+
+    const price = Number(payload?.price ?? req.body?.price ?? item?.price ?? req.query?.price);
+    if (!Number.isFinite(price) || price <= 0) {
+      return res.status(400).json({ error: "invalid_price", hint: "Укажите цену товара (number > 0)" });
     }
 
-    const id = String(categoryIdRaw);
-    const cat = categoryCache.list.find((c) => String(c.category_id) === id);
-
-    const rate = Number(cat?.commission?.[schema] ?? cat?.commission?.rate ?? cat?.commission ?? NaN);
-    if (!Number.isFinite(rate) || rate <= 0) {
-      return res.status(404).json({
-        error: "commission_not_found",
-        category_id: id,
+    // 1) пробуем локальный Excel (если есть)
+    const localRate = findLocalCommission(categoryIdRaw, item?.name || item?.category_name || payload?.category_name, price, schema);
+    if (Number.isFinite(localRate) && localRate > 0) {
+      return res.json({
+        source: "local_excel",
+        category_id: String(categoryIdRaw),
+        category_name: item?.name || item?.category_name || payload?.category_name,
         schema,
-        hint: "Добавь комиссию в ozon-category-fallback.json для этого category_id.",
+        rate: Number(localRate),
+        price,
       });
     }
 
-    return res.json({
-      source: "category_cache",
-      category_id: id,
+    // 2) если в Excel нет — больше не зовём Ozon API, сразу ошибка
+    return res.status(404).json({
+      error: "commission_not_found",
+      category_id: String(categoryIdRaw),
+      category_name: item?.name || item?.category_name || payload?.category_name,
       schema,
-      rate, // % комиссии
+      price,
+      hint: "Ставка не найдена в commissions.xlsx. Добавьте категорию и повторите.",
     });
   } catch (e) {
-    return res.status(500).json({ error: String(e.message || e) });
+    console.error("OZON COMMISSION ERROR", e);
+    return res.status(500).json({
+      error: String(e.message || e),
+      code: e?.code,
+      hint: "Проверьте наличие категории в commissions.xlsx",
+    });
   }
 });
 
@@ -1577,4 +1843,4 @@ app.post("/telegram-webhook", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`✅ Server started on :${PORT}`));
+app.listen(PORT, "0.0.0.0", () => console.log(`✅ Server started on :${PORT}`));
