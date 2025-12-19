@@ -242,7 +242,11 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
     // Попробуем вернуться к локальному fallback, если он есть
     seedCategoryCacheFromFallback();
     if (!categoryCache.list.length) {
-      throw new Error("categories_empty_api");
+      const err = new Error("categories_empty_api");
+      err.code = "categories_empty_api";
+      err.treeInfos = treeInfos;
+      err.hint = "Ozon API вернул пустой список категорий. Проверьте права ключа: нужен доступ к каталогу и описанию категорий.";
+      throw err;
     }
     categoryCache.source = "fallback_after_empty";
     categoryCache.updatedAt = Date.now();
@@ -877,7 +881,14 @@ app.post("/api/ozon/categories", async (req, res) => {
     });
   } catch (e) {
     console.error("OZON CATEGORIES ERROR:", e);
-    return res.status(500).json({ error: String(e.message || e) });
+    const code = e?.code || "error";
+    const status = code === "categories_empty_api" ? 502 : 500;
+    return res.status(status).json({
+      error: String(e.message || e),
+      code,
+      hint: e?.hint,
+      treeInfos: e?.treeInfos,
+    });
   }
 });
 
@@ -908,12 +919,14 @@ app.post("/api/ozon/categories/search", async (req, res) => {
       const cache = await ensureCategoryCache(resolved);
       matches = searchCategories(query, { limit });
       if (!matches?.length && !cache?.list?.length) {
-        console.error("OZON CATEGORIES SEARCH EMPTY AFTER REFRESH", { source: cache?.source, updatedAt: cache?.updatedAt, query });
+        console.error("OZON CATEGORIES SEARCH EMPTY AFTER REFRESH", { source: cache?.source, updatedAt: cache?.updatedAt, query, treeInfos: cache?.treeInfos });
         return res.status(502).json({
           error: "categories_empty",
+          code: "categories_empty",
           source: cache?.source || "unknown",
           query,
           total: cache?.list?.length || 0,
+          treeInfos: cache?.treeInfos,
         });
       }
     }
@@ -925,7 +938,14 @@ app.post("/api/ozon/categories/search", async (req, res) => {
     });
   } catch (e) {
     console.error("OZON CATEGORIES SEARCH ERROR:", e);
-    return res.status(500).json({ error: String(e.message || e) });
+    const code = e?.code || "error";
+    const status = code === "categories_empty_api" ? 502 : 500;
+    return res.status(status).json({
+      error: String(e.message || e),
+      code,
+      hint: e?.hint,
+      treeInfos: e?.treeInfos,
+    });
   }
 });
 
