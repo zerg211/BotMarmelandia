@@ -185,12 +185,15 @@
     .svd-value{font-weight:800;color:var(--accent);}
     .badge-row{display:flex;flex-wrap:wrap;gap:8px;font-size:12px;color:var(--muted);}
     .badge-row .pill{border-color:rgba(255,255,255,.08);}
-    .typeahead{position:relative;}
-    .typeahead-list{position:absolute;left:0;right:0;top:100%;margin-top:6px;border:1px solid var(--line);background:rgba(16,22,31,.96);
-      border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.35);max-height:220px;overflow:auto;display:none;z-index:20;}
-    .typeahead-item{padding:10px 12px;font-size:13px;color:var(--text);cursor:pointer;display:flex;flex-direction:column;gap:2px;}
-    .typeahead-item:hover,.typeahead-item:active{background:rgba(77,163,255,.14);}
-    .typeahead-item .meta{font-size:11px;color:var(--muted);}
+.typeahead{position:relative;}
+.typeahead-list{position:absolute;left:0;right:0;top:100%;margin-top:6px;border:1px solid var(--line);background:rgba(16,22,31,.96);
+  border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.35);max-height:220px;overflow:auto;display:none;z-index:20;}
+.typeahead-item{padding:10px 12px;font-size:13px;color:var(--text);cursor:pointer;display:flex;flex-direction:column;gap:2px;}
+.typeahead-item:hover,.typeahead-item:active{background:rgba(77,163,255,.14);}
+.typeahead-item .meta{font-size:11px;color:var(--muted);}
+.mode-toggle{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;}
+.mode-toggle button{border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--text);padding:8px 12px;border-radius:12px;font-weight:800;cursor:pointer;}
+.mode-toggle button.active{background:rgba(77,163,255,.18);border-color:rgba(77,163,255,.6);}
 
 </style>
 </head>
@@ -276,12 +279,26 @@
         </div>
 
         <div class="field">
-          <label>Комиссия Ozon</label>
+          <label>Цена товара, ₽</label>
+          <input id="priceInput" type="number" inputmode="decimal" placeholder="Например 1500" />
+        </div>
+
+        <div class="field">
+          <label>Способ продажи</label>
+          <div class="mode-toggle" id="schemaToggle">
+            <button data-schema="fbo" class="active">FBO</button>
+            <button data-schema="fbs">FBS</button>
+            <button data-schema="rfbs">RFBS</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Комиссия</label>
           <input id="commissionInput" placeholder="Выберите категорию" readonly />
           <div class="err" id="commissionErr" style="display:none;"></div>
         </div>
 
-        <div class="calc-note">Выберите категорию, совпадающую с вашим товаром. Мы подтянем её из каталога Ozon и покажем текущую комиссию.</div>
+        <div class="calc-note">Выберите категорию, совпадающую с вашим товаром, укажите цену и способ продажи. Комиссия берётся из локального файла Excel.</div>
       </div>
     </div>
   </div>
@@ -370,15 +387,18 @@
     const tabButtons = Array.from(document.querySelectorAll(".tab-btn"));
     const tabContents = Array.from(document.querySelectorAll(".tab-content"));
 
-    const categoryInput = $("categoryInput");
-    const categoryList = $("categoryList");
-    const commissionInput = $("commissionInput");
-    const commissionErr = $("commissionErr");
+  const categoryInput = $("categoryInput");
+  const categoryList = $("categoryList");
+  const priceInput = $("priceInput");
+  const schemaToggle = $("schemaToggle");
+  const commissionInput = $("commissionInput");
+  const commissionErr = $("commissionErr");
 
-    let selectedCategory = null;
-    let searchTimer = null;
-    let categoriesReady = false;
-    let allCategories = [];
+  let selectedCategory = null;
+  let searchTimer = null;
+  let categoriesReady = false;
+  let allCategories = [];
+  let schemaMode = "fbo";
 
     const rubFormatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -517,31 +537,31 @@
         .map((s) => s.cat);
     }
 
-    function renderSuggestions(items){
-      if (!categoryList) return;
-      if (!items?.length) return renderSuggestionMessage("Совпадений нет");
+function renderSuggestions(items){
+  if (!categoryList) return;
+  if (!items?.length) return renderSuggestionMessage("Совпадений нет");
 
-      categoryList.innerHTML = items.map((c) => {
-        const title = (c.path || c.name || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-        return `<div class="typeahead-item" data-id="${c.category_id}">
-          <div>${title}</div>
-          <div class="meta">ID ${c.category_id}</div>
-        </div>`;
-      }).join("");
-      categoryList.style.display = "block";
+  categoryList.innerHTML = items.map((c) => {
+    const title = (c.path || c.name || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    return `<div class="typeahead-item" data-id="${c.category_id}">
+      <div>${title}</div>
+      <div class="meta">ID ${c.category_id}</div>
+    </div>`;
+  }).join("");
+  categoryList.style.display = "block";
 
-      categoryList.querySelectorAll(".typeahead-item").forEach((el) => {
-        el.addEventListener("click", () => {
-          const id = el.getAttribute("data-id");
-          const item = items.find((c) => String(c.category_id) === id) || null;
-          if (!item) return;
-          selectedCategory = item;
-          categoryInput.value = item.path || item.name;
-          clearSuggestions();
-          fetchCommissionForCategory(item.category_id);
-        });
-      });
-    }
+  categoryList.querySelectorAll(".typeahead-item").forEach((el) => {
+    el.addEventListener("click", () => {
+      const id = el.getAttribute("data-id");
+      const item = items.find((c) => String(c.category_id) === id) || null;
+      if (!item) return;
+      selectedCategory = item;
+      categoryInput.value = item.path || item.name;
+      clearSuggestions();
+      fetchCommissionForCategory(item.category_id, item.name || item.path);
+    });
+  });
+}
 
     async function ensureCategories(){
       if (categoriesReady) return true;
@@ -616,10 +636,17 @@
       }
     }
 
-    async function fetchCommissionForCategory(categoryId){
+    async function fetchCommissionForCategory(categoryId, categoryName){
       const creds = ensureCredsOrPrompt();
       if (!creds) return;
-      if (!categoryId) return;
+      if (!categoryId && !categoryName) return;
+
+      const price = Number(priceInput?.value || "");
+      if (!Number.isFinite(price) || price <= 0){
+        commissionErr.style.display = "block";
+        commissionErr.textContent = "Укажите цену товара";
+        return;
+      }
 
       commissionErr.style.display = "none";
       commissionInput.value = "Загрузка…";
@@ -629,10 +656,17 @@
         const r = await fetch("/api/ozon/commission", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ category_id: categoryId, clientId: creds.clientId, apiKey: creds.apiKey }),
+          body: JSON.stringify({
+            category_id: categoryId,
+            category_name: categoryName,
+            price,
+            delivery_schema: schemaMode,
+            clientId: creds.clientId,
+            apiKey: creds.apiKey,
+          }),
         });
         const data = await r.json().catch(() => ({}));
-        if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+        if (!r.ok || data.error) throw new Error(data.hint || data.error || ("HTTP " + r.status));
         const rate = Number(data.rate ?? data.percent ?? data.commission);
         if (!Number.isFinite(rate) || rate <= 0) throw new Error("Комиссия не найдена");
         commissionInput.value = `${rate}%`;
@@ -661,11 +695,23 @@
       });
     }
 
-    document.addEventListener("click", (e) => {
-      if (!categoryList || !categoryInput) return;
-      const isInside = categoryList.contains(e.target) || categoryInput === e.target;
-      if (!isInside) clearSuggestions();
-    });
+document.addEventListener("click", (e) => {
+  if (!categoryList || !categoryInput) return;
+  const isInside = categoryList.contains(e.target) || categoryInput === e.target;
+  if (!isInside) clearSuggestions();
+});
+
+schemaToggle?.querySelectorAll("button")?.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    schemaMode = btn.getAttribute("data-schema") || "fbo";
+    schemaToggle.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === btn));
+    if (selectedCategory) fetchCommissionForCategory(selectedCategory.category_id, selectedCategory.name || selectedCategory.path);
+  });
+});
+
+priceInput?.addEventListener("input", () => {
+  if (selectedCategory) fetchCommissionForCategory(selectedCategory.category_id, selectedCategory.name || selectedCategory.path);
+});
 
     function openModal(){
       modalErr.style.display = "none";
