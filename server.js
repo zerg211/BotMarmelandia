@@ -50,22 +50,61 @@ const OZON_FALLBACK_CATEGORIES_PATH = path.join(__dirname, "ozon-category-fallba
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 const pending = new Map();
 
-// ---------------- local commission (Excel) ----------------
-const commissionXlsxCache = { mtimeMs: 0, map: new Map() };
+// ---------------- local commission + categories (Excel) ----------------
+const commissionXlsxCache = { mtimeMs: 0, byId: new Map(), byName: new Map(), categories: [] };
+
+function parseRateFromRow(row) {
+  const numericKeys = [
+    "rate",
+    "percent",
+    "value",
+    "commission",
+    "Commission",
+    "Commission (%)",
+    "commission_percent",
+    "FBO до 100 руб.",
+    "FBO свыше 100 до 300 руб.",
+    "FBO свыше 300 до 500 руб.",
+    "FBO свыше 500 до 1500 руб.",
+    "FBO свыше 1500 руб.",
+    "FBO Fresh",
+    "FBS до 100 руб.",
+    "FBS свыше 100 до 300 руб.",
+    "FBS свыше 300 руб.",
+    "RFBS",
+  ];
+  for (const key of numericKeys) {
+    if (row[key] === undefined || row[key] === null) continue;
+    const clean = String(row[key]).replace("%", "").replace(",", ".").trim();
+    const num = Number(clean);
+    if (Number.isFinite(num) && num > 0) return num;
+  }
+
+  // если ключ не найден — ищем первое число в значениях
+  for (const val of Object.values(row || {})) {
+    const clean = String(val ?? "").replace("%", "").replace(",", ".").trim();
+    const num = Number(clean);
+    if (Number.isFinite(num) && num > 0) return num;
+  }
+  return NaN;
+}
 
 function loadCommissionMapFromXlsx() {
   try {
-    if (!fs.existsSync(COMMISSION_XLSX_PATH)) return commissionXlsxCache.map;
+    if (!fs.existsSync(COMMISSION_XLSX_PATH)) return commissionXlsxCache;
     const stat = fs.statSync(COMMISSION_XLSX_PATH);
-    if (commissionXlsxCache.mtimeMs === stat.mtimeMs && commissionXlsxCache.map.size) return commissionXlsxCache.map;
+    if (commissionXlsxCache.mtimeMs === stat.mtimeMs && commissionXlsxCache.byId.size) return commissionXlsxCache;
 
     const wb = xlsx.readFile(COMMISSION_XLSX_PATH);
     const sheetName = wb.SheetNames[0];
-    if (!sheetName) return commissionXlsxCache.map;
+    if (!sheetName) return commissionXlsxCache;
     const sheet = wb.Sheets[sheetName];
     const rows = xlsx.utils.sheet_to_json(sheet, { defval: null });
 
-    const map = new Map();
+    const byId = new Map();
+    const byName = new Map();
+    const categories = [];
+
     for (const row of rows) {
       const id =
         row.category_id ??
@@ -76,35 +115,51 @@ function loadCommissionMapFromXlsx() {
         row["ID"] ??
         row["Category ID"] ??
         row["category"];
-      const rateRaw =
-        row.rate ??
-        row.percent ??
-        row.value ??
-        row.commission ??
-        row.Commission ??
-        row["Commission (%)"] ??
-        row["commission_percent"];
+      const name = row["Категория"] ?? row["category_name"] ?? row["Category"] ?? row["Name"] ?? row["name"] ?? row["category"];
+      const path = row["Тип товара"] ?? row["type_name"] ?? row["Type"] ?? row["type"] ?? name;
+
+      const rate = parseRateFromRow(row);
 
       const idStr = id === 0 ? "0" : String(id || "").trim();
-      const rateNum = Number(rateRaw);
-      if (!idStr || !Number.isFinite(rateNum) || rateNum <= 0) continue;
-      map.set(idStr, rateNum);
+      if (idStr && Number.isFinite(rate) && rate > 0) {
+        byId.set(idStr, rate);
+      }
+
+      if (name && Number.isFinite(rate) && rate > 0) {
+        const key = String(name).trim().toLowerCase();
+        byName.set(key, rate);
+        categories.push({
+          category_id: idStr || key,
+          name: String(name).trim(),
+          path: path ? String(path).trim() : String(name).trim(),
+          keywords: [String(name).trim(), String(path || name).trim()].filter(Boolean),
+          commission: { rate },
+        });
+      }
     }
 
     commissionXlsxCache.mtimeMs = stat.mtimeMs;
-    commissionXlsxCache.map = map;
-    return map;
+    commissionXlsxCache.byId = byId;
+    commissionXlsxCache.byName = byName;
+    commissionXlsxCache.categories = categories;
+    return commissionXlsxCache;
   } catch (err) {
     console.error("LOCAL COMMISSION XLSX LOAD ERROR", err);
-    return commissionXlsxCache.map;
+    return commissionXlsxCache;
   }
 }
 
-function findLocalCommission(categoryId) {
-  if (!categoryId) return null;
-  const map = loadCommissionMapFromXlsx();
-  const direct = map.get(String(categoryId));
-  if (direct !== undefined) return direct;
+function findLocalCommission(categoryId, name) {
+  const { byId, byName } = loadCommissionMapFromXlsx();
+  if (categoryId !== undefined && categoryId !== null) {
+    const direct = byId.get(String(categoryId));
+    if (direct !== undefined) return direct;
+  }
+  if (name) {
+    const key = String(name).trim().toLowerCase();
+    const byNameRate = byName.get(key);
+    if (byNameRate !== undefined) return byNameRate;
+  }
   return null;
 }
 
@@ -255,6 +310,7 @@ const CATEGORY_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 часов
 
 async function ensureCategoryCache({ clientId, apiKey, source }) {
   loadCategoryCacheFromDisk();
+  const localExcel = loadCommissionMapFromXlsx();
 
   const cacheIsFallback = categoryCache.source === "fallback";
   const cacheIsStale = categoryCache.updatedAt && Date.now() - categoryCache.updatedAt > CATEGORY_CACHE_TTL_MS;
@@ -301,6 +357,13 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
 
     // Попробуем вернуться к локальному fallback, если он есть
     seedCategoryCacheFromFallback();
+    if (!categoryCache.list.length && localExcel?.categories?.length) {
+      categoryCache.list = localExcel.categories;
+      categoryCache.source = "excel_fallback";
+      categoryCache.updatedAt = Date.now();
+      saveCategoryCacheToDisk();
+      return categoryCache;
+    }
     if (!categoryCache.list.length) {
       const err = new Error("categories_empty_api");
       err.code = "categories_empty_api";
@@ -1032,7 +1095,7 @@ app.post("/api/ozon/commission", async (req, res) => {
     if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
 
     // 1) пробуем локальный Excel (если есть)
-    const localRate = findLocalCommission(categoryIdRaw);
+    const localRate = findLocalCommission(categoryIdRaw, item?.name || item?.category_name);
     if (Number.isFinite(localRate) && localRate > 0) {
       return res.json({
         source: "local_excel",
@@ -1042,57 +1105,19 @@ app.post("/api/ozon/commission", async (req, res) => {
       });
     }
 
-    const price = Number(payload?.price ?? req.body?.price ?? 1000);
-    const safePrice = Number.isFinite(price) && price > 0 ? price : 1000;
-    const commissionPayload = Array.isArray(payload?.items) && payload.items.length
-      ? payload
-      : { items: [{ category_id: Number(categoryIdRaw), price: safePrice, delivery_schema: schema.toUpperCase() }] };
-
-    const data = await ozonPost(OZON_COMMISSION_PATH, { clientId: resolved.clientId, apiKey: resolved.apiKey, body: commissionPayload });
-    const itemsArr = Array.isArray(data?.result?.items)
-      ? data.result.items
-      : Array.isArray(data?.result)
-        ? data.result
-        : (Array.isArray(data?.items) ? data.items : []);
-    const first = Array.isArray(itemsArr) && itemsArr.length ? itemsArr[0] : null;
-
-    const pickRate = (obj) => {
-      if (!obj) return NaN;
-      const direct = Number(obj.rate ?? obj.percent ?? obj.value ?? obj.commission);
-      if (Number.isFinite(direct)) return direct;
-      const fromCommission = Number(obj.commission?.percent ?? obj.commission?.value ?? obj.commission?.rate);
-      if (Number.isFinite(fromCommission)) return fromCommission;
-      if (Array.isArray(obj.commissions) && obj.commissions.length) {
-        const c = obj.commissions[0];
-        const nested = Number(c?.percent ?? c?.value ?? c?.rate);
-        if (Number.isFinite(nested)) return nested;
-      }
-      return NaN;
-    };
-
-    const rate = pickRate(first);
-    if (!Number.isFinite(rate) || rate <= 0) {
-      console.error("OZON COMMISSION NOT FOUND", { category_id: categoryIdRaw, schema, payload: commissionPayload, raw: data });
-      return res.status(502).json({
-        error: "commission_not_found",
-        category_id: String(categoryIdRaw),
-        schema,
-        raw: data,
-      });
-    }
-
-    return res.json({
-      source: "ozon_api",
+    // 2) если в Excel нет — больше не зовём Ozon API, сразу ошибка
+    return res.status(404).json({
+      error: "commission_not_found",
       category_id: String(categoryIdRaw),
       schema,
-      rate,
+      hint: "Ставка не найдена в commissions.xlsx. Добавьте категорию и повторите.",
     });
   } catch (e) {
     console.error("OZON COMMISSION ERROR", e);
     return res.status(500).json({
       error: String(e.message || e),
       code: e?.code,
-      hint: "Проверьте права ключа на расчет комиссий и корректность category_id/price.",
+      hint: "Проверьте наличие категории в commissions.xlsx",
     });
   }
 });
