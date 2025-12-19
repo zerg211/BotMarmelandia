@@ -230,6 +230,26 @@ async function ensureCategoryCache({ clientId, apiKey, source }) {
     commission: commissionById.get(String(c.category_id)) || {},
   }));
 
+  if (!flat.length) {
+    const treeInfo = Array.isArray(tree)
+      ? { type: "array", length: tree.length }
+      : tree && typeof tree === "object"
+        ? { type: "object", keys: Object.keys(tree).slice(0, 12) }
+        : { type: typeof tree };
+
+    console.error("OZON CATEGORY TREE EMPTY", { treeInfo, source });
+
+    // Попробуем вернуться к локальному fallback, если он есть
+    seedCategoryCacheFromFallback();
+    if (!categoryCache.list.length) {
+      throw new Error("categories_empty_api");
+    }
+    categoryCache.source = "fallback_after_empty";
+    categoryCache.updatedAt = Date.now();
+    saveCategoryCacheToDisk();
+    return categoryCache;
+  }
+
   categoryCache.list = flat;
   categoryCache.source = source || OZON_CATEGORY_TREE_PATH;
   categoryCache.updatedAt = Date.now();
