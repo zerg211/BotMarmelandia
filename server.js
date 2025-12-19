@@ -157,9 +157,9 @@ function flattenCategoryTree(tree, acc = []) {
   }
 
   const current = {
-    category_id: tree.category_id || tree.id,
-    name: tree.title || tree.name,
-    path: tree.path || tree.path_name,
+    category_id: tree.category_id || tree.id || tree.type_id,
+    name: tree.title || tree.name || tree.type_name,
+    path: tree.path || tree.path_name || tree.type_path || tree.type_name,
     children: tree.children || tree.childrens || [],
   };
 
