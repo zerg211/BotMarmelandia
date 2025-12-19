@@ -818,11 +818,17 @@ app.post("/api/ozon/categories", async (req, res) => {
       return res.status(400).json({ error: "no_creds" });
     }
 
-    await ensureCategoryCache(resolved);
+    const cache = await ensureCategoryCache(resolved);
+
+    if (!cache?.list?.length) {
+      console.error("OZON CATEGORIES EMPTY", { source: cache?.source, updatedAt: cache?.updatedAt });
+      return res.status(502).json({ error: "categories_empty", source: cache?.source || "unknown" });
+    }
 
     return res.json({
       source: categoryCache.source,
       total: categoryCache.list.length,
+      updatedAt: categoryCache.updatedAt,
       categories: categoryCache.list,
     });
   } catch (e) {
@@ -855,12 +861,22 @@ app.post("/api/ozon/categories/search", async (req, res) => {
 
     if ((!matches || !matches.length) && resolved?.clientId && resolved?.apiKey) {
       // Попробуем принудительно обновить дерево категорий (например, если кэш пустой или устаревший)
-      await ensureCategoryCache(resolved);
+      const cache = await ensureCategoryCache(resolved);
       matches = searchCategories(query, { limit });
+      if (!matches?.length && !cache?.list?.length) {
+        console.error("OZON CATEGORIES SEARCH EMPTY AFTER REFRESH", { source: cache?.source, updatedAt: cache?.updatedAt, query });
+        return res.status(502).json({
+          error: "categories_empty",
+          source: cache?.source || "unknown",
+          query,
+          total: cache?.list?.length || 0,
+        });
+      }
     }
     return res.json({
       source: categoryCache.source,
       total: categoryCache.list.length,
+      updatedAt: categoryCache.updatedAt,
       categories: matches,
     });
   } catch (e) {
