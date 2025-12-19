@@ -4,6 +4,7 @@ import path from "path";
 import crypto from "crypto";
 import { DateTime } from "luxon";
 import { fileURLToPath } from "url";
+import xlsx from "xlsx";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,6 +38,7 @@ const OZON_COMMISSION_PATH = process.env.OZON_COMMISSION_PATH || "/v1/product/ca
 const OZON_LOGISTICS_PATH = process.env.OZON_LOGISTICS_PATH || "/v1/product/calc/fbs";
 const OZON_DEFAULT_CLIENT_ID = process.env.OZON_DEFAULT_CLIENT_ID || process.env.OZON_CLIENT_ID;
 const OZON_DEFAULT_API_KEY = process.env.OZON_DEFAULT_API_KEY || process.env.OZON_API_KEY;
+const COMMISSION_XLSX_PATH = process.env.COMMISSION_XLSX_PATH || path.join(__dirname, "commissions.xlsx");
 
 // “Сегодня” считаем по МСК (или поменяй через ENV SALES_TZ)
 const SALES_TZ = process.env.SALES_TZ || "Europe/Moscow";
@@ -47,6 +49,64 @@ const CATEGORY_CACHE_PATH = path.join(DATA_DIR, "category-cache.json");
 const OZON_FALLBACK_CATEGORIES_PATH = path.join(__dirname, "ozon-category-fallback.json");
 const ENCRYPTION_KEY_B64 = process.env.ENCRYPTION_KEY_B64;
 const pending = new Map();
+
+// ---------------- local commission (Excel) ----------------
+const commissionXlsxCache = { mtimeMs: 0, map: new Map() };
+
+function loadCommissionMapFromXlsx() {
+  try {
+    if (!fs.existsSync(COMMISSION_XLSX_PATH)) return commissionXlsxCache.map;
+    const stat = fs.statSync(COMMISSION_XLSX_PATH);
+    if (commissionXlsxCache.mtimeMs === stat.mtimeMs && commissionXlsxCache.map.size) return commissionXlsxCache.map;
+
+    const wb = xlsx.readFile(COMMISSION_XLSX_PATH);
+    const sheetName = wb.SheetNames[0];
+    if (!sheetName) return commissionXlsxCache.map;
+    const sheet = wb.Sheets[sheetName];
+    const rows = xlsx.utils.sheet_to_json(sheet, { defval: null });
+
+    const map = new Map();
+    for (const row of rows) {
+      const id =
+        row.category_id ??
+        row.id ??
+        row.categoryId ??
+        row.type_id ??
+        row.typeId ??
+        row["ID"] ??
+        row["Category ID"] ??
+        row["category"];
+      const rateRaw =
+        row.rate ??
+        row.percent ??
+        row.value ??
+        row.commission ??
+        row.Commission ??
+        row["Commission (%)"] ??
+        row["commission_percent"];
+
+      const idStr = id === 0 ? "0" : String(id || "").trim();
+      const rateNum = Number(rateRaw);
+      if (!idStr || !Number.isFinite(rateNum) || rateNum <= 0) continue;
+      map.set(idStr, rateNum);
+    }
+
+    commissionXlsxCache.mtimeMs = stat.mtimeMs;
+    commissionXlsxCache.map = map;
+    return map;
+  } catch (err) {
+    console.error("LOCAL COMMISSION XLSX LOAD ERROR", err);
+    return commissionXlsxCache.map;
+  }
+}
+
+function findLocalCommission(categoryId) {
+  if (!categoryId) return null;
+  const map = loadCommissionMapFromXlsx();
+  const direct = map.get(String(categoryId));
+  if (direct !== undefined) return direct;
+  return null;
+}
 
 // ---------------- store helpers ----------------
 function loadStore() {
@@ -970,6 +1030,17 @@ app.post("/api/ozon/commission", async (req, res) => {
     const fromBody = { clientId: req.body?.clientId || req.query.clientId, apiKey: req.body?.apiKey || req.query.apiKey };
     const resolved = fromBody.clientId && fromBody.apiKey ? { ...fromBody, source: "body" } : resolveCredsFromRequest(req);
     if (!resolved?.clientId || !resolved?.apiKey) return res.status(400).json({ error: "no_creds" });
+
+    // 1) пробуем локальный Excel (если есть)
+    const localRate = findLocalCommission(categoryIdRaw);
+    if (Number.isFinite(localRate) && localRate > 0) {
+      return res.json({
+        source: "local_excel",
+        category_id: String(categoryIdRaw),
+        schema,
+        rate: Number(localRate),
+      });
+    }
 
     const price = Number(payload?.price ?? req.body?.price ?? 1000);
     const safePrice = Number.isFinite(price) && price > 0 ? price : 1000;
