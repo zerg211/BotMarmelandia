@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     const serverUrl = 'https://botmarmelandia.onrender.com';
 
+    // --- ОБЩАЯ ЛОГИКА ВКЛАДОК ---
     window.showTab = (tabName) => {
         document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
         document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
@@ -13,6 +14,7 @@ document.addEventListener('DOMContentLoaded', function() {
         document.querySelector(`.tab-button[onclick="showTab('${tabName}')"]`).classList.add('active');
     };
 
+    // --- ЛОГИКА ВКЛАДКИ "ПРОДАЖИ" ---
     const clientIdInput = document.getElementById('clientId');
     const apiKeyInput = document.getElementById('apiKey');
     const saveBtn = document.getElementById('save-credentials');
@@ -184,4 +186,16 @@ window.calculateUnitEconomy = function() {
         return;
     }
 
-    const commissionValue = sellPrice * (commissi
+    const commissionValue = sellPrice * (commissionPercent / 100);
+    const lastMileValue = sellPrice * (lastMilePercent / 100);
+    const totalExpenses = purchasePrice + commissionValue + logistics + lastMileValue;
+    const profitBeforeTax = sellPrice - totalExpenses;
+    const taxValue = (sellPrice > purchasePrice) ? (sellPrice - purchasePrice) * (taxRate / 100) : 0;
+    const profitAfterTax = profitBeforeTax - taxValue;
+    const margin = (sellPrice === 0) ? 0 : (profitBeforeTax / sellPrice) * 100;
+
+    document.getElementById('profit-before-tax').textContent = `${profitAfterTax.toFixed(2)} ₽`;
+    document.getElementById('profit-after-tax').textContent = `${profitAfterTax.toFixed(2)} ₽`;
+    document.getElementById('margin').textContent = `${margin.toFixed(2)} %`;
+    document.getElementById('calc-results').style.display = 'block';
+}
