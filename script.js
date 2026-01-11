@@ -6,7 +6,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     const serverUrl = 'https://botmarmelandia.onrender.com';
 
-    // --- ОБЩАЯ ЛОГИКА ВКЛАДОК ---
     window.showTab = (tabName) => {
         document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
         document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
@@ -14,7 +13,6 @@ document.addEventListener('DOMContentLoaded', function() {
         document.querySelector(`.tab-button[onclick="showTab('${tabName}')"]`).classList.add('active');
     };
 
-    // --- ЛОГИКА ВКЛАДКИ "ПРОДАЖИ" ---
     const clientIdInput = document.getElementById('clientId');
     const apiKeyInput = document.getElementById('apiKey');
     const saveBtn = document.getElementById('save-credentials');
@@ -45,6 +43,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         if(loadingEl) loadingEl.style.display = 'block';
+        if(authForm) authForm.style.display = 'none';
         if(salesDataEl) salesDataEl.style.display = 'none';
         if(errorEl) errorEl.style.display = 'none';
 
@@ -96,8 +95,8 @@ document.addEventListener('DOMContentLoaded', function() {
             localStorage.removeItem('ozonApiKey');
             authForm.style.display = 'block';
             salesDataEl.style.display = 'none';
-            clientIdInput.value = '';
-            apiKeyInput.value = '';
+            if(clientIdInput) clientIdInput.value = '';
+            if(apiKeyInput) apiKeyInput.value = '';
         });
     }
 
@@ -107,9 +106,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     fetchSalesData();
 
-    // --- ЛОГИКА ВКЛАДКИ "КАЛЬКУЛЯТОР" ---
     let allCategories = [];
-
     const categorySearchInput = document.getElementById('category-search');
     const categoryResultsContainer = document.getElementById('category-results');
     const commissionInput = document.getElementById('commission');
@@ -127,10 +124,12 @@ document.addEventListener('DOMContentLoaded', function() {
     };
 
     const selectCategory = (category) => {
-        categorySearchInput.value = category.title;
-        commissionInput.value = category.commission;
-        categoryResultsContainer.innerHTML = '';
-        categoryResultsContainer.style.display = 'none';
+        if(categorySearchInput) categorySearchInput.value = category.title;
+        if(commissionInput) commissionInput.value = category.commission;
+        if(categoryResultsContainer) {
+            categoryResultsContainer.innerHTML = '';
+            categoryResultsContainer.style.display = 'none';
+        }
     };
 
     if (categorySearchInput) {
@@ -185,18 +184,4 @@ window.calculateUnitEconomy = function() {
         return;
     }
 
-    const commissionValue = sellPrice * (commissionPercent / 100);
-    const lastMileValue = sellPrice * (lastMilePercent / 100);
-    const totalExpenses = purchasePrice + commissionValue + logistics + lastMileValue;
-
-    const profitBeforeTax = sellPrice - totalExpenses;
-    const taxValue = (sellPrice > purchasePrice) ? (sellPrice - purchasePrice) * (taxRate / 100) : 0;
-    const profitAfterTax = profitBeforeTax - taxValue;
-    const margin = (profitBeforeTax / sellPrice) * 100;
-
-    document.getElementById('profit-before-tax').textContent = `${profitBeforeTax.toFixed(2)} ₽`;
-    document.getElementById('profit-after-tax').textContent = `${profitAfterTax.toFixed(2)} ₽`;
-    document.getElementById('margin').textContent = `${margin.toFixed(2)} %`;
-
-    document.getElementById('calc-results').style.display = 'block';
-}
+    const commissionValue = sellPrice * (commissi
