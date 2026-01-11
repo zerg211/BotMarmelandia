@@ -28,23 +28,25 @@ document.addEventListener('DOMContentLoaded', function() {
     const totalPriceEl = document.getElementById('total-price');
 
     const displayError = (message) => {
-        errorEl.textContent = message;
-        errorEl.style.display = 'block';
-        loadingEl.style.display = 'none';
+        if (errorEl) {
+            errorEl.textContent = message;
+            errorEl.style.display = 'block';
+        }
+        if(loadingEl) loadingEl.style.display = 'none';
     };
 
     const fetchSalesData = async () => {
         const clientId = localStorage.getItem('ozonClientId');
         const apiKey = localStorage.getItem('ozonApiKey');
         if (!clientId || !apiKey) {
-            authForm.style.display = 'block';
-            salesDataEl.style.display = 'none';
+            if (authForm) authForm.style.display = 'block';
+            if (salesDataEl) salesDataEl.style.display = 'none';
             return;
         }
-
-        loadingEl.style.display = 'block';
-        salesDataEl.style.display = 'none';
-        errorEl.style.display = 'none';
+        
+        if(loadingEl) loadingEl.style.display = 'block';
+        if(salesDataEl) salesDataEl.style.display = 'none';
+        if(errorEl) errorEl.style.display = 'none';
 
         try {
             const response = await fetch(`${serverUrl}/api/sales`, {
@@ -59,18 +61,18 @@ document.addEventListener('DOMContentLoaded', function() {
             }
 
             const data = await response.json();
-            totalQuantityEl.textContent = data.totalQuantity;
-            totalPriceEl.textContent = data.totalPrice;
-            salesDataEl.style.display = 'block';
-            authForm.style.display = 'none';
+            if(totalQuantityEl) totalQuantityEl.textContent = data.totalQuantity;
+            if(totalPriceEl) totalPriceEl.textContent = data.totalPrice;
+            if(salesDataEl) salesDataEl.style.display = 'block';
+            if(authForm) authForm.style.display = 'none';
         } catch (error) {
             displayError(`Ошибка: ${error.message}`);
-            authForm.style.display = 'block';
-            salesDataEl.style.display = 'none';
+            if (authForm) authForm.style.display = 'block';
+            if(salesDataEl) salesDataEl.style.display = 'none';
             localStorage.removeItem('ozonClientId');
             localStorage.removeItem('ozonApiKey');
         } finally {
-            loadingEl.style.display = 'none';
+            if(loadingEl) loadingEl.style.display = 'none';
         }
     };
 
@@ -103,7 +105,6 @@ document.addEventListener('DOMContentLoaded', function() {
         refreshBtn.addEventListener('click', fetchSalesData);
     }
 
-    // При загрузке страницы проверяем, есть ли сохраненные ключи
     fetchSalesData();
 
     // --- ЛОГИКА ВКЛАДКИ "КАЛЬКУЛЯТОР" ---
@@ -118,7 +119,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const response = await fetch(`${serverUrl}/api/categories`);
             if (!response.ok) throw new Error('Could not load categories');
             allCategories = await response.json();
-            categorySearchInput.placeholder = "Начните вводить категорию...";
+            if(categorySearchInput) categorySearchInput.placeholder = "Начните вводить категорию...";
         } catch (error) {
             console.error(error);
             if(categorySearchInput) categorySearchInput.placeholder = "Не удалось загрузить категории";
@@ -136,14 +137,14 @@ document.addEventListener('DOMContentLoaded', function() {
         categorySearchInput.addEventListener('input', () => {
             const query = categorySearchInput.value.toLowerCase().trim();
             if (query.length < 2) {
-                categoryResultsContainer.style.display = 'none';
+                if(categoryResultsContainer) categoryResultsContainer.style.display = 'none';
                 return;
             }
             const filtered = allCategories.filter(cat => cat.title.toLowerCase().includes(query));
             
-            categoryResultsContainer.innerHTML = '';
+            if(categoryResultsContainer) categoryResultsContainer.innerHTML = '';
             if (filtered.length === 0) {
-                categoryResultsContainer.style.display = 'none';
+                if(categoryResultsContainer) categoryResultsContainer.style.display = 'none';
                 return;
             }
 
@@ -154,7 +155,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 div.addEventListener('click', () => selectCategory(cat));
                 categoryResultsContainer.appendChild(div);
             });
-            categoryResultsContainer.style.display = 'block';
+            if(categoryResultsContainer) categoryResultsContainer.style.display = 'block';
         });
     }
 
@@ -172,25 +173,26 @@ window.calculateUnitEconomy = function() {
     const sellPrice = parseFloat(document.getElementById('sell-price').value) || 0;
     const commissionPercent = parseFloat(document.getElementById('commission').value) || 0;
     const logistics = parseFloat(document.getElementById('logistics').value) || 0;
-    const lastMile = parseFloat(document.getElementById('last-mile').value) || 0;
+    const lastMilePercent = parseFloat(document.getElementById('last-mile').value) || 0;
     const taxRate = parseFloat(document.getElementById('tax-rate').value) || 0;
 
-    if (sellPrice === 0) {
-        alert("Цена продажи не может быть равна нулю.");
+    if (sellPrice <= 0) {
+        alert("Цена продажи должна быть больше нуля.");
         return;
     }
-    if (commissionPercent === 0) {
+    if (commissionPercent <= 0) {
         alert("Выберите категорию, чтобы подтянуть комиссию.");
         return;
     }
 
     const commissionValue = sellPrice * (commissionPercent / 100);
-    const totalExpenses = purchasePrice + commissionValue + logistics + lastMile;
+    const lastMileValue = sellPrice * (lastMilePercent / 100);
+    const totalExpenses = purchasePrice + commissionValue + logistics + lastMileValue;
 
     const profitBeforeTax = sellPrice - totalExpenses;
-    const taxValue = (sellPrice - purchasePrice) * (taxRate / 100);
+    const taxValue = (sellPrice > purchasePrice) ? (sellPrice - purchasePrice) * (taxRate / 100) : 0;
     const profitAfterTax = profitBeforeTax - taxValue;
-    const margin = (sellPrice === 0) ? 0 : (profitBeforeTax / sellPrice) * 100;
+    const margin = (profitBeforeTax / sellPrice) * 100;
 
     document.getElementById('profit-before-tax').textContent = `${profitBeforeTax.toFixed(2)} ₽`;
     document.getElementById('profit-after-tax').textContent = `${profitAfterTax.toFixed(2)} ₽`;
