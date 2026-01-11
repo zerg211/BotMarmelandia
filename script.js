@@ -6,7 +6,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     const serverUrl = 'https://botmarmelandia.onrender.com';
 
-    // --- ОБЩАЯ ЛОГИКА ВКЛАДОК ---
     window.showTab = (tabName) => {
         document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
         document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
@@ -14,7 +13,6 @@ document.addEventListener('DOMContentLoaded', function() {
         document.querySelector(`.tab-button[onclick="showTab('${tabName}')"]`).classList.add('active');
     };
 
-    // --- ЛОГИКА ВКЛАДКИ "ПРОДАЖИ" ---
     const clientIdInput = document.getElementById('clientId');
     const apiKeyInput = document.getElementById('apiKey');
     const saveBtn = document.getElementById('save-credentials');
